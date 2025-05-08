@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Neew Browser</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="browser-container">
+        <div id="toolbar">
+            <div id="navigation-controls">
+                <button id="back-button">←</button>
+                <button id="forward-button">→</button>
+                <button id="refresh-button">↻</button>
+                <input type="text" id="url-bar" placeholder="Enter URL or search...">
+            </div>
+            <div id="tabs-container">
+                <div class="tab active">New Tab</div>
+            </div>
+        </div>
+        <div id="content-area">
+            <webview id="webview" src="about:blank"></webview>
+        </div>
+    </div>
+    <script src="renderer.js"></script>
+</body>
+</html> 
