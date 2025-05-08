@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/minimizedControlBar"
+    android:layout_width="match_parent"
+    android:layout_height="?attr/actionBarSize" 
+    android:orientation="horizontal"
+    android:background="@android:color/black"
+    android:gravity="center_vertical"
+    android:elevation="4dp"
+    android:visibility="gone"> <!-- Hidden by default -->
+
+    <ImageButton
+        android:id="@+id/minimizedBackButton"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:src="@drawable/ic_back"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:contentDescription="@string/action_back" />
+    
+    <ImageButton
+        android:id="@+id/minimizedNewTabButton"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:src="@drawable/ic_new_tab"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:contentDescription="@string/action_new_tab" />
+
+    <EditText
+        android:id="@+id/minimizedUrlBar"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="2" 
+        android:layout_gravity="center_vertical"
+        android:layout_marginStart="4dp"
+        android:layout_marginEnd="4dp"
+        android:background="@drawable/url_bar_background" 
+        android:padding="8dp" 
+        android:textColor="@color/address_text_gray"
+        android:textSize="14sp"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:focusable="false" 
+        android:clickable="false"/>
+
+    <ImageButton
+        android:id="@+id/minimizedRefreshButton"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:src="@drawable/ic_refresh"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:contentDescription="@string/action_refresh" />
+
+    <ImageButton
+        android:id="@+id/minimizedForwardButton"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:src="@drawable/ic_forward"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:contentDescription="@string/action_forward" />
+
+</LinearLayout> 

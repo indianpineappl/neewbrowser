@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.coordinatorlayout.widget.CoordinatorLayout 
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    tools:context=".MainActivity">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+        <!-- ADD ProgressBar back -->
+        <ProgressBar
+            android:id="@+id/progressBar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:indeterminate="false"
+            android:max="100"
+            android:visibility="gone" />
+
+        <!-- GeckoView fills the remaining space -->
+        <org.mozilla.geckoview.GeckoView
+            android:id="@+id/geckoView"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"/>
+
+        <!-- Control Bar Container at the bottom -->
+        <FrameLayout
+            android:id="@+id/controlBarContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@android:color/black"
+            android:elevation="4dp">
+            
+            <!-- Include Expanded Control Bar Layout -->
+            <include layout="@layout/control_bar_expanded" />
+            
+            <!-- Include Minimized Control Bar Layout -->
+            <include layout="@layout/control_bar_minimized" />
+            
+        </FrameLayout>
+
+    </LinearLayout>
+
+    <!-- Settings Panel (Initially Gone) -->
+    <!-- Place it here so it overlays the GeckoView when visible -->
+    <!-- Anchoring might need adjustment based on desired behavior -->
+    <include
+        layout="@layout/settings_panel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom" 
+        android:layout_marginBottom="?attr/actionBarSize"/> 
+        <!-- Adjust marginBottom to position above control bar -->
+        <!-- Or position relative to controlBarContainer if using ConstraintLayout -->
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout> 
