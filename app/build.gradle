@@ -10,6 +10,9 @@ android {
         targetSdkVersion 34
         versionCode 1
         versionName "1.0"
+        ndk {
+            abiFilters "arm64-v8a"
+        }
     }
     signingConfigs {
         release {
@@ -21,7 +24,8 @@ android {
     }
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.release
         }
@@ -37,7 +41,7 @@ android {
 }
 
 ext {
-    geckoviewVersion = "128.0.20240725162350"
+    geckoviewVersion = "129.0.20240801122119"
     geckoviewChannel = "stable"
 }
 
@@ -45,7 +49,7 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.9.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
-    implementation "org.mozilla.geckoview:geckoview:128.0.20240725162350"
+    implementation "org.mozilla.geckoview:geckoview:129.0.20240801122119"
     implementation 'androidx.activity:activity:1.8.0'
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'

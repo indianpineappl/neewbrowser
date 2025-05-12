@@ -19,3 +19,14 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# Rules from R8's missing_rules.txt
+-dontwarn java.beans.BeanInfo
+-dontwarn java.beans.FeatureDescriptor
+-dontwarn java.beans.IntrospectionException
+-dontwarn java.beans.Introspector
+-dontwarn java.beans.PropertyDescriptor
+
+# Ignore GeckoView's debug config class (which references snakeyaml)
+-dontwarn org.mozilla.gecko.util.DebugConfig
+-dontwarn org.yaml.snakeyaml.**
