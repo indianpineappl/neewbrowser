@@ -6,4 +6,8 @@
 #   http://developer.android.com/guide/developing/tools/proguard.html
 
 # Keep GeckoView classes
--keep class org.mozilla.geckoview.** { *; } 
+-keep class org.mozilla.geckoview.** { *; }
+
+# Ignore GeckoView's debug config class (which references snakeyaml)
+-dontwarn org.mozilla.gecko.util.DebugConfig
+-dontwarn org.yaml.snakeyaml.** 
