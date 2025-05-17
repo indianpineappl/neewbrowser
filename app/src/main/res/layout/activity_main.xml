@@ -8,6 +8,7 @@
     tools:context=".MainActivity">
 
     <LinearLayout
+        android:id="@+id/main_content_area" 
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical">
@@ -54,9 +55,7 @@
         layout="@layout/settings_panel"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_gravity="bottom" 
-        android:layout_marginBottom="?attr/actionBarSize"/> 
-        <!-- Adjust marginBottom to position above control bar -->
-        <!-- Or position relative to controlBarContainer if using ConstraintLayout -->
+        android:layout_gravity="bottom"
+        android:layout_marginBottom="?attr/actionBarSize"/>
 
 </androidx.coordinatorlayout.widget.CoordinatorLayout> 
