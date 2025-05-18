@@ -70,6 +70,20 @@ import android.view.animation.TranslateAnimation;
 import android.view.animation.Animation;
 import androidx.appcompat.widget.SwitchCompat;
 import android.widget.Button;
+import androidx.fragment.app.Fragment;
+import androidx.fragment.app.FragmentManager;
+import androidx.fragment.app.FragmentTransaction;
+import android.app.DownloadManager;
+import android.os.Environment;
+import android.Manifest;
+import android.content.pm.PackageManager;
+import androidx.core.content.ContextCompat;
+import androidx.core.app.ActivityCompat;
+import androidx.annotation.NonNull;
+import android.content.BroadcastReceiver;
+import android.content.IntentFilter;
+import org.mozilla.geckoview.WebExtensionController;
+import org.mozilla.geckoview.WebExtension;
 
 public class MainActivity extends AppCompatActivity implements ScrollDelegate {
     private static final String TAG = "MainActivity";
@@ -110,6 +124,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate {
     // --- End Session Persistence Keys ---
     // --- Ad Blocker Key ---
     private static final String PREF_AD_BLOCKER_ENABLED = "ad_blocker_enabled"; // Standard blocker
+    private static final String PREF_UBLOCK_ENABLED = "ublock_enabled"; // uBlock Origin
     // --- End Ad Blocker Key ---
     // --- Advanced Ad Blocker Key --- // REMOVE
     // private static final String PREF_ADVANCED_AD_BLOCKER_ENABLED = "advanced_ad_blocker_enabled"; // VPN blocker
@@ -145,8 +160,22 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate {
     private LinearLayout settingsPanelLayout;
     private SwitchCompat panelCookieSwitch;
     private SwitchCompat panelAdBlockerSwitch;
+    private SwitchCompat panelUBlockSwitch;
     private Button panelApplyButton;
     private Button panelCancelButton;
+
+    private static final int REQUEST_CODE_WRITE_STORAGE = 1001;
+
+    private static final String UBLOCK_EXTENSION_ID = "uBlock0@raymondhill.net";
+    private static final String UBLOCK_ASSET_PATH = "resource://android/assets/extensions/uBlockOriginMV2/"; // Path to uBlock Origin
+    // private static final String UBLOCK_EXTENSION_ID = "minimal@test.com"; // MINIMAL TEST - Commented out
+    // private static final String UBLOCK_ASSET_PATH = "resource://android/assets/extensions/minimal_test/"; // MINIMAL TEST - Commented out
+
+    private boolean uBlockInstallAttempted = false; // Tracks if an attempt has been made, to prevent continuous loops on failure
+    private WebExtension ublockOriginExtension = null; // To store the uBlock WebExtension object
+
+    private BroadcastReceiver downloadCompleteReceiver;
+    private org.mozilla.geckoview.WebResponse pendingDownloadResponse = null; // Store response while asking for permission
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -185,6 +214,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate {
         settingsPanelLayout = findViewById(R.id.settingsPanelLayout);
         panelCookieSwitch = findViewById(R.id.panelCookieSwitch);
         panelAdBlockerSwitch = findViewById(R.id.panelAdBlockerSwitch);
+        panelUBlockSwitch = findViewById(R.id.panelUBlockSwitch);
         panelApplyButton = findViewById(R.id.panelApplyButton);
         panelCancelButton = findViewById(R.id.panelCancelButton);
 
@@ -197,11 +227,13 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate {
             Log.i(TAG, "GeckoRuntime created with default settings.");
 
             applyRuntimeSettings(); // Apply dynamic settings AFTER creation using direct setters
+            initializeUBlockOrigin(); // Initialize uBlock Origin after runtime is ready
 
         } else {
             Log.d(TAG, "Reusing existing GeckoRuntime");
             // If reusing, maybe re-apply dynamic settings?
-            // applyRuntimeSettings(); // Consider if needed on reuse
+            applyRuntimeSettings(); // Consider if needed on reuse
+            initializeUBlockOrigin(); // Initialize uBlock Origin if runtime is being reused
         }
 
         // --- Restore Session State --- 
@@ -262,6 +294,17 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate {
              // This case should have been handled by creating an initial tab, but log just in case
              Log.e(TAG, "Error: No active session and session list is empty after onCreate logic.");
         }
+
+        // Register download complete receiver
+        downloadCompleteReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (DownloadManager.ACTION_DOWNLOAD_COMPLETE.equals(intent.getAction())) {
+                    Toast.makeText(MainActivity.this, "Your Download is complete", Toast.LENGTH_SHORT).show();
+                }
+            }
+        };
+        registerReceiver(downloadCompleteReceiver, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
     }
 
     // Helper to get the currently active session
@@ -289,8 +332,13 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate {
         });
         settingsButton.setOnClickListener(v -> toggleSettingsPanel());
         downloadsButton.setOnClickListener(v -> {
-            Toast.makeText(MainActivity.this, "Downloads clicked (not implemented)", Toast.LENGTH_SHORT).show();
-            Log.d(TAG, "Downloads button clicked.");
+            // Show the DownloadsFragment
+            FragmentManager fragmentManager = getSupportFragmentManager();
+            FragmentTransaction transaction = fragmentManager.beginTransaction();
+            Fragment downloadsFragment = new DownloadsFragment();
+            transaction.replace(R.id.main_content_area, downloadsFragment, "DownloadsFragment");
+            transaction.addToBackStack(null);
+            transaction.commit();
         });
         // --- NEW TAB --- 
         newTabButton.setOnClickListener(v -> {
@@ -325,6 +373,20 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate {
 
      // Refactored method to set up URL bar listener
     private void setupUrlBarListener() {
+        urlBar.setOnClickListener(v -> {
+            urlBar.post(() -> urlBar.selectAll());
+            // Optionally, also show the keyboard if it's not already visible
+            // InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+            // imm.showSoftInput(urlBar, InputMethodManager.SHOW_IMPLICIT);
+        });
+
+        urlBar.setOnFocusChangeListener((v, hasFocus) -> {
+            if (hasFocus) {
+                // Post to ensure selection happens after focus events are fully processed
+                urlBar.post(() -> urlBar.selectAll());
+            }
+        });
+
         urlBar.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_GO || actionId == EditorInfo.IME_ACTION_NEXT) { 
                 String rawInput = urlBar.getText().toString();
@@ -403,15 +465,19 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate {
     private void createNewTab(@Nullable String initialUrl, boolean switchToTab) {
         if (runtime == null) {
             Log.e(TAG, "Runtime not initialized, cannot create new tab.");
+            Toast.makeText(this, "Error initializing browser engine.", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        Log.d(TAG, "Creating new GeckoSession");
-        GeckoSession newSession = new GeckoSession();
+        removeDownloadsFragmentIfPresent(); // Remove fragment before creating
 
-        // --- SET DELEGATES for the new session --- 
-        // You might want to reuse delegate instances if they don't hold session-specific state
-        // or create new ones as needed.
+        Log.d(TAG, "Creating new tab. Initial URL: " + initialUrl + ", Switch: " + switchToTab);
+        GeckoSession newSession = new GeckoSession();
+        
+        newSession.open(runtime);
+        Log.d(TAG, "Opened new GeckoSession");
+        
+        // Add delegates AFTER opening
         newSession.setProgressDelegate(new ProgressDelegate() {
             @Override
             public void onProgressChange(GeckoSession session, int progress) {
@@ -428,6 +494,84 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate {
             @Override
              public GeckoResult<AllowOrDeny> onLoadRequest(GeckoSession session, NavigationDelegate.LoadRequest request) {
                 return GeckoResult.fromValue(AllowOrDeny.ALLOW);
+            }
+
+            @Override
+            public GeckoResult<GeckoSession> onNewSession(GeckoSession session, String uri) {
+                Log.d(TAG, "NavigationDelegate: onNewSession called for URI: " + uri);
+
+                GeckoSession newPopupWindowSession = new GeckoSession();
+                // DO NOT CALL newPopupWindowSession.open(runtime); HERE.
+                // GeckoView is expected to open the session that is returned.
+
+                newPopupWindowSession.setProgressDelegate(new ProgressDelegate() {
+                    @Override
+                    public void onProgressChange(GeckoSession popupSession, int progress) {
+                        Log.v(TAG, "Popup session progress: " + progress + "% for " + sessionUrlMap.getOrDefault(popupSession, "Unknown URI"));
+                    }
+                });
+
+                newPopupWindowSession.setNavigationDelegate(new NavigationDelegate() {
+                    @Override
+                    public void onLocationChange(GeckoSession popupSession, String url, List<PermissionDelegate.ContentPermission> perms, Boolean hasUserGesture) {
+                        Log.d(TAG, "Popup onLocationChange: " + url);
+                        // Update the map for the new popup session
+                        sessionUrlMap.put(popupSession, url);
+                        // If this popup becomes the active session, update the main URL bar
+                        if (popupSession == getActiveSession()) {
+                            runOnUiThread(() -> {
+                                urlBar.setText(url);
+                                if (!isControlBarExpanded) {
+                                    minimizedUrlBar.setText(url);
+                                }
+                            });
+                        }
+                    }
+                     @Override
+                     public GeckoResult<AllowOrDeny> onLoadRequest(GeckoSession popupSession, NavigationDelegate.LoadRequest request) {
+                        return GeckoResult.fromValue(AllowOrDeny.ALLOW);
+                    }
+                });
+
+                 newPopupWindowSession.setContentDelegate(new ContentDelegate() {
+                    @Override
+                    public void onExternalResponse(GeckoSession popupSession, org.mozilla.geckoview.WebResponse response) {
+                        runOnUiThread(() -> handleDownloadResponse(response));
+                    }
+                     @Override
+                     public void onCloseRequest(GeckoSession popupSession) {
+                         Log.d(TAG, "Popup onCloseRequest received. Closing session for URI: " + sessionUrlMap.getOrDefault(popupSession, "Unknown URI"));
+                         int indexToClose = geckoSessionList.indexOf(popupSession);
+                         if (indexToClose != -1) {
+                             closeTab(indexToClose);
+                         } else {
+                             popupSession.close();
+                         }
+                     }
+                });
+
+                // Add to our list of sessions
+                // It's important that the session is in the list before switchToTab is called
+                // if switchToTab relies on the session being in the list.
+                if (!geckoSessionList.contains(newPopupWindowSession)) {
+                    geckoSessionList.add(newPopupWindowSession);
+                }
+                sessionUrlMap.put(newPopupWindowSession, uri); // Store its initial URL (or intended URL)
+
+                // Load the requested URI. This will be queued until the session is opened by GeckoView.
+                newPopupWindowSession.loadUri(uri);
+                Log.d(TAG, "New session configured by onNewSession, URI set to: " + uri);
+                
+                final int newTabIndex = geckoSessionList.indexOf(newPopupWindowSession);
+                if (newTabIndex != -1) { // Ensure it was added
+                    runOnUiThread(() -> switchToTab(newTabIndex));
+                } else {
+                    // This case should ideally not happen if logic is correct
+                    Log.e(TAG, "onNewSession: newPopupWindowSession not found in list after adding. Cannot switch.");
+                }
+                
+                // Return the session instance. GeckoView will take care of opening it.
+                return GeckoResult.fromValue(newPopupWindowSession);
             }
 
             @Override
@@ -480,39 +624,55 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate {
         newSession.setContentDelegate(new ContentDelegate() {
             @Override
             public void onFullScreen(GeckoSession session, boolean fullScreen) {
-                 if (session == getActiveSession()) { // Only react if the active session requests fullscreen
-                     Log.d(TAG, "onFullScreen called (Active Session): " + fullScreen);
-                     runOnUiThread(() -> {
-                         if (fullScreen) {
-                             enterFullScreen();
-                         } else {
-                             exitFullScreen();
-                         }
-                     });
-                 }
+                if (session == getActiveSession()) { // Only react if the active session requests fullscreen
+                    Log.d(TAG, "onFullScreen called (Active Session): " + fullScreen);
+                    runOnUiThread(() -> {
+                        if (fullScreen) {
+                            enterFullScreen();
+                        } else {
+                            exitFullScreen();
+                        }
+                    });
+                }
             }
             // Implement other ContentDelegate methods as needed
+            @Override
+            public void onExternalResponse(GeckoSession session, org.mozilla.geckoview.WebResponse response) {
+                runOnUiThread(() -> handleDownloadResponse(response));
+            }
+
+            // Add onCloseRequest to the main session's ContentDelegate as well
+            @Override
+            public void onCloseRequest(GeckoSession session) {
+                Log.d(TAG, "ContentDelegate: onCloseRequest received for session: " + sessionUrlMap.getOrDefault(session, "Unknown URI"));
+                // This is typically called by window.close() from JavaScript.
+                // We should close the tab associated with this session.
+                int indexToClose = geckoSessionList.indexOf(session);
+                if (indexToClose != -1) {
+                    closeTab(indexToClose);
+                } else {
+                    // If for some reason it's not in our main list, just close the session.
+                    session.close();
+                }
+            }
         });
 
-        newSession.setScrollDelegate(this); // Use the Activity's scroll delegate
+        newSession.setScrollDelegate(this); // Set MainActivity as scroll delegate
 
-        Log.d(TAG, "Opening new GeckoSession");
-        newSession.open(runtime);
         geckoSessionList.add(newSession);
-        String urlToLoad = (initialUrl != null && !initialUrl.isEmpty()) ? initialUrl : "about:blank";
-        sessionUrlMap.put(newSession, urlToLoad); // Use provided or default URL
+        String targetUrl = (initialUrl != null && !initialUrl.isEmpty()) ? initialUrl : "about:blank";
+        sessionUrlMap.put(newSession, targetUrl); // Store initial URL
+        
+        newSession.loadUri(targetUrl); // Load initial URL
+        Log.d(TAG, "Loading initial URL in new session: " + targetUrl);
 
         if (switchToTab) {
-            // Switch index first, then load URL
-            activeSessionIndex = geckoSessionList.size() - 1;
-            geckoView.setSession(newSession);
-            newSession.loadUri(urlToLoad);
-            updateUIForActiveSession();
-            Log.d(TAG, "Switched to new tab index: " + activeSessionIndex + " loading: " + urlToLoad);
+             // No need to remove fragment again here as it was done at the start
+            switchToTab(geckoSessionList.size() - 1); // Switch to the newly added tab
         } else {
-             // Just load URL without switching view or index
-             newSession.loadUri(urlToLoad);
-             Log.d(TAG, "Created background tab index: " + (geckoSessionList.size() - 1) + " loading: " + urlToLoad);
+            // If not switching, ensure the UI reflects the *current* active tab state
+            updateUIForActiveSession(); 
+             saveSessionState(); // Save state after adding a tab
         }
     }
 
@@ -523,51 +683,76 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate {
 
     // Method to switch the active tab
     private void switchToTab(int index) {
+        if (geckoSessionList.isEmpty()) {
+            Log.e(TAG, "switchToTab called on an empty session list. Index was: " + index + ". Creating new tab as fallback.");
+            this.activeSessionIndex = -1; // Ensure createNewTab knows no tab is active
+            if (runtime != null) {
+                createNewTab(true); // This will eventually call switchToTab with a valid state
+            } else {
+                Log.e(TAG, "Cannot create new tab in switchToTab fallback as runtime is null.");
+            }
+            return;
+        }
+
         if (index < 0 || index >= geckoSessionList.size()) {
-            Log.e(TAG, "Invalid index for switchToTab: " + index);
+            Log.e(TAG, "switchToTab: Invalid index " + index + " for list size " + geckoSessionList.size() + ". Aborting switch.");
+            // Fallback: if the intended index is bad for a non-empty list, try to switch to index 0.
+            // This prevents the app from being stuck if logic elsewhere calculates a bad index.
+            if (!geckoSessionList.isEmpty()) {
+                Log.w(TAG, "switchToTab: Attempting to switch to index 0 as a fallback.");
+                // Avoid recursion if index 0 is also bad (shouldn't happen if list not empty)
+                if (0 >= 0 && 0 < geckoSessionList.size() && index != 0) { // prevent recursion if index was already 0 and invalid
+                    switchToTab(0);
+                }
+            }
             return;
         }
-        // REMOVED: Early return if index == activeSessionIndex
-        // if (index == activeSessionIndex) {
-        //     Log.d(TAG, "Already on tab index: " + index + " (but proceeding to set session and UI)"); 
-        //     // return; // No longer returning early 
-        // }
 
-        Log.d(TAG, "Attempting to switch to tab index: " + index + ". Current active index before switch logic: " + activeSessionIndex);
+        GeckoSession targetSession = geckoSessionList.get(index);
 
-        GeckoSession sessionToSwitchTo = geckoSessionList.get(index); 
-        if (sessionToSwitchTo == null) {
-            Log.e(TAG, "switchToTab: Session at target index " + index + " is null!");
+        // If this tab (by index) is already the active one AND GeckoView is displaying its session
+        if (this.activeSessionIndex == index && geckoView.getSession() == targetSession) {
+            Log.d(TAG, "switchToTab: Tab " + index + " is already active and displayed. Updating UI only.");
+            updateUIForActiveSession(); // Ensure UI is fresh (e.g. URL bar)
             return;
         }
-        String targetUrl = sessionUrlMap.getOrDefault(sessionToSwitchTo, "URL_NOT_FOUND_IN_MAP");
-        Log.d(TAG, "switchToTab: Target session URL: " + targetUrl + ", IsOpen: " + sessionToSwitchTo.isOpen());
 
-        // --- Capture snapshot of the outgoing tab BEFORE switching --- 
-        GeckoSession outgoingSession = getActiveSession(); // Get current active session BEFORE changing activeSessionIndex
-        // Only capture if the outgoing session is valid and different from the one we are switching to
-        if (outgoingSession != null && outgoingSession != sessionToSwitchTo) { 
-            captureSnapshot(outgoingSession); 
+        // Proceed with the switch
+        removeDownloadsFragmentIfPresent();
+        Log.d(TAG, "Switching to tab index: " + index + ". Current global activeSessionIndex before switch: " + this.activeSessionIndex);
+
+        GeckoSession sessionCurrentlyInView = geckoView.getSession();
+        if (sessionCurrentlyInView != null) {
+            // Only capture snapshot if releasing a session that is different from the target session
+            if (sessionCurrentlyInView != targetSession) {
+                // Determine if the sessionCurrentlyInView was the 'logical' old active session
+                GeckoSession logicalOldActiveSession = (this.activeSessionIndex >= 0 && 
+                                                        this.activeSessionIndex < geckoSessionList.size() && // check if old index is still valid (list might have changed)
+                                                        this.activeSessionIndex != index) // and not the target index
+                                                       ? geckoSessionList.get(this.activeSessionIndex) 
+                                                       : null;
+
+                if (logicalOldActiveSession != null && sessionCurrentlyInView == logicalOldActiveSession) {
+                     captureSnapshot(logicalOldActiveSession);
+                } else {
+                     // If the session in view is not the logical old active one, but it's being released.
+                     Log.d(TAG, "Capturing snapshot of non-logical-active/unexpected session being released: " + sessionUrlMap.getOrDefault(sessionCurrentlyInView, "N/A"));
+                     captureSnapshot(sessionCurrentlyInView);
+                }
+            }
+            geckoView.releaseSession();
+            Log.d(TAG, "Released session from GeckoView: " + sessionUrlMap.getOrDefault(sessionCurrentlyInView, "N/A"));
         }
-        // --- End Snapshot Capture ---
 
-        Log.d(TAG, "Switching to tab index: " + index);
-        activeSessionIndex = index;
-        // GeckoSession newActiveSession = getActiveSession(); // This is now sessionToSwitchTo
+        this.activeSessionIndex = index;
+        this.geckoSession = targetSession; // Update the global 'geckoSession' convenience field
+        
+        geckoView.setSession(targetSession);
+        Log.d(TAG, "Attached session to GeckoView: " + sessionUrlMap.getOrDefault(targetSession, "N/A"));
 
-        // if (newActiveSession != null) { // Use sessionToSwitchTo directly
-        Log.d(TAG, "switchToTab: Setting GeckoView session to index: " + activeSessionIndex);
-        geckoView.setSession(sessionToSwitchTo); // Use the session we fetched and validated
         updateUIForActiveSession();
-            
-            // --- Diagnostic: Try a reload ---
-            // Log.d(TAG, "switchToTab: Forcing reload on session index: " + activeSessionIndex);
-            // sessionToSwitchTo.reload(); // Uncomment this to test if reloading helps
-            // --- End Diagnostic ---
-
-        // } else {
-        //     Log.e(TAG, "switchToTab: Failed to get session at index: " + index + " after setting activeSessionIndex.");
-        // }
+        saveSessionState();
+        geckoView.requestFocus();
     }
 
     // Method to capture snapshot for a session
@@ -668,50 +853,52 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate {
     }
 
     // Method to close a tab
-    private void closeTab(int index) {
-        if (index < 0 || index >= geckoSessionList.size()) {
-            Log.e(TAG, "Invalid index for closeTab: " + index);
+    private void closeTab(int indexToClose) {
+        if (indexToClose < 0 || indexToClose >= geckoSessionList.size()) {
+            Log.e(TAG, "Invalid index for closeTab: " + indexToClose + ", list size: " + geckoSessionList.size());
             return;
         }
 
-        Log.d(TAG, "Closing tab index: " + index);
-        GeckoSession sessionToClose;
-        // synchronized (geckoSessionList) { // REMOVE SYNC
-            sessionToClose = geckoSessionList.remove(index);
-        // }
+        Log.d(TAG, "Closing tab index: " + indexToClose);
+        GeckoSession sessionToClose = geckoSessionList.remove(indexToClose);
         sessionUrlMap.remove(sessionToClose);
-        Bitmap removedSnapshot = sessionSnapshotMap.remove(sessionToClose); // Remove snapshot from map
-        if (removedSnapshot != null && !removedSnapshot.isRecycled()) { // Recycle removed snapshot
-             removedSnapshot.recycle();
+        Bitmap removedSnapshot = sessionSnapshotMap.remove(sessionToClose);
+        if (removedSnapshot != null && !removedSnapshot.isRecycled()) {
+            removedSnapshot.recycle();
         }
         sessionToClose.close();
 
-        // Handle switching to a different tab if the closed one was active
-        if (activeSessionIndex == index) {
-            // If list is now empty, create a new tab
-            if (geckoSessionList.isEmpty()) {
-                activeSessionIndex = -1; // Reset index
-                createNewTab(true);
-            } else {
-                // Switch to the previous tab, or the first tab if the closed one was the first
-                activeSessionIndex = Math.max(0, index - 1);
-                switchToTab(activeSessionIndex);
-            }
-        } else if (activeSessionIndex > index) {
-            // If the closed tab was before the active one, adjust the active index
-            activeSessionIndex--;
-            // IMPORTANT: We need to ensure GeckoView is actually displaying this session
-            GeckoSession newCurrentSession = getActiveSession();
-            if (newCurrentSession != null) {
-                Log.d(TAG, "closeTab: Adjusting active session. New index: " + activeSessionIndex + ". Setting session on GeckoView.");
-                geckoView.setSession(newCurrentSession); // Explicitly set the session
-            } else {
-                Log.w(TAG, "closeTab: Adjusted active session is null for index: " + activeSessionIndex);
-            }
-            updateUIForActiveSession(); 
-        }
+        int oldGlobalActiveSessionIndex = this.activeSessionIndex; // Capture before any potential changes by switchToTab
 
-        // TODO: Update the Tab Switcher view if it's open
+        if (geckoSessionList.isEmpty()) {
+            // No tabs left, create a new one.
+            // activeSessionIndex should be -1 before calling createNewTab if list is empty.
+            this.activeSessionIndex = -1;
+            createNewTab(true); // This will set activeSessionIndex and call switchToTab.
+        } else {
+            int newTargetActiveIndex;
+            if (oldGlobalActiveSessionIndex == indexToClose) {
+                // The active tab was closed. Switch to the one before it, or 0 if it was the first.
+                // Since indexToClose is removed, the list is smaller.
+                // If indexToClose was 0, new target is 0.
+                // If indexToClose was >0, new target is indexToClose-1.
+                newTargetActiveIndex = Math.max(0, indexToClose - 1);
+            } else if (oldGlobalActiveSessionIndex > indexToClose) {
+                // Active tab was after the closed tab. Its index in the (now smaller) list shifts down by 1.
+                newTargetActiveIndex = oldGlobalActiveSessionIndex - 1;
+            } else { // oldGlobalActiveSessionIndex < indexToClose
+                // Active tab was before the closed tab. Its index remains the same.
+                newTargetActiveIndex = oldGlobalActiveSessionIndex;
+            }
+
+            // Ensure newTargetActiveIndex is valid for the current (modified) list size
+            // It should already be valid if logic above is correct, but clamp as safety.
+            newTargetActiveIndex = Math.min(newTargetActiveIndex, geckoSessionList.size() - 1);
+            newTargetActiveIndex = Math.max(0, newTargetActiveIndex); // Should be redundant if list not empty
+
+            switchToTab(newTargetActiveIndex); // Let switchToTab handle setting global activeSessionIndex
+        }
+        saveSessionState(); // Save state after all changes
     }
 
     @Override
@@ -732,6 +919,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate {
         // If using Activity context (like current code), runtime should ideally be closed,
         // but GeckoView docs often show runtime persisting. Be mindful of leaks.
         // if (runtime != null) { runtime.shutdown(); runtime = null; }
+
+        // Unregister download complete receiver
+        if (downloadCompleteReceiver != null) {
+            unregisterReceiver(downloadCompleteReceiver);
+        }
     }
 
     // --- Control Bar State Logic ---
@@ -791,22 +983,21 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate {
             Log.e(TAG, "applyRuntimeSettings: Runtime is null!");
             return;
         }
-        // Settings from config file (if loaded) are set at creation. Apply dynamic ones here.
         Log.d(TAG, "Applying dynamic runtime settings...");
 
-        GeckoRuntimeSettings settings = runtime.getSettings(); // Get current settings object
+        GeckoRuntimeSettings settings = runtime.getSettings();
 
-        // --- Apply JavaScript Setting ---
         settings.setJavaScriptEnabled(true);
+        settings.setRemoteDebuggingEnabled(true); // Enable remote debugging
 
         ContentBlocking.Settings cbSettings = settings.getContentBlocking();
 
         // --- Apply Cookie Settings ---
-        boolean cookiesEnabled = prefs.getBoolean(PREF_COOKIES_ENABLED, false); // Default false
+        boolean cookiesEnabled = prefs.getBoolean(PREF_COOKIES_ENABLED, true); // Default true
         Log.d(TAG, "Applying dynamic Cookies enabled: " + cookiesEnabled);
         cbSettings.setCookieBehavior(
-            cookiesEnabled ? ContentBlocking.CookieBehavior.ACCEPT_ALL
-                           : ContentBlocking.CookieBehavior.ACCEPT_NONE); // Use ACCEPT_NONE which worked before
+            cookiesEnabled ? ContentBlocking.CookieBehavior.ACCEPT_NON_TRACKERS // Corrected constant
+                           : ContentBlocking.CookieBehavior.ACCEPT_NONE);
 
         // --- Apply Ad Blocker Settings (Default/Implicit) ---
         // TrackingProtectionLevel is not explicitly set here to avoid potential API issues encountered before.
@@ -824,6 +1015,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate {
         // Apply the modified settings (ContentBlocking and JavaScript are set on the 'settings' object directly)
         // runtime.setSettings(settings); // This line is problematic, settings are applied via direct setters or at creation
         Log.d(TAG, "Dynamic runtime settings application finished.");
+        // Moved uBlock initialization to be called after applyRuntimeSettings in onCreate
     }
 
     // --- Settings Panel Logic ---
@@ -868,18 +1060,25 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate {
         // Load current settings into switches before showing
         panelCookieSwitch.setChecked(prefs.getBoolean(PREF_COOKIES_ENABLED, false));
         panelAdBlockerSwitch.setChecked(prefs.getBoolean(PREF_AD_BLOCKER_ENABLED, true));
+        if (panelUBlockSwitch != null) { // Add null check for safety
+            panelUBlockSwitch.setChecked(prefs.getBoolean(PREF_UBLOCK_ENABLED, false));
+        }
 
-        // Simple slide-up animation
-        settingsPanelLayout.setVisibility(View.VISIBLE);
-        TranslateAnimation animate = new TranslateAnimation(
-                0,
-                0,
-                settingsPanelLayout.getHeight(), // fromYDelta (start below)
-                0);                        // toYDelta (end at original position)
-        animate.setDuration(300);
-        animate.setFillAfter(true);
-        settingsPanelLayout.startAnimation(animate);
-        Log.d(TAG, "Showing settings panel");
+        settingsPanelLayout.setVisibility(View.VISIBLE); // Make it visible first
+
+        settingsPanelLayout.post(() -> {
+            // Simple slide-up animation
+            TranslateAnimation animate = new TranslateAnimation(
+                    0,
+                    0,
+                    settingsPanelLayout.getHeight(), // fromYDelta (start below)
+                    0);                        // toYDelta (end at original position)
+            animate.setDuration(300);
+            animate.setFillAfter(true); // Keep the view at its new position after animation
+            settingsPanelLayout.startAnimation(animate);
+            Log.d(TAG, "Showing settings panel animation started");
+        });
+        Log.d(TAG, "Showing settings panel requested");
     }
 
     private void hideSettingsPanel(boolean applyChanges) {
@@ -908,21 +1107,181 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate {
     private void applySettingsFromPanel() {
         boolean cookiesChecked = panelCookieSwitch.isChecked();
         boolean adBlockerChecked = panelAdBlockerSwitch.isChecked();
-        Log.d(TAG, "Applying Settings from Panel: Cookies = " + cookiesChecked + ", Blocker = " + adBlockerChecked);
+        boolean uBlockChecked = (panelUBlockSwitch != null) && panelUBlockSwitch.isChecked(); // Add null check
+        Log.d(TAG, "Applying Settings from Panel: Cookies = " + cookiesChecked + ", Blocker = " + adBlockerChecked + ", uBlock = " + uBlockChecked);
 
         // Save the new preferences
         prefs.edit()
              .putBoolean(PREF_COOKIES_ENABLED, cookiesChecked)
              .putBoolean(PREF_AD_BLOCKER_ENABLED, adBlockerChecked)
+             .putBoolean(PREF_UBLOCK_ENABLED, uBlockChecked) // Save uBlock state
              .apply();
-             
-        // Apply GeckoView settings dynamically
-        applyRuntimeSettings(); 
 
-        Toast.makeText(MainActivity.this, "Settings updated.", Toast.LENGTH_SHORT).show(); 
+        // Apply GeckoView settings dynamically
+        applyRuntimeSettings();
+        setUBlockOriginEnabled(uBlockChecked); // Enable/disable uBlock
+
+        Toast.makeText(MainActivity.this, "Settings updated.", Toast.LENGTH_SHORT).show();
         hideSettingsPanel(true); // Hide panel after applying
     }
     // --- End Settings Panel Logic ---
+
+    // --- uBlock Origin WebExtension Logic ---
+
+    private void initializeUBlockOrigin() {
+        Log.i(TAG, "initializeUBlockOrigin called.");
+        if (runtime == null) {
+            Log.e(TAG, "GeckoRuntime not initialized. Cannot install uBlock Origin.");
+            return;
+        }
+        Log.i(TAG, "GeckoRuntime is available for uBlock Origin initialization.");
+
+        WebExtensionController controller = runtime.getWebExtensionController();
+        if (controller == null) {
+            Log.e(TAG, "WebExtensionController is null. Cannot install uBlock Origin.");
+            return;
+        }
+        Log.i(TAG, "WebExtensionController is available for uBlock Origin initialization.");
+
+        if (ublockOriginExtension != null) {
+            boolean currentKnownState = prefs.getBoolean(PREF_UBLOCK_ENABLED, true); // Default to true
+            Log.i(TAG, "uBlock Origin extension object already exists. ID: " + ublockOriginExtension.id + ", Known Enabled State: " + currentKnownState + ". Ensuring state matches preference.");
+            // setUBlockOriginEnabled(currentKnownState); // This will also update the switch via its own callbacks.
+            // Call directly to set the switch and potentially enable/disable if needed,
+            // but avoid re-install if ublockOriginExtension is already present.
+            if (panelUBlockSwitch != null) {
+                panelUBlockSwitch.setChecked(currentKnownState);
+            }
+            // If the current state of the extension object (if we could reliably get it) differs from preference,
+            // then call setUBlockOriginEnabled. For now, assume ensureBuiltIn + set will align it.
+            // The main purpose here is to initialize the switch and ensure the extension is loaded if already known.
+            // Actual enable/disable based on pref happens after installation below if object is null, or if user toggles switch.
+            return;
+        }
+
+        // If uBlockInstallAttempted is true AND ublockOriginExtension is null, it means a previous attempt failed.
+        // We might only want to retry if this method is called due to a direct user action (like toggling the switch).
+        // For onCreate, if it failed once, it might keep failing.
+        // For now, always attempt if ublockOriginExtension is null, as the call might come from a settings change.
+        Log.i(TAG, "uBlock Origin extension object is null. Attempting installation. Prior attempt: " + uBlockInstallAttempted);
+
+        Log.i(TAG, "Attempting to ensureBuiltIn uBlock Origin from: " + UBLOCK_ASSET_PATH + " with ID: " + UBLOCK_EXTENSION_ID);
+
+        controller.ensureBuiltIn(UBLOCK_ASSET_PATH, UBLOCK_EXTENSION_ID)
+            .accept(
+                extension -> {
+                    uBlockInstallAttempted = true; // Mark that an attempt has been made
+                    if (extension != null) {
+                        this.ublockOriginExtension = extension;
+                        Log.i(TAG, "uBlock Origin (" + extension.id + ") installed/ensured successfully. Manifest version: " +
+                                   (extension.metaData != null ? " (Not directly queryable)" : "N/A") + // manifestVersion not directly available
+                                   ", Initializing based on preference.");
+
+                        boolean enableUBlockPreference = prefs.getBoolean(PREF_UBLOCK_ENABLED, true);
+                        Log.i(TAG, "uBlock Origin preference is: " + (enableUBlockPreference ? "ENABLED" : "DISABLED") + ". Aligning extension state.");
+                        setUBlockOriginEnabled(enableUBlockPreference); // This will handle enabling/disabling and updating the switch
+                    } else {
+                        Log.e(TAG, "ensureBuiltIn for uBlock Origin returned NULL WebExtension object. Path: " + UBLOCK_ASSET_PATH + ", ID: " + UBLOCK_EXTENSION_ID);
+                        Toast.makeText(MainActivity.this, "Failed to install uBlock Origin (returned null)", Toast.LENGTH_LONG).show();
+                        if (panelUBlockSwitch != null) {
+                            panelUBlockSwitch.setChecked(false); // Reflect failure
+                        }
+                    }
+                },
+                e -> {
+                    uBlockInstallAttempted = true; // Mark that an attempt has been made
+                    Log.e(TAG, "ensureBuiltIn for uBlock Origin FAILED. Path: " + UBLOCK_ASSET_PATH + ", ID: " + UBLOCK_EXTENSION_ID, e);
+                    Toast.makeText(MainActivity.this, "Failed to install uBlock Origin (exception)", Toast.LENGTH_LONG).show();
+                    if (panelUBlockSwitch != null) {
+                        panelUBlockSwitch.setChecked(false); // Reflect failure
+                    }
+                }
+            );
+    }
+
+    private void setUBlockOriginEnabled(boolean enabled) {
+        Log.i(TAG, "setUBlockOriginEnabled called with requested state: " + (enabled ? "ENABLE" : "DISABLE"));
+
+        if (runtime == null || runtime.getWebExtensionController() == null) {
+            Log.e(TAG, "GeckoRuntime or WebExtensionController not available in setUBlockOriginEnabled.");
+            Toast.makeText(MainActivity.this, "Ad blocking service unavailable.", Toast.LENGTH_SHORT).show();
+            if (panelUBlockSwitch != null) {
+                panelUBlockSwitch.setChecked(false); // Cannot change state
+            }
+            return;
+        }
+
+        if (ublockOriginExtension == null) {
+            Log.w(TAG, "uBlock Origin extension object is null in setUBlockOriginEnabled.");
+            if (enabled) {
+                Log.i(TAG, "Attempting to initialize uBlock Origin as it's being enabled but object is null.");
+                // This will call initializeUBlockOrigin, which in turn will call setUBlockOriginEnabled again after installation.
+                // Need to be careful about potential loops if installation fails repeatedly.
+                // initializeUBlockOrigin has uBlockInstallAttempted to somewhat mitigate this.
+                // Also, ensure the switch reflects the desired 'true' state if we are trying to enable.
+                if (panelUBlockSwitch != null) {
+                    panelUBlockSwitch.setChecked(true);
+                }
+                initializeUBlockOrigin();
+            } else {
+                // If trying to disable and it's null, it's effectively disabled.
+                Log.i(TAG, "uBlock Origin is already effectively disabled (extension object is null).");
+                if (panelUBlockSwitch != null) {
+                    panelUBlockSwitch.setChecked(false);
+                }
+            }
+            return;
+        }
+
+        // Log based on the 'enabled' parameter which is the *target* state for this operation.
+        // We cannot reliably call ublockOriginExtension.isEnabled() directly.
+        Log.i(TAG, "uBlock Origin (" + ublockOriginExtension.id + ") current known/intended state before change: " + prefs.getBoolean(PREF_UBLOCK_ENABLED, enabled) + ", Attempting to set to: " + enabled);
+
+        WebExtensionController controller = runtime.getWebExtensionController();
+        GeckoResult<WebExtension> result;
+
+        if (enabled) {
+            Log.i(TAG, "Calling WebExtensionController.enable for uBlock Origin ID: " + ublockOriginExtension.id);
+            result = controller.enable(ublockOriginExtension, WebExtensionController.EnableSource.USER);
+        } else {
+            Log.i(TAG, "Calling WebExtensionController.disable for uBlock Origin ID: " + ublockOriginExtension.id);
+            result = controller.disable(ublockOriginExtension, WebExtensionController.EnableSource.USER);
+        }
+
+        result.accept(
+            updatedExtension -> {
+                if (updatedExtension != null) {
+                    this.ublockOriginExtension = updatedExtension; // Update with the returned object
+                    // Log based on the 'enabled' parameter which was the target of the operation
+                    Log.i(TAG, "uBlock Origin (" + updatedExtension.id + ") enable/disable call successful. Attempted state: " + (enabled ? "enabled" : "disabled") +
+                               ". Actual state after call should reflect this."); // Cannot call updatedExtension.isEnabled()
+                    if (panelUBlockSwitch != null) {
+                        panelUBlockSwitch.setChecked(enabled); // Set switch to the state we attempted
+                        Log.d(TAG, "uBlock switch updated to: " + enabled);
+                    }
+                     // Persist the successful state change
+                    prefs.edit().putBoolean(PREF_UBLOCK_ENABLED, enabled).apply();
+                } else {
+                     Log.w(TAG, "uBlock Origin enable/disable call returned null WebExtension object. Intended state: " + (enabled ? "enabled" : "disabled"));
+                     // Attempt to reflect the last known good state of the switch if available
+                    if (panelUBlockSwitch != null) {
+                         panelUBlockSwitch.setChecked(prefs.getBoolean(PREF_UBLOCK_ENABLED, false)); // Revert to preference
+                    }
+                }
+            },
+            e -> {
+                Log.e(TAG, "Failed to set uBlock Origin (" + ublockOriginExtension.id + ") target enabled state to " + enabled, e);
+                Toast.makeText(MainActivity.this, "Failed to " + (enabled ? "enable" : "disable") + " uBlock Origin", Toast.LENGTH_SHORT).show();
+                // Revert switch to previous known state (from prefs)
+                if (panelUBlockSwitch != null) {
+                    panelUBlockSwitch.setChecked(prefs.getBoolean(PREF_UBLOCK_ENABLED, false)); // Revert to preference
+                     Log.d(TAG, "uBlock switch reverted to: " + prefs.getBoolean(PREF_UBLOCK_ENABLED, false) + " after failure.");
+                }
+            }
+        );
+    }
+
+    // --- End uBlock Origin WebExtension Logic ---
 
     // --- Fullscreen Helper Methods ---
     private void enterFullScreen() {
@@ -1135,5 +1494,108 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate {
             // Return false so GeckoView still processes the touch for scrolling, clicking links etc.
             return false;
         });
+    }
+
+    // --- Download Handling ---
+    private void handleDownloadResponse(org.mozilla.geckoview.WebResponse response) {
+        // Check storage permission
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            Log.i(TAG, "Storage permission not granted. Requesting...");
+            // Store the response to retry after permission grant
+            pendingDownloadResponse = response; 
+            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_CODE_WRITE_STORAGE);
+            // Don't proceed with download logic yet
+            return; 
+        }
+        
+        Log.i(TAG, "Storage permission granted. Proceeding with download.");
+        
+        // Clear any pending response as we are proceeding now
+        pendingDownloadResponse = null;
+
+        String fileName = "downloaded_file";
+        String url = response.uri;
+        String contentDisposition = response.headers != null ? response.headers.get("content-disposition") : null;
+        if (contentDisposition != null) {
+            // Basic parsing for filename - might need improvement for complex cases
+            String[] parts = contentDisposition.split("filename=");
+            if (parts.length > 1) {
+                fileName = parts[1].replaceAll("[\\\"';]", "").trim(); 
+            }
+        }
+        // Consider using ContentResolver and MediaStore for more robust filename/path generation on newer Android versions
+        String destDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath();
+        String filePath = destDir + "/" + fileName;
+
+        try {
+            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
+            request.setTitle(fileName);
+            request.setDescription("Downloading file...");
+            // Use setDestinationInExternalPublicDir for standard download location
+            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
+            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            request.allowScanningByMediaScanner(); // Let media scanner pick it up
+            
+            // Set headers from the response if needed (e.g., cookies)
+            if (response.headers != null) {
+                 for (Map.Entry<String, String> entry : response.headers.entrySet()) {
+                     // Example: Add Cookie header if present in response headers
+                     if (entry.getKey().equalsIgnoreCase("cookie")) { 
+                          request.addRequestHeader(entry.getKey(), entry.getValue());
+                     } // Add other relevant headers if necessary
+                 }
+            }
+
+            DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+            if (dm != null) {
+                long downloadId = dm.enqueue(request); // Get the download ID
+                Log.i(TAG, "Download enqueued with ID: " + downloadId + ", File: " + fileName);
+                // Add to downloads list using the DownloadsFragment helper
+                DownloadsFragment.addDownload(this, new DownloadsFragment.DownloadItem(
+                    fileName,
+                    filePath,
+                    url
+                ));
+                Toast.makeText(this, "Download started: " + fileName, Toast.LENGTH_SHORT).show();
+            } else {
+                Log.e(TAG, "DownloadManager service not available.");
+                Toast.makeText(this, "DownloadManager not available", Toast.LENGTH_SHORT).show();
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error initiating download for " + url, e);
+            Toast.makeText(this, "Error starting download", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    // Handle permission result
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_CODE_WRITE_STORAGE) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                Log.i(TAG, "WRITE_EXTERNAL_STORAGE permission granted by user.");
+                Toast.makeText(this, "Storage permission granted. Retrying download...", Toast.LENGTH_SHORT).show();
+                // Retry the download if one was pending
+                if (pendingDownloadResponse != null) {
+                    handleDownloadResponse(pendingDownloadResponse);
+                }
+            } else {
+                Log.w(TAG, "WRITE_EXTERNAL_STORAGE permission denied by user.");
+                Toast.makeText(this, "Storage permission denied. Cannot download files.", Toast.LENGTH_LONG).show();
+                // Clear any pending response as permission was denied
+                pendingDownloadResponse = null; 
+            }
+        }
+    }
+
+    private void removeDownloadsFragmentIfPresent() {
+        FragmentManager fragmentManager = getSupportFragmentManager();
+        Fragment downloadsFragment = fragmentManager.findFragmentByTag("DownloadsFragment");
+        if (downloadsFragment != null && downloadsFragment.isVisible()) {
+            Log.d(TAG, "Removing DownloadsFragment before tab switch/creation.");
+            fragmentManager.beginTransaction().remove(downloadsFragment).commit();
+            // Ensure the transaction completes before proceeding, if necessary, though usually not needed.
+            // fragmentManager.executePendingTransactions(); 
+        }
     }
 } 
