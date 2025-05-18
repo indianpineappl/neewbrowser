@@ -58,4 +58,16 @@
         android:layout_gravity="bottom"
         android:layout_marginBottom="?attr/actionBarSize"/>
 
+    <!-- Container for the Downloads Fragment (REMOVED) -->
+    <!-- 
+    <FrameLayout
+        android:id="@+id/downloads_fragment_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="?android:colorBackground" 
+        android:visibility="gone"
+        android:clickable="true" 
+        android:focusable="true"/> 
+    -->
+
 </androidx.coordinatorlayout.widget.CoordinatorLayout> 
