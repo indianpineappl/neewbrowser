@@ -29,3 +29,7 @@ google-services.json
 
 # Specific to your logs
 java_pid*.hprof 
+
+# Android app specific
+app/build/
+app/release/ 
