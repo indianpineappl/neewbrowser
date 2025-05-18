@@ -660,630 +660,157 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
              // Implement other ProgressDelegate methods like onPageStart/Stop if needed for this session
         });
 
+        // This is the NavigationDelegate for the tab created by createNewTab()
         newSession.setNavigationDelegate(new NavigationDelegate() {
             @Override
-             public GeckoResult<AllowOrDeny> onLoadRequest(GeckoSession session, NavigationDelegate.LoadRequest request) {
+            public GeckoResult<AllowOrDeny> onLoadRequest(GeckoSession session, NavigationDelegate.LoadRequest request) {
+                // Allow navigation requests for the main tab itself
                 return GeckoResult.fromValue(AllowOrDeny.ALLOW);
             }
 
+            // This onNewSession is called when the main tab (newSession) tries to open a popup/new window
             @Override
-            public GeckoResult<GeckoSession> onNewSession(GeckoSession session, String uri) {
-                Log.d(TAG, "NavigationDelegate: onNewSession called for URI: " + uri);
+            public GeckoResult<GeckoSession> onNewSession(GeckoSession originatingSession, String uri) {
+                Log.d(TAG, "createNewTab NavDelegate: onNewSession called for URI: " + uri + " from session: " + sessionUrlMap.getOrDefault(originatingSession, "N/A"));
 
-                GeckoSession newPopupWindowSession = new GeckoSession();
-                // DO NOT CALL newPopupWindowSession.open(runtime); HERE.
-                // GeckoView is expected to open the session that is returned.
+                // 1. Create the GeckoSession object for the new tab/popup.
+                //    DO NOT CALL .open(runtime) on it here. GeckoView will do that.
+                final GeckoSession newTabSession = new GeckoSession();
 
-                newPopupWindowSession.setProgressDelegate(new ProgressDelegate() {
+                // 2. Configure its delegates:
+                newTabSession.setProgressDelegate(new ProgressDelegate() {
                     @Override
-                    public void onProgressChange(GeckoSession popupSession, int progress) {
-                        Log.v(TAG, "Popup session progress: " + progress + "% for " + sessionUrlMap.getOrDefault(popupSession, "Unknown URI"));
+                    public void onProgressChange(GeckoSession session, int progress) {
+                        if (session == getActiveSession()) {
+                            progressBar.setProgress(progress);
+                            progressBar.setVisibility(progress == 100 ? View.GONE : View.VISIBLE);
+                        }
+                        Log.v(TAG, "NewTab/Popup Progress: " + progress + "% for " + sessionUrlMap.getOrDefault(session, "Unknown URI"));
                     }
                 });
 
-                newPopupWindowSession.setNavigationDelegate(new NavigationDelegate() {
+                newTabSession.setNavigationDelegate(new NavigationDelegate() {
                     @Override
-                    public void onLocationChange(GeckoSession popupSession, String url, List<PermissionDelegate.ContentPermission> perms, Boolean hasUserGesture) {
-                        Log.d(TAG, "Popup onLocationChange: " + url);
-                        // Update the map for the new popup session
-                        sessionUrlMap.put(popupSession, url);
-                        // If this popup becomes the active session, update the main URL bar
-                        if (popupSession == getActiveSession()) {
-                            runOnUiThread(() -> {
-                                urlBar.setText(url);
-                                if (!isControlBarExpanded) {
-                                    minimizedUrlBar.setText(url);
-                                }
-                            });
-                        }
-                    }
-                     @Override
-                     public GeckoResult<AllowOrDeny> onLoadRequest(GeckoSession popupSession, NavigationDelegate.LoadRequest request) {
+                    public GeckoResult<AllowOrDeny> onLoadRequest(GeckoSession session, NavigationDelegate.LoadRequest request) {
+                        Log.d(TAG, "Popup's NavDelegate: onLoadRequest for " + request.uri);
                         return GeckoResult.fromValue(AllowOrDeny.ALLOW);
                     }
+
+                    @Override
+                    public GeckoResult<GeckoSession> onNewSession(GeckoSession currentPopupSession, String newUriFromPopup) {
+                        Log.i(TAG, "Popup's NavDelegate: Allowing nested popup from " + newUriFromPopup + " (no domain restriction).");
+                        final GeckoSession grandChildSession = new GeckoSession();
+
+                        grandChildSession.setProgressDelegate(new ProgressDelegate() {
+                            @Override
+                            public void onProgressChange(GeckoSession session, int progress) {
+                                if (session == getActiveSession()) {
+                                    progressBar.setProgress(progress);
+                                    progressBar.setVisibility(progress == 100 ? View.GONE : View.VISIBLE);
+                                }
+                                Log.v(TAG, "GrandChildPopup Progress: " + progress + "% for " + sessionUrlMap.getOrDefault(session, "Unknown URI"));
+                            }
+                        });
+
+                        grandChildSession.setNavigationDelegate(new NavigationDelegate() {
+                            @Override
+                            public GeckoResult<AllowOrDeny> onLoadRequest(GeckoSession session, NavigationDelegate.LoadRequest request) {
+                                return GeckoResult.fromValue(AllowOrDeny.ALLOW);
+                            }
+                            @Override
+                            public GeckoResult<GeckoSession> onNewSession(GeckoSession session, String uri) {
+                                Log.w(TAG, "GrandChildPopup's NavDelegate: Blocking further (3rd level) nested popup: " + uri);
+                                Toast.makeText(MainActivity.this, "Further nested popups are blocked.", Toast.LENGTH_SHORT).show();
+                                return null; // Block 3rd level popups
+                            }
+                        });
+
+                        grandChildSession.setContentDelegate(new ContentDelegate() {
+                            @Override
+                            public void onFullScreen(GeckoSession session, boolean fullScreen) {
+                                if (session == getActiveSession()) { runOnUiThread(() -> { if (fullScreen) enterFullScreen(); else exitFullScreen(); }); }
+                            }
+                            @Override
+                            public void onExternalResponse(GeckoSession session, org.mozilla.geckoview.WebResponse response) {
+                                runOnUiThread(() -> handleDownloadResponse(response));
+                            }
+                            @Override
+                            public void onCloseRequest(GeckoSession session) {
+                                Log.d(TAG, "GrandChildPopup's ContentDelegate: onCloseRequest for " + sessionUrlMap.getOrDefault(session, "N/A"));
+                                int indexToClose = geckoSessionList.indexOf(session);
+                                if (indexToClose != -1) { closeTab(indexToClose); } else { session.close(); }
+                            }
+                        });
+
+                        grandChildSession.setPromptDelegate(MainActivity.this);
+                        grandChildSession.setScrollDelegate(MainActivity.this);
+
+                        synchronized (geckoSessionList) { geckoSessionList.add(grandChildSession); }
+                        sessionUrlMap.put(grandChildSession, newUriFromPopup != null ? newUriFromPopup : "about:blank");
+
+                        final int newGrandChildIndex = geckoSessionList.indexOf(grandChildSession);
+                        if (newGrandChildIndex != -1) {
+                            runOnUiThread(() -> {
+                                Log.d(TAG, "Popup's NavDelegate: Switching to grandchild tab: " + newGrandChildIndex + " for URI: " + newUriFromPopup);
+                                switchToTab(newGrandChildIndex);
+                            });
+                        } else {
+                            Log.e(TAG, "Popup's NavDelegate: Grandchild session not found for URI: " + newUriFromPopup);
+                            if (newUriFromPopup != null) grandChildSession.loadUri(newUriFromPopup);
+                        }
+                        return GeckoResult.fromValue(grandChildSession);
+                    }
                 });
 
-                 newPopupWindowSession.setContentDelegate(new ContentDelegate() {
+                newTabSession.setContentDelegate(new ContentDelegate() {
                     @Override
-                    public void onExternalResponse(GeckoSession popupSession, org.mozilla.geckoview.WebResponse response) {
+                    public void onFullScreen(GeckoSession session, boolean fullScreen) {
+                        if (session == getActiveSession()) { runOnUiThread(() -> { if (fullScreen) enterFullScreen(); else exitFullScreen(); }); }
+                    }
+                    @Override
+                    public void onExternalResponse(GeckoSession session, org.mozilla.geckoview.WebResponse response) {
                         runOnUiThread(() -> handleDownloadResponse(response));
                     }
-                     @Override
-                     public void onCloseRequest(GeckoSession popupSession) {
-                         Log.d(TAG, "Popup onCloseRequest received. Closing session for URI: " + sessionUrlMap.getOrDefault(popupSession, "Unknown URI"));
-                         int indexToClose = geckoSessionList.indexOf(popupSession);
-                         if (indexToClose != -1) {
-                             closeTab(indexToClose);
-                         } else {
-                             popupSession.close();
-                         }
-                     }
-                });
-
-                newPopupWindowSession.setPromptDelegate(new PromptDelegate() {
                     @Override
-                    public GeckoResult<PromptResponse> onSharePrompt(GeckoSession session, SharePrompt prompt) {
-                        Log.d(TAG, "ANON_PD_POPUP: onSharePrompt: URI: " + prompt.uri + ", Title: " + prompt.title + ", Text: " + prompt.text);
-                        Intent sendIntent = new Intent();
-                        sendIntent.setAction(Intent.ACTION_SEND);
-                        String shareText = prompt.text;
-                        if (prompt.uri != null && !prompt.uri.isEmpty()) {
-                            shareText = (prompt.text != null ? prompt.text : "") + "\n" + prompt.uri;
-                        }
-                        sendIntent.putExtra(Intent.EXTRA_TEXT, shareText);
-                        if (prompt.title != null && !prompt.title.isEmpty()) {
-                            sendIntent.putExtra(Intent.EXTRA_SUBJECT, prompt.title);
-                        }
-                        sendIntent.setType("text/plain");
-                        try {
-                            MainActivity.this.startActivity(Intent.createChooser(sendIntent, "Share via"));
-                            // For SharePrompt, confirm() takes a SharePrompt.Result
-                            // Assuming this was previously correct, just ensure it's not completing a GeckoResult with null directly.
-                            // If onSharePrompt itself returns a GeckoResult, that GeckoResult should be completed.
-                            // The snippet showed 'return null;' for onSharePrompt which is also problematic if GeckoView expects a GeckoResult.
-                            // However, the immediate crash is from onAlertPrompt. Let's focus there.
-                            // This snippet doesn't show onSharePrompt returning a GeckoResult so this line is a direct call.
-                            // prompt.confirm(SharePrompt.Result.SUCCESS); // This line does not complete a GeckoResult.
-                        } catch (Exception e) {
-                            Log.e(TAG, "ANON_PD_POPUP: Error starting share activity", e);
-                            // prompt.confirm(SharePrompt.Result.FAILURE);
-                        }
-                        // onSharePrompt in anonymous delegate returning null is an issue if GeckoView expects a result.
-                        // For now, let's assume it should return a completed result or be refactored later.
-                        // We will create a dummy completed result for now to avoid crashes from onSharePrompt if it's called.
-                        GeckoResult<PromptResponse> shareResult = new GeckoResult<>();
-                        if (prompt != null) { // Check if prompt is not null
-                           shareResult.complete(prompt.dismiss()); // Dismiss by default if not handled properly
+                    public void onCloseRequest(GeckoSession session) { // window.close() in the new tab
+                        Log.d(TAG, "Popup's ContentDelegate: onCloseRequest for session " + sessionUrlMap.getOrDefault(session, "N/A"));
+                        int indexToClose = geckoSessionList.indexOf(session);
+                        if (indexToClose != -1) {
+                            closeTab(indexToClose);
                         } else {
-                           shareResult.completeExceptionally(new NullPointerException("SharePrompt was null"));
+                            session.close();
                         }
-                        return shareResult; 
-                    }
-
-                    @Override
-                    public GeckoResult<PromptResponse> onAlertPrompt(GeckoSession session, AlertPrompt prompt) {
-                        Log.d(TAG, "MAIN ACTIVITY onAlertPrompt: Title=" + prompt.title + ", Message=" + prompt.message);
-                        
-                        final GeckoResult<PromptResponse> result = new GeckoResult<>();
-                        final AlertPrompt currentPrompt = prompt;
-
-                        runOnUiThread(() -> {
-                            if (MainActivity.this.isFinishing() || MainActivity.this.isDestroyed()) {
-                                result.complete(currentPrompt.dismiss());
-                                return;
-                            }
-
-                            new AlertDialog.Builder(MainActivity.this)
-                                .setTitle(currentPrompt.title)
-                                .setMessage(currentPrompt.message)
-                                .setPositiveButton(android.R.string.ok, (dialog, which) -> {
-                                    result.complete(currentPrompt.dismiss()); // Use dismiss() for OK
-                                })
-                                .setOnDismissListener(dialog -> {
-                                    result.complete(currentPrompt.dismiss()); // Use dismiss() for cancel/dismiss
-                                })
-                                .setCancelable(true)
-                                .show();
-                        });
-                        return result;
-                    }
-
-                    @Override
-                    public GeckoResult<PromptResponse> onAuthPrompt(GeckoSession session, AuthPrompt prompt) {
-                        Log.d(TAG, "onAuthPrompt: Title: " + prompt.title + ", Message: " + prompt.message + ", Options: " + prompt.authOptions);
-
-                        final GeckoResult<PromptResponse> result = new GeckoResult<>();
-
-                        runOnUiThread(() -> {
-                            // Create layout for username and password input
-                            LinearLayout layout = new LinearLayout(MainActivity.this);
-                            layout.setOrientation(LinearLayout.VERTICAL);
-                            layout.setPadding(50, 0, 50, 0); // Add some padding
-
-                            final EditText usernameInput = new EditText(MainActivity.this);
-                            usernameInput.setHint("Username");
-                            // Removed usernameInput.setText(prompt.username); as prompt.username is not a valid field
-                            layout.addView(usernameInput);
-
-                            final EditText passwordInput = new EditText(MainActivity.this);
-                            passwordInput.setHint("Password");
-                            passwordInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
-                            layout.addView(passwordInput);
-
-                            new AlertDialog.Builder(MainActivity.this)
-                                .setTitle(prompt.title != null && !prompt.title.isEmpty() ? prompt.title : "Authentication Required")
-                                .setMessage(prompt.message)
-                                .setView(layout) // Set the custom layout
-                                .setPositiveButton(android.R.string.ok, (dialog, which) -> {
-                                    String username = usernameInput.getText().toString();
-                                    String password = passwordInput.getText().toString();
-                                    result.complete(prompt.confirm(username, password)); // Confirm with entered credentials
-                                })
-                                .setNegativeButton(android.R.string.cancel, (dialog, which) -> {
-                                    result.complete(prompt.dismiss()); // Use prompt.dismiss() for AuthPrompt cancellation
-                                })
-                                .setOnCancelListener(dialog -> {
-                                     // Removed !result.isDone() check as it's not a valid method
-                                     result.complete(prompt.dismiss()); // Use prompt.dismiss() on dialog dismissal
-                                })
-                                .show();
-                        });
-
-                        return result;
-                    }
-
-                    @Override
-                    public GeckoResult<PromptResponse> onBeforeUnloadPrompt(GeckoSession session, BeforeUnloadPrompt prompt) {
-                        Log.d(TAG, "ANON_PD_POPUP: BeforeUnload prompt. Title: " + prompt.title);
-                        return GeckoResult.fromValue(prompt.confirm(AllowOrDeny.ALLOW)); 
-                    }
-
-                    @Override
-                    public GeckoResult<PromptResponse> onButtonPrompt(GeckoSession session, ButtonPrompt prompt) {
-                        Log.d(TAG, "ANON_PD_POPUP: onButtonPrompt: Title: " + prompt.title + ", Message: " + prompt.message);
-                        // ButtonPrompt does not have a 'choices' field for the anonymous delegate.
-                        // It's typically for confirm/cancel style dialogs.
-
-                        final GeckoResult<PromptResponse> result = new GeckoResult<>();
-                        new AlertDialog.Builder(MainActivity.this)
-                            .setTitle(prompt.title)
-                            .setMessage(prompt.message)
-                            .setPositiveButton(android.R.string.ok, (dialog, which) -> {
-                                result.complete(prompt.confirm(GeckoSession.PromptDelegate.ButtonPrompt.Type.POSITIVE));
-                            })
-                            .setNegativeButton(android.R.string.cancel, (dialog, which) -> {
-                                result.complete(prompt.confirm(GeckoSession.PromptDelegate.ButtonPrompt.Type.NEGATIVE));
-                            })
-                            .setOnCancelListener(dialog -> {
-                                // Removed !result.isDone() check as it's not a valid method
-                                result.complete(prompt.dismiss());
-                            })
-                            .show();
-                        return result;
-                    }
-
-                    @Override
-                    public GeckoResult<PromptResponse> onColorPrompt(GeckoSession session, ColorPrompt prompt) {
-                        Log.d(TAG, "ANON_PD_POPUP: onColorPrompt: Title=" + prompt.title + ", DefaultValue=" + prompt.defaultValue);
-
-                        final ColorPrompt currentPrompt = prompt; // Use local variable
-                        final GeckoResult<PromptResponse> localPendingGeckoResult = new GeckoResult<>(); // Use local variable
-
-                        runOnUiThread(() -> {
-                            if (currentPrompt == null) {
-                                Log.e(TAG, "ANON_PD_POPUP: onColorPrompt: currentPrompt is null in runOnUiThread before showing dialog.");
-                                if (localPendingGeckoResult != null) {
-                                    localPendingGeckoResult.complete(null); // Or some error response
-                                }
-                                return;
-                            }
-
-                            // For displaying the color, convert int to hex string
-                            String hexColor = String.format("#%08X", currentPrompt.defaultValue); // ARGB
-
-                            new AlertDialog.Builder(MainActivity.this)
-                                .setTitle(currentPrompt.title != null ? currentPrompt.title : "Choose Color")
-                                .setMessage("Suggested color: " + hexColor)
-                                .setPositiveButton("OK", (dialog, which) -> {
-                                    PromptResponse response = null;
-                                    if (currentPrompt != null) {
-                                        Log.d(TAG, "ANON_PD_POPUP: onColorPrompt: OK clicked, confirming with default value: " + hexColor);
-                                        response = currentPrompt.confirm(currentPrompt.defaultValue);
-                                    }
-                                    if (localPendingGeckoResult != null) {
-                                        localPendingGeckoResult.complete(response);
-                                    }
-                                    // Do not nullify MainActivity fields here
-                                })
-                                .setNegativeButton(android.R.string.cancel, (dialog, which) -> {
-                                    PromptResponse response = null;
-                                    if (currentPrompt != null) {
-                                        Log.d(TAG, "ANON_PD_POPUP: onColorPrompt: Cancel clicked, dismissing.");
-                                        response = currentPrompt.dismiss();
-                                    }
-                                    if (localPendingGeckoResult != null) {
-                                        localPendingGeckoResult.complete(response);
-                                    }
-                                    // Do not nullify MainActivity fields here
-                                })
-                                .setOnCancelListener(dialog -> { // Handles back button or touch outside
-                                    PromptResponse response = null;
-                                    if (currentPrompt != null) {
-                                        Log.d(TAG, "ANON_PD_POPUP: onColorPrompt: Dialog cancelled, dismissing.");
-                                        response = currentPrompt.dismiss();
-                                    }
-                                    if (localPendingGeckoResult != null) {
-                                        localPendingGeckoResult.complete(response);
-                                    }
-                                    // Do not nullify MainActivity fields here
-                                })
-                                .show();
-                        });
-
-                        return localPendingGeckoResult; // Return local result
-                    }
-
-                    @Override
-                    public GeckoResult<PromptResponse> onDateTimePrompt(GeckoSession session, DateTimePrompt prompt) {
-                        Log.d(TAG, "ANON_PD_POPUP: onDateTimePrompt: Title=" + prompt.title +
-                                   ", Type=" + prompt.type + // Log int type for anonymous delegate
-                                   ", DefaultValue=" + prompt.defaultValue);
-
-                        final DateTimePrompt currentPopupDateTimePrompt = prompt;
-                        final GeckoResult<PromptResponse> localPopupDateTimeResult = new GeckoResult<>();
-
-                        runOnUiThread(() -> {
-                            if (currentPopupDateTimePrompt == null) {
-                                Log.e(TAG, "ANON_PD_POPUP: onDateTimePrompt: currentPopupDateTimePrompt is null in runOnUiThread.");
-                                if (localPopupDateTimeResult != null) {
-                                    localPopupDateTimeResult.complete(null);
-                                }
-                                return;
-                            }
-
-                            final int type = currentPopupDateTimePrompt.type; // Use int from local prompt
-                            final String defaultValue = currentPopupDateTimePrompt.defaultValue;
-                            java.util.Calendar calendar = java.util.Calendar.getInstance();
-
-                            if (defaultValue != null && !defaultValue.isEmpty()) {
-                                try {
-                                    if (type == DateTimePrompt.Type.DATE || type == DateTimePrompt.Type.DATETIME_LOCAL || type == DateTimePrompt.Type.MONTH || type == DateTimePrompt.Type.WEEK) {
-                                        java.text.SimpleDateFormat sdf = null;
-                                        if (type == DateTimePrompt.Type.MONTH) sdf = new java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US);
-                                        else if (type == DateTimePrompt.Type.WEEK) sdf = new java.text.SimpleDateFormat("yyyy-'W'ww", java.util.Locale.US);
-                                        else sdf = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US);
-
-                                        if (type == DateTimePrompt.Type.DATETIME_LOCAL && defaultValue.contains("T")) {
-                                             String datePart = defaultValue.split("T")[0];
-                                             calendar.setTime(new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).parse(datePart));
-                                        } else if (type != DateTimePrompt.Type.TIME) { // Don't parse date for time-only
-                                             calendar.setTime(sdf.parse(defaultValue.split("T")[0]));
-                                        }
-                                    }
-                                    if ((type == DateTimePrompt.Type.TIME || type == DateTimePrompt.Type.DATETIME_LOCAL) && defaultValue.contains(":")) {
-                                        String timePart = defaultValue;
-                                        if (defaultValue.contains("T")) {
-                                           timePart = defaultValue.split("T")[1];
-                                        }
-                                        String[] timeComponents = timePart.split(":");
-                                        if (timeComponents.length >= 2) {
-                                            calendar.set(java.util.Calendar.HOUR_OF_DAY, Integer.parseInt(timeComponents[0]));
-                                            calendar.set(java.util.Calendar.MINUTE, Integer.parseInt(timeComponents[1]));
-                                        }
-                                         if (timeComponents.length == 3) { 
-                                            calendar.set(java.util.Calendar.SECOND, Integer.parseInt(timeComponents[2].substring(0,2)));
-                                        }
-                                    }
-                                } catch (java.text.ParseException e) {
-                                    Log.w(TAG, "ANON_PD_POPUP: onDateTimePrompt: Could not parse defaultValue '" + defaultValue + "' for type code '" + type + "'", e);
-                                    calendar = java.util.Calendar.getInstance(); 
-                                }
-                            }
-
-                            final int year = calendar.get(java.util.Calendar.YEAR);
-                            final int month = calendar.get(java.util.Calendar.MONTH);
-                            final int day = calendar.get(java.util.Calendar.DAY_OF_MONTH);
-                            final int hour = calendar.get(java.util.Calendar.HOUR_OF_DAY);
-                            final int minute = calendar.get(java.util.Calendar.MINUTE);
-
-                            if (type == DateTimePrompt.Type.DATE) {
-                                android.app.DatePickerDialog datePickerDialog = new android.app.DatePickerDialog(MainActivity.this,
-                                    (view, selectedYear, selectedMonth, selectedDayOfMonth) -> {
-                                        String selectedDate = String.format(java.util.Locale.US, "%04d-%02d-%02d", selectedYear, selectedMonth + 1, selectedDayOfMonth);
-                                        if (localPopupDateTimeResult != null) localPopupDateTimeResult.complete(currentPopupDateTimePrompt.confirm(selectedDate));
-                                    }, year, month, day);
-                                datePickerDialog.setOnCancelListener(dialog -> {
-                                    if (localPopupDateTimeResult != null) localPopupDateTimeResult.complete(currentPopupDateTimePrompt.dismiss());
-                                });
-                                datePickerDialog.setTitle(currentPopupDateTimePrompt.title);
-                                datePickerDialog.show();
-                            } else if (type == DateTimePrompt.Type.TIME) {
-                                android.app.TimePickerDialog timePickerDialog = new android.app.TimePickerDialog(MainActivity.this,
-                                    (view, selectedHour, selectedMinute) -> {
-                                        String selectedTime = String.format(java.util.Locale.US, "%02d:%02d", selectedHour, selectedMinute);
-                                        if (localPopupDateTimeResult != null) localPopupDateTimeResult.complete(currentPopupDateTimePrompt.confirm(selectedTime));
-                                    }, hour, minute, android.text.format.DateFormat.is24HourFormat(MainActivity.this));
-                                timePickerDialog.setOnCancelListener(dialog -> {
-                                    if (localPopupDateTimeResult != null) localPopupDateTimeResult.complete(currentPopupDateTimePrompt.dismiss());
-                                });
-                                timePickerDialog.setTitle(currentPopupDateTimePrompt.title);
-                                timePickerDialog.show();
-                            } else if (type == DateTimePrompt.Type.DATETIME_LOCAL) {
-                                android.app.DatePickerDialog datePickerDialog = new android.app.DatePickerDialog(MainActivity.this,
-                                    (view, selectedYear, selectedMonth, selectedDayOfMonth) -> {
-                                        android.app.TimePickerDialog timePickerDialog = new android.app.TimePickerDialog(MainActivity.this,
-                                            (timeView, selectedHour, selectedMinute) -> {
-                                                String selectedDateTime = String.format(java.util.Locale.US, "%04d-%02d-%02dT%02d:%02d",
-                                                    selectedYear, selectedMonth + 1, selectedDayOfMonth, selectedHour, selectedMinute);
-                                                if (localPopupDateTimeResult != null) localPopupDateTimeResult.complete(currentPopupDateTimePrompt.confirm(selectedDateTime));
-                                            }, hour, minute, android.text.format.DateFormat.is24HourFormat(MainActivity.this));
-                                        timePickerDialog.setOnCancelListener(dialog -> {
-                                            if (localPopupDateTimeResult != null) localPopupDateTimeResult.complete(currentPopupDateTimePrompt.dismiss());
-                                        });
-                                        timePickerDialog.setTitle(currentPopupDateTimePrompt.title != null && !currentPopupDateTimePrompt.title.isEmpty() ? currentPopupDateTimePrompt.title : "Select Time");
-                                        timePickerDialog.show();
-                                    }, year, month, day);
-                                datePickerDialog.setOnCancelListener(dialog -> {
-                                    if (localPopupDateTimeResult != null) localPopupDateTimeResult.complete(currentPopupDateTimePrompt.dismiss());
-                                });
-                                datePickerDialog.setTitle(currentPopupDateTimePrompt.title != null && !currentPopupDateTimePrompt.title.isEmpty() ? currentPopupDateTimePrompt.title : "Select Date");
-                                datePickerDialog.show();
-                            } else if (type == DateTimePrompt.Type.MONTH) {
-                                android.app.DatePickerDialog datePickerDialog = new android.app.DatePickerDialog(MainActivity.this,
-                                    (view, selectedYear, selectedMonth, selectedDayOfMonth) -> {
-                                        String selectedMonthStr = String.format(java.util.Locale.US, "%04d-%02d", selectedYear, selectedMonth + 1);
-                                        if (localPopupDateTimeResult != null) localPopupDateTimeResult.complete(currentPopupDateTimePrompt.confirm(selectedMonthStr));
-                                    }, year, month, day);
-                                datePickerDialog.setOnCancelListener(dialog -> {
-                                    if (localPopupDateTimeResult != null) localPopupDateTimeResult.complete(currentPopupDateTimePrompt.dismiss());
-                                });
-                                datePickerDialog.setTitle(currentPopupDateTimePrompt.title);
-                                datePickerDialog.show();
-                            } else if (type == DateTimePrompt.Type.WEEK) {
-                                Log.w(TAG, "ANON_PD_POPUP: DateTimePrompt.Type.WEEK is not fully supported. Dismissing.");
-                                android.widget.Toast.makeText(MainActivity.this, "Week selection is not fully supported.", android.widget.Toast.LENGTH_SHORT).show();
-                                if (localPopupDateTimeResult != null) localPopupDateTimeResult.complete(currentPopupDateTimePrompt.dismiss());
-                            } else {
-                                Log.w(TAG, "ANON_PD_POPUP: Unsupported DateTimePrompt type code: " + type + ". Dismissing.");
-                                android.widget.Toast.makeText(MainActivity.this, "Unsupported date/time input type.", android.widget.Toast.LENGTH_SHORT).show();
-                                if (localPopupDateTimeResult != null) localPopupDateTimeResult.complete(currentPopupDateTimePrompt.dismiss());
-                            }
-                        });
-
-                        return localPopupDateTimeResult;
-                    }
-
-                    @Override
-                    public GeckoResult<PromptResponse> onFilePrompt(GeckoSession session, FilePrompt prompt) {
-                        Log.d(TAG, "ANON_PD_POPUP: onFilePrompt received for popup, dismissing. Title: " + prompt.title);
-                        // For popups, if file uploads are not a primary concern or need separate handling,
-                        // simply dismissing is the safest to avoid conflict with main activity's file prompt logic.
-                        return GeckoResult.fromValue(prompt.dismiss());
-                    }
-
-                    @Override
-                    public GeckoResult<PromptResponse> onChoicePrompt(GeckoSession session, ChoicePrompt prompt) { 
-                        Log.d(TAG, "ANON_PD_POPUP: onChoicePrompt: Title=" + prompt.title +
-                                   ", Message=" + prompt.message +
-                                   ", Type=" + prompt.type +
-                                   ", Choices Count=" + (prompt.choices != null ? prompt.choices.length : 0));
-                        // if (prompt.choices != null) { // Original detailed logging, can be restored if needed
-                        //     Log.d(TAG, "ANON_PD_POPUP: Choices available: " + prompt.choices.length);
-                        //     for (GeckoSession.PromptDelegate.ChoicePrompt.Choice choice : prompt.choices) {
-                        //         Log.d(TAG, "ANON_PD_POPUP: Choice: Label=" + choice.label + ", ID=" + choice.id + ", Selected=" + choice.selected + ", Disabled=" + choice.disabled);
-                        //         if (choice.items != null && choice.items.length > 0) {
-                        //             Log.d(TAG, "ANON_PD_POPUP:   Sub-items present: " + choice.items.length);
-                        //         }
-                        //     }
-                        // } else {
-                        //     Log.d(TAG, "ANON_PD_POPUP: Choices array is null.");
-                        // }
-                        // return GeckoResult.fromValue(prompt.dismiss()); // REMOVE OLD STUB
-
-                        final ChoicePrompt currentPopupChoicePrompt = prompt;
-                        final GeckoResult<PromptResponse> localPopupChoiceResult = new GeckoResult<>();
-
-                        runOnUiThread(() -> {
-                            if (currentPopupChoicePrompt == null || currentPopupChoicePrompt.choices == null || currentPopupChoicePrompt.choices.length == 0) {
-                                Log.e(TAG, "ANON_PD_POPUP: onChoicePrompt: currentPopupChoicePrompt or its choices are null/empty.");
-                                PromptResponse dismissResponse = null;
-                                if(currentPopupChoicePrompt != null) dismissResponse = currentPopupChoicePrompt.dismiss();
-                                // Ensure localPopupChoiceResult is checked before completing
-                                if (localPopupChoiceResult != null) { 
-                                    localPopupChoiceResult.complete(dismissResponse);
-                                }
-                                return;
-                            }
-
-                            final Choice[] choices = currentPopupChoicePrompt.choices;
-                            final String[] displayItems = new String[choices.length];
-                            final boolean[] checkedItems = new boolean[choices.length];
-                            final int[] selectedItem = {-1}; // For single-choice
-
-                            for (int i = 0; i < choices.length; i++) {
-                                displayItems[i] = choices[i].label;
-                                if (currentPopupChoicePrompt.type == ChoicePrompt.Type.MULTIPLE) {
-                                    checkedItems[i] = choices[i].selected;
-                                } else if (choices[i].selected) {
-                                    selectedItem[0] = i;
-                                }
-                            }
-
-                            AlertDialog.Builder builder = new AlertDialog.Builder(MainActivity.this);
-                            builder.setTitle(currentPopupChoicePrompt.title);
-                            if (currentPopupChoicePrompt.message != null && !currentPopupChoicePrompt.message.isEmpty()) {
-                                builder.setMessage(currentPopupChoicePrompt.message);
-                            }
-
-                            if (currentPopupChoicePrompt.type == ChoicePrompt.Type.MULTIPLE) {
-                                builder.setMultiChoiceItems(displayItems, checkedItems, (dialog, which, isChecked) -> {
-                                    checkedItems[which] = isChecked;
-                                });
-                            } else { // SINGLE or MENU
-                                builder.setSingleChoiceItems(displayItems, selectedItem[0], (dialog, which) -> {
-                                    selectedItem[0] = which;
-                                });
-                            }
-
-                            builder.setPositiveButton(android.R.string.ok, (dialog, which) -> {
-                                PromptResponse response = null;
-                                if (MainActivity.this.pendingChoicePrompt != null) {
-                                    ArrayList<String> selectedIds = new ArrayList<>();
-                                    if (MainActivity.this.pendingChoicePrompt.type == ChoicePrompt.Type.MULTIPLE) {
-                                        for (int i = 0; i < choices.length; i++) {
-                                            if (checkedItems[i] && choices[i].id != null) {
-                                                selectedIds.add(choices[i].id);
-                                            }
-                                        }
-                                    } else { // SINGLE or MENU
-                                        if (selectedItem[0] != -1 && selectedItem[0] < choices.length && choices[selectedItem[0]].id != null) {
-                                            selectedIds.add(choices[selectedItem[0]].id);
-                                        }
-                                    }
-                                    Log.d(TAG, "ANON_PD_POPUP: onChoicePrompt: Confirming with selected IDs: " + selectedIds);
-                                    response = MainActivity.this.pendingChoicePrompt.confirm(selectedIds.toArray(new String[0]));
-                                }
-                                if (MainActivity.this.pendingGeckoResultForChoicePrompt != null) {
-                                    MainActivity.this.pendingGeckoResultForChoicePrompt.complete(response);
-                                }
-                                MainActivity.this.pendingChoicePrompt = null;
-                                MainActivity.this.pendingGeckoResultForChoicePrompt = null;
-                            });
-
-                            builder.setNegativeButton(android.R.string.cancel, (dialog, which) -> {
-                                PromptResponse response = null;
-                                if (MainActivity.this.pendingChoicePrompt != null) {
-                                    response = MainActivity.this.pendingChoicePrompt.dismiss();
-                                }
-                                if (MainActivity.this.pendingGeckoResultForChoicePrompt != null) {
-                                    MainActivity.this.pendingGeckoResultForChoicePrompt.complete(response);
-                                }
-                                MainActivity.this.pendingChoicePrompt = null;
-                                MainActivity.this.pendingGeckoResultForChoicePrompt = null;
-                            });
-
-                            builder.setOnCancelListener(dialog -> {
-                                PromptResponse response = null;
-                                if (MainActivity.this.pendingChoicePrompt != null) {
-                                    response = MainActivity.this.pendingChoicePrompt.dismiss();
-                                }
-                                if (MainActivity.this.pendingGeckoResultForChoicePrompt != null) {
-                                    MainActivity.this.pendingGeckoResultForChoicePrompt.complete(response);
-                                }
-                                MainActivity.this.pendingChoicePrompt = null;
-                                MainActivity.this.pendingGeckoResultForChoicePrompt = null;
-                            });
-
-                            builder.show();
-                        });
-
-                        return localPopupChoiceResult;
-                    }
-
-                    @Override
-                    public GeckoResult<PromptResponse> onTextPrompt(GeckoSession session, TextPrompt prompt) {
-                        Log.d(TAG, "onTextPrompt: Title: " + prompt.title + ", Message: " + prompt.message + ", DefaultValue: " + prompt.defaultValue);
-
-                        final GeckoResult<PromptResponse> result = new GeckoResult<>();
-                        
-                        // Use runOnUiThread as AlertDialog must be shown on the UI thread
-                        runOnUiThread(() -> {
-                            final EditText input = new EditText(MainActivity.this);
-                            input.setText(prompt.defaultValue);
-                            input.setHint("Enter text"); // Optional hint
-
-                            new AlertDialog.Builder(MainActivity.this)
-                                .setTitle(prompt.title)
-                                .setMessage(prompt.message)
-                                .setView(input) // Set the EditText as the dialog view
-                                .setPositiveButton(android.R.string.ok, (dialog, which) -> {
-                                    String enteredText = input.getText().toString();
-                                    result.complete(prompt.confirm(enteredText)); // Confirm with entered text
-                                })
-                                .setNegativeButton(android.R.string.cancel, (dialog, which) -> {
-                                    result.complete(prompt.dismiss()); // Dismiss on cancel
-                                })
-                                .setOnCancelListener(dialog -> {
-                                    // Handle dialog dismissal (e.g., back button press)
-                                    // Removed !result.isDone() check as it's not a valid method
-                                    result.complete(prompt.dismiss());
-                                })
-                                .show();
-                        });
-
-                        return result; // Return the GeckoResult immediately
                     }
                 });
 
-                // Add to our list of sessions
-                // It's important that the session is in the list before switchToTab is called
-                // if switchToTab relies on the session being in the list.
-                if (!geckoSessionList.contains(newPopupWindowSession)) {
-                    geckoSessionList.add(newPopupWindowSession);
+                // ***** THIS IS THE CRITICAL FIX *****
+                newTabSession.setPromptDelegate(MainActivity.this); 
+                newTabSession.setScrollDelegate(MainActivity.this); 
+                // ***** END CRITICAL FIX *****
+
+                // 3. Add to tab management list (ensure thread safety if needed)
+                synchronized (geckoSessionList) {
+                    geckoSessionList.add(newTabSession);
                 }
-                sessionUrlMap.put(newPopupWindowSession, uri); // Store its initial URL (or intended URL)
+                sessionUrlMap.put(newTabSession, uri != null ? uri : "about:blank");
 
-                // Load the requested URI. This will be queued until the session is opened by GeckoView.
-                newPopupWindowSession.loadUri(uri);
-                Log.d(TAG, "New session configured by onNewSession, URI set to: " + uri);
-                
-                final int newTabIndex = geckoSessionList.indexOf(newPopupWindowSession);
-                if (newTabIndex != -1) { // Ensure it was added
-                    runOnUiThread(() -> switchToTab(newTabIndex));
-                } else {
-                    // This case should ideally not happen if logic is correct
-                    Log.e(TAG, "onNewSession: newPopupWindowSession not found in list after adding. Cannot switch.");
-                }
-                
-                // Return the session instance. GeckoView will take care of opening it.
-                return GeckoResult.fromValue(newPopupWindowSession);
-            }
-
-            @Override
-             public void onLocationChange(GeckoSession session, String url, List<PermissionDelegate.ContentPermission> perms, Boolean hasUserGesture) {
-                 Log.d(TAG, "onLocationChange (Session: " + geckoSessionList.indexOf(session) + "): " + url);
-                 sessionUrlMap.put(session, url);
-                 if (session == getActiveSession()) {
-                     runOnUiThread(() -> {
-                         urlBar.setText(url);
-                         if (!isControlBarExpanded) {
-                             minimizedUrlBar.setText(url);
-                         }
-                     });
-                 }
-             }
-
-            public void onCanGoBack(GeckoSession session, boolean canGoBack) {
-                  Log.d(TAG, "onCanGoBack (Session: " + geckoSessionList.indexOf(session) + "): " + canGoBack);
-                 if (session == getActiveSession()) {
+                // 4. UI: Switch to this new tab and update UI elements.
+                final int newTabIndex = geckoSessionList.indexOf(newTabSession);
+                if (newTabIndex != -1) {
                     runOnUiThread(() -> {
-                backButton.setEnabled(canGoBack);
-                         minimizedBackButton.setEnabled(canGoBack);
+                        Log.d(TAG, "createNewTab NavDelegate: Switching to new tab index: " + newTabIndex + " for URI: " + uri);
+                        switchToTab(newTabIndex);
                     });
-                 }
-            }
+                } else {
+                    Log.e(TAG, "createNewTab NavDelegate: New tab session not found in list for URI: " + uri);
+                    if (uri != null) {
+                        newTabSession.loadUri(uri);
+                    }
+                }
 
-            public void onCanGoForward(GeckoSession session, boolean canGoForward) {
-                 Log.d(TAG, "onCanGoForward (Session: " + geckoSessionList.indexOf(session) + "): " + canGoForward);
-                 if (session == getActiveSession()) {
-                     runOnUiThread(() -> {
-                forwardButton.setEnabled(canGoForward);
-                         minimizedForwardButton.setEnabled(canGoForward);
-                     });
-                 }
-             }
-
-             @Override
-             public GeckoResult<String> onLoadError(GeckoSession session, String uri, WebRequestError error) {
-                 Log.e(TAG, "Load Error (Session: " + geckoSessionList.indexOf(session) + "): " + uri + ", Error: " + error.category + ":" + error.code);
-                  if (session == getActiveSession()) {
-                      runOnUiThread(() -> Toast.makeText(MainActivity.this, 
-                                                     "Load Error: " + error.category + "/" + error.code, 
-                                                     Toast.LENGTH_LONG).show());
-                  }
-                 return null;
-             }
-             // TODO: Implement onNewSession if popup windows should open new tabs
+                Log.d(TAG, "createNewTab NavDelegate: Returning new GeckoSession to GeckoView for URI: " + uri);
+                return GeckoResult.fromValue(newTabSession);
+            } // End of onNewSession for the main tab's NavigationDelegate
         });
 
         newSession.setContentDelegate(new ContentDelegate() {
@@ -2302,10 +1829,14 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         
         final GeckoResult<PromptResponse> result = new GeckoResult<>();
         final AlertPrompt currentPrompt = prompt;
+        final boolean[] handled = {false}; // Prevent double-completion
 
         runOnUiThread(() -> {
             if (MainActivity.this.isFinishing() || MainActivity.this.isDestroyed()) {
-                result.complete(currentPrompt.dismiss());
+                if (!handled[0]) {
+                    handled[0] = true;
+                    result.complete(currentPrompt.dismiss());
+                }
                 return;
             }
 
@@ -2313,10 +1844,16 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 .setTitle(currentPrompt.title)
                 .setMessage(currentPrompt.message)
                 .setPositiveButton(android.R.string.ok, (dialog, which) -> {
-                    result.complete(currentPrompt.dismiss()); // Use dismiss() for OK
+                    if (!handled[0]) {
+                        handled[0] = true;
+                        result.complete(currentPrompt.dismiss()); // Use dismiss() for OK
+                    }
                 })
                 .setOnDismissListener(dialog -> {
-                    result.complete(currentPrompt.dismiss()); // Use dismiss() for cancel/dismiss
+                    if (!handled[0]) {
+                        handled[0] = true;
+                        result.complete(currentPrompt.dismiss()); // Use dismiss() for cancel/dismiss
+                    }
                 })
                 .setCancelable(true)
                 .show();
