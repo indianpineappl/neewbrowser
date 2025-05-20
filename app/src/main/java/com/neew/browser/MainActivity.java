@@ -108,6 +108,13 @@ import java.text.SimpleDateFormat;
 import androidx.appcompat.app.AlertDialog;
 import android.app.DatePickerDialog;
 import android.app.TimePickerDialog;
+import android.app.Dialog;
+import android.view.LayoutInflater;
+import android.view.Window;
+import java.text.DecimalFormat;
+import android.view.ViewTreeObserver;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 public class MainActivity extends AppCompatActivity implements ScrollDelegate, GeckoSession.PromptDelegate {
     private static final String TAG = "MainActivity";
@@ -214,10 +221,21 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private ImageButton newTabButton;
     private ImageButton tabsButton;
 
+    private static final String PREF_IMMERSIVE_MODE_ENABLED = "immersive_mode_enabled";
+    private SwitchCompat panelImmersiveSwitch;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        // Make status bar transparent and content immersive (initial setup)
+        if (android.os.Build.VERSION.SDK_INT >= 21) {
+            getWindow().setStatusBarColor(android.graphics.Color.TRANSPARENT);
+            getWindow().getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+            );
+        }
 
         // Get the decor view for fullscreen control
         decorView = getWindow().getDecorView();
@@ -254,6 +272,17 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         panelUBlockSwitch = findViewById(R.id.panelUBlockSwitch);
         panelApplyButton = findViewById(R.id.panelApplyButton);
         panelCancelButton = findViewById(R.id.panelCancelButton);
+
+        panelImmersiveSwitch = findViewById(R.id.panelImmersiveSwitch);
+        // Set Immersive Mode enabled by default (true)
+        boolean immersiveDefault = prefs.getBoolean(PREF_IMMERSIVE_MODE_ENABLED, true);
+        panelImmersiveSwitch.setChecked(immersiveDefault);
+        panelImmersiveSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            prefs.edit().putBoolean(PREF_IMMERSIVE_MODE_ENABLED, isChecked).apply();
+            applyImmersiveMode(isChecked);
+        });
+        // Apply immersive mode on startup
+        applyImmersiveMode(panelImmersiveSwitch.isChecked());
 
         // Initialize Gecko Runtime (only once)
         if (runtime == null) {
@@ -474,6 +503,184 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             }
         };
         registerReceiver(downloadCompleteReceiver, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
+
+        checkAndShowStorageWarning();
+    }
+
+    private void checkAndShowStorageWarning() {
+        long totalBytes = getAppUsedStorageBytes();
+        Log.d(TAG, "[StorageDebug] App used storage: " + totalBytes + " bytes (" + (totalBytes / (1024.0 * 1024.0)) + " MB)");
+        if (totalBytes >= 400L * 1024 * 1024) { // 400 MB
+            Log.d(TAG, "[StorageDebug] Threshold exceeded, showing storage warning dialog.");
+            showStorageWarningDialog();
+        } else {
+            Log.d(TAG, "[StorageDebug] Threshold not reached, no dialog.");
+        }
+    }
+
+    private long getAppUsedStorageBytes() {
+        long total = 0;
+        total += getDirSize(getFilesDir());
+        total += getDirSize(getCacheDir());
+        // Add databases
+        String[] dbList = databaseList();
+        for (String db : dbList) {
+            File dbFile = getDatabasePath(db);
+            if (dbFile.exists()) total += dbFile.length();
+        }
+        // Add shared prefs
+        File prefsDir = new File(getApplicationInfo().dataDir, "shared_prefs");
+        if (prefsDir.exists()) total += getDirSize(prefsDir);
+        return total;
+    }
+
+    private long getDirSize(File dir) {
+        long size = 0;
+        if (dir != null && dir.exists()) {
+            File[] files = dir.listFiles();
+            if (files != null) {
+                for (File f : files) {
+                    if (f.isFile()) size += f.length();
+                    else size += getDirSize(f);
+                }
+            }
+        }
+        return size;
+    }
+
+    private void showStorageWarningDialog() {
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        dialog.setContentView(R.layout.dialog_storage_warning);
+        dialog.setCancelable(false);
+        dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+
+        // Adjust dialog width
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams();
+        lp.copyFrom(dialog.getWindow().getAttributes());
+        lp.width = (int) (getResources().getDisplayMetrics().widthPixels * 0.80);
+        lp.height = WindowManager.LayoutParams.WRAP_CONTENT;
+        dialog.getWindow().setAttributes(lp);
+
+        dialog.findViewById(R.id.btnClose).setOnClickListener(v -> dialog.dismiss());
+        dialog.findViewById(R.id.btnCleanUp).setOnClickListener(v -> {
+            int[] result = new int[1];
+            long[] size = new long[1];
+            result[0] = countFiles(getCacheDir());
+            size[0] = getDirSize(getCacheDir());
+            deleteDir(getCacheDir());
+            dialog.dismiss();
+            showCleanupDoneDialog(result[0], size[0]);
+        });
+        dialog.findViewById(R.id.btnDeepClean).setOnClickListener(v -> {
+            dialog.dismiss();
+            showDeepCleanWarningDialog();
+        });
+        dialog.show();
+    }
+
+    private int countFiles(File dir) {
+        int count = 0;
+        if (dir != null && dir.exists()) {
+            File[] files = dir.listFiles();
+            if (files != null) {
+                for (File f : files) {
+                    if (f.isFile()) count++;
+                    else count += countFiles(f);
+                }
+            }
+        }
+        return count;
+    }
+
+    private void deleteDir(File dir) {
+        if (dir != null && dir.exists()) {
+            File[] files = dir.listFiles();
+            if (files != null) {
+                for (File f : files) {
+                    if (f.isDirectory()) deleteDir(f);
+                    else f.delete();
+                }
+            }
+        }
+    }
+
+    private void showCleanupDoneDialog(int fileCount, long sizeBytes) {
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        dialog.setContentView(R.layout.dialog_storage_cleanup_done);
+        dialog.setCancelable(false);
+        dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+
+        // Adjust dialog width
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams();
+        lp.copyFrom(dialog.getWindow().getAttributes());
+        lp.width = (int) (getResources().getDisplayMetrics().widthPixels * 0.80);
+        lp.height = WindowManager.LayoutParams.WRAP_CONTENT;
+        dialog.getWindow().setAttributes(lp);
+
+        String sizeMb = new DecimalFormat("#").format(sizeBytes / (1024.0 * 1024.0));
+        String desc = "Deleted " + fileCount + " files & reduced " + sizeMb + " MB storage. Now enjoy faster browser.";
+        ((TextView) dialog.findViewById(R.id.tvDescription)).setText(desc);
+        dialog.findViewById(R.id.btnOk).setOnClickListener(v -> dialog.dismiss());
+        dialog.show();
+    }
+
+    private void showDeepCleanWarningDialog() {
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        dialog.setContentView(R.layout.dialog_storage_deepclean_warning);
+        dialog.setCancelable(false);
+        dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+
+        // Adjust dialog width
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams();
+        lp.copyFrom(dialog.getWindow().getAttributes());
+        lp.width = (int) (getResources().getDisplayMetrics().widthPixels * 0.80);
+        lp.height = WindowManager.LayoutParams.WRAP_CONTENT;
+        dialog.getWindow().setAttributes(lp);
+
+        dialog.findViewById(R.id.btnOk).setOnClickListener(v -> {
+            dialog.dismiss();
+            performDeepClean();
+        });
+        dialog.findViewById(R.id.btnCancel).setOnClickListener(v -> dialog.dismiss());
+        dialog.show();
+    }
+
+    private void performDeepClean() {
+        Log.d(TAG, "[StorageDebug] performDeepClean CALLED");
+        // Delete user data: files, cache, prefs, dbs
+        deleteDir(getFilesDir());
+        deleteDir(getCacheDir());
+        // Delete shared prefs
+        File prefsDir = new File(getApplicationInfo().dataDir, "shared_prefs");
+        deleteDir(prefsDir);
+        // Delete databases
+        String[] dbList = databaseList();
+        for (String db : dbList) {
+            File dbFile = getDatabasePath(db);
+            if (dbFile.exists()) dbFile.delete();
+        }
+        showDeepCleanDoneDialog();
+    }
+
+    private void showDeepCleanDoneDialog() {
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        dialog.setContentView(R.layout.dialog_storage_deepclean_done);
+        dialog.setCancelable(false);
+        dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+
+        // Adjust dialog width
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams();
+        lp.copyFrom(dialog.getWindow().getAttributes());
+        lp.width = (int) (getResources().getDisplayMetrics().widthPixels * 0.80);
+        lp.height = WindowManager.LayoutParams.WRAP_CONTENT;
+        dialog.getWindow().setAttributes(lp);
+
+        dialog.findViewById(R.id.btnOk).setOnClickListener(v -> dialog.dismiss());
+        dialog.show();
     }
 
     // Helper to get the currently active session
@@ -663,9 +870,27 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         // This is the NavigationDelegate for the tab created by createNewTab()
         newSession.setNavigationDelegate(new NavigationDelegate() {
             @Override
-            public GeckoResult<AllowOrDeny> onLoadRequest(GeckoSession session, NavigationDelegate.LoadRequest request) {
+             public GeckoResult<AllowOrDeny> onLoadRequest(GeckoSession session, NavigationDelegate.LoadRequest request) {
                 // Allow navigation requests for the main tab itself
                 return GeckoResult.fromValue(AllowOrDeny.ALLOW);
+            }
+
+            @Override
+            public void onLocationChange(GeckoSession session, @Nullable String newUri, @NonNull List<GeckoSession.PermissionDelegate.ContentPermission> perms, @NonNull Boolean hasUserGesture) {
+                Log.d(TAG, "NavDelegate: onLocationChange for session: " + sessionUrlMap.getOrDefault(session, "N/A") + " to URI: " + newUri +
+                           " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
+                if (newUri != null) {
+                    sessionUrlMap.put(session, newUri);
+                    if (session == getActiveSession()) {
+                        runOnUiThread(() -> {
+                            urlBar.setText(newUri);
+                            if (!isControlBarExpanded) {
+                                minimizedUrlBar.setText(newUri);
+                            }
+                        });
+                    }
+                    saveSessionState(); // TEST: Re-enabled
+                }
             }
 
             // This onNewSession is called when the main tab (newSession) tries to open a popup/new window
@@ -697,12 +922,30 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                     }
 
                     @Override
+                    public void onLocationChange(GeckoSession session, @Nullable String newUri, @NonNull List<GeckoSession.PermissionDelegate.ContentPermission> perms, @NonNull Boolean hasUserGesture) {
+                        Log.d(TAG, "Popup NavDelegate: onLocationChange for session: " + sessionUrlMap.getOrDefault(session, "N/A") + " to URI: " + newUri +
+                                   " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
+                        if (newUri != null) {
+                            sessionUrlMap.put(session, newUri);
+                            if (session == getActiveSession()) {
+                                runOnUiThread(() -> {
+                                    urlBar.setText(newUri);
+                                    if (!isControlBarExpanded) {
+                                        minimizedUrlBar.setText(newUri);
+                                    }
+                                });
+                            }
+                            saveSessionState(); // TEST: Re-enabled
+                        }
+                    }
+
+                    @Override
                     public GeckoResult<GeckoSession> onNewSession(GeckoSession currentPopupSession, String newUriFromPopup) {
                         Log.i(TAG, "Popup's NavDelegate: Allowing nested popup from " + newUriFromPopup + " (no domain restriction).");
                         final GeckoSession grandChildSession = new GeckoSession();
 
                         grandChildSession.setProgressDelegate(new ProgressDelegate() {
-                            @Override
+                     @Override
                             public void onProgressChange(GeckoSession session, int progress) {
                                 if (session == getActiveSession()) {
                                     progressBar.setProgress(progress);
@@ -713,11 +956,30 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         });
 
                         grandChildSession.setNavigationDelegate(new NavigationDelegate() {
-                            @Override
+                    @Override
                             public GeckoResult<AllowOrDeny> onLoadRequest(GeckoSession session, NavigationDelegate.LoadRequest request) {
                                 return GeckoResult.fromValue(AllowOrDeny.ALLOW);
                             }
-                            @Override
+
+                    @Override
+                    public void onLocationChange(GeckoSession session, @Nullable String newUri, @NonNull List<GeckoSession.PermissionDelegate.ContentPermission> perms, @NonNull Boolean hasUserGesture) {
+                        Log.d(TAG, "GrandChild NavDelegate: onLocationChange for session: " + sessionUrlMap.getOrDefault(session, "N/A") + " to URI: " + newUri +
+                                   " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
+                        if (newUri != null) {
+                            sessionUrlMap.put(session, newUri);
+                            if (session == getActiveSession()) {
+                                runOnUiThread(() -> {
+                                    urlBar.setText(newUri);
+                                    if (!isControlBarExpanded) {
+                                        minimizedUrlBar.setText(newUri);
+                                    }
+                                });
+                            }
+                            saveSessionState(); // TEST: Re-enabled
+                        }
+                    }
+
+                    @Override
                             public GeckoResult<GeckoSession> onNewSession(GeckoSession session, String uri) {
                                 Log.w(TAG, "GrandChildPopup's NavDelegate: Blocking further (3rd level) nested popup: " + uri);
                                 Toast.makeText(MainActivity.this, "Further nested popups are blocked.", Toast.LENGTH_SHORT).show();
@@ -726,15 +988,15 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         });
 
                         grandChildSession.setContentDelegate(new ContentDelegate() {
-                            @Override
+                    @Override
                             public void onFullScreen(GeckoSession session, boolean fullScreen) {
                                 if (session == getActiveSession()) { runOnUiThread(() -> { if (fullScreen) enterFullScreen(); else exitFullScreen(); }); }
                             }
-                            @Override
+                    @Override
                             public void onExternalResponse(GeckoSession session, org.mozilla.geckoview.WebResponse response) {
                                 runOnUiThread(() -> handleDownloadResponse(response));
-                            }
-                            @Override
+                    }
+                    @Override
                             public void onCloseRequest(GeckoSession session) {
                                 Log.d(TAG, "GrandChildPopup's ContentDelegate: onCloseRequest for " + sessionUrlMap.getOrDefault(session, "N/A"));
                                 int indexToClose = geckoSessionList.indexOf(session);
@@ -750,11 +1012,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
                         final int newGrandChildIndex = geckoSessionList.indexOf(grandChildSession);
                         if (newGrandChildIndex != -1) {
-                            runOnUiThread(() -> {
+                        runOnUiThread(() -> {
                                 Log.d(TAG, "Popup's NavDelegate: Switching to grandchild tab: " + newGrandChildIndex + " for URI: " + newUriFromPopup);
                                 switchToTab(newGrandChildIndex);
                             });
-                        } else {
+                            } else {
                             Log.e(TAG, "Popup's NavDelegate: Grandchild session not found for URI: " + newUriFromPopup);
                             if (newUriFromPopup != null) grandChildSession.loadUri(newUriFromPopup);
                         }
@@ -797,7 +1059,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 // 4. UI: Switch to this new tab and update UI elements.
                 final int newTabIndex = geckoSessionList.indexOf(newTabSession);
                 if (newTabIndex != -1) {
-                    runOnUiThread(() -> {
+                        runOnUiThread(() -> {
                         Log.d(TAG, "createNewTab NavDelegate: Switching to new tab index: " + newTabIndex + " for URI: " + uri);
                         switchToTab(newTabIndex);
                     });
@@ -865,7 +1127,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         } else {
             // If not switching, ensure the UI reflects the *current* active tab state
             updateUIForActiveSession(); 
-             saveSessionState(); // Save state after adding a tab
+             // saveSessionState(); // REMOVED: This was causing intermediate saves during restore
         }
     }
 
@@ -1608,7 +1870,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     }
 
     private void saveSessionState() {
-        Log.d(TAG, "Saving session state...");
+        Log.d(TAG, "[StorageDebug] saveSessionState CALLED");
         SharedPreferences.Editor editor = prefs.edit();
 
         // Save URLs
@@ -1617,27 +1879,35 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             // Use the stored URL from the map, fallback if somehow missing
             urlsToSave.add(sessionUrlMap.getOrDefault(session, "about:blank"));
         }
+        Log.d(TAG, "[StorageDebug] Saving URLs: " + urlsToSave);
         // Using Set<String> which SharedPreferences can handle directly
         editor.putStringSet(PREF_SAVED_URLS, urlsToSave);
 
-        // Save active index
-        editor.putInt(PREF_ACTIVE_INDEX, activeSessionIndex);
+        // Clamp activeSessionIndex to valid range before saving
+        int clampedActiveIndex = activeSessionIndex;
+        if (clampedActiveIndex < 0 || clampedActiveIndex >= geckoSessionList.size()) {
+            clampedActiveIndex = geckoSessionList.isEmpty() ? -1 : 0;
+        }
+        editor.putInt(PREF_ACTIVE_INDEX, clampedActiveIndex);
+        Log.d(TAG, "[StorageDebug] Saving active index: " + clampedActiveIndex);
 
         editor.apply(); // Use apply() for asynchronous saving
-        Log.d(TAG, "Session state saved. Tabs: " + urlsToSave.size() + ", Active Index: " + activeSessionIndex);
+        Log.d(TAG, "[StorageDebug] Session state saved. Tabs: " + urlsToSave.size() + ", Active Index: " + clampedActiveIndex);
     }
 
     private boolean restoreSessionState() {
-        Log.d(TAG, "Attempting to restore session state...");
+        Log.d(TAG, "[StorageDebug] restoreSessionState CALLED");
         Set<String> savedUrls = prefs.getStringSet(PREF_SAVED_URLS, null);
         int savedActiveIndex = prefs.getInt(PREF_ACTIVE_INDEX, -1);
 
+        Log.d(TAG, "[StorageDebug] Found saved URLs: " + savedUrls + ", Saved Active Index: " + savedActiveIndex);
+
         if (savedUrls == null || savedUrls.isEmpty()) {
-            Log.d(TAG, "No saved URLs found.");
+            Log.d(TAG, "[StorageDebug] No saved URLs found.");
             return false;
         }
 
-        Log.d(TAG, "Found saved state. URLs: " + savedUrls.size() + ", Active Index: " + savedActiveIndex);
+        Log.d(TAG, "[StorageDebug] Found saved state. URLs: " + savedUrls.size() + ", Active Index: " + savedActiveIndex);
 
         // Clear any potentially existing (should be empty) sessions before restoring
         geckoSessionList.clear();
@@ -1650,6 +1920,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         int restoredIndex = 0;
         for (String url : savedUrls) {
             // Create tabs but don't switch view yet
+            Log.d(TAG, "[StorageDebug] Restoring tab: " + url);
             createNewTab(url, false);
             restoredIndex++;
         }
@@ -1658,14 +1929,13 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         if (savedActiveIndex >= 0 && savedActiveIndex < geckoSessionList.size()) {
             activeSessionIndex = savedActiveIndex;
         } else if (!geckoSessionList.isEmpty()) {
-            Log.w(TAG, "Saved active index invalid, defaulting to 0.");
+            Log.w(TAG, "[StorageDebug] Saved active index invalid, defaulting to 0.");
             activeSessionIndex = 0; // Default to first tab if index invalid
         } else {
-             Log.e(TAG, "Error: Restored sessions but list is empty?");
+             Log.e(TAG, "[StorageDebug] Error: Restored sessions but list is empty?");
              return false; // Indicate failure
         }
-        
-        Log.d(TAG, "Session state restored. Active index set to: " + activeSessionIndex);
+        Log.d(TAG, "[StorageDebug] Session state restored. Active index set to: " + activeSessionIndex);
         // The session will be set to GeckoView later in onCreate
         return true;
     }
@@ -2367,5 +2637,21 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             }
         }
         tempUploadFiles.clear(); // Clear the list after attempting deletion
+    }
+
+    private void applyImmersiveMode(boolean immersive) {
+        if (android.os.Build.VERSION.SDK_INT >= 21) {
+            if (immersive) {
+                getWindow().setStatusBarColor(android.graphics.Color.TRANSPARENT);
+                getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                );
+            } else {
+                getWindow().setStatusBarColor(android.graphics.Color.BLACK);
+                getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                );
+            }
+        }
     }
 } 
