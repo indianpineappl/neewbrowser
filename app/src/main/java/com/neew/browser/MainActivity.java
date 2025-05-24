@@ -116,6 +116,10 @@ import android.view.ViewTreeObserver;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 import java.net.URISyntaxException; // <-- Add this import
+import android.app.PictureInPictureParams;
+import android.os.Build;
+import android.util.Rational;
+import android.util.TypedValue;
 
 public class MainActivity extends AppCompatActivity implements ScrollDelegate, GeckoSession.PromptDelegate {
     private static final String TAG = "MainActivity";
@@ -225,6 +229,10 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private static final String PREF_IMMERSIVE_MODE_ENABLED = "immersive_mode_enabled";
     private SwitchCompat panelImmersiveSwitch;
 
+    private boolean isInGeckoViewFullscreen = false; // To track if GeckoView requested fullscreen
+    private boolean isInPictureInPictureMode = false; // To track PiP state
+    private boolean firstWindowFocus = true; // Add this new field
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -282,7 +290,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             prefs.edit().putBoolean(PREF_IMMERSIVE_MODE_ENABLED, isChecked).apply();
             applyImmersiveMode(isChecked);
         });
-        // Apply immersive mode on startup
+        // Apply immersive mode on startup - This will be re-asserted in onWindowFocusChanged too
         applyImmersiveMode(panelImmersiveSwitch.isChecked());
 
         // Initialize Gecko Runtime (only once)
@@ -1154,6 +1162,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         grandChildSession.setContentDelegate(new ContentDelegate() {
                     @Override
                             public void onFullScreen(GeckoSession session, boolean fullScreen) {
+                                // This is for the grandchild popup, PiP logic is primarily for the main session.
                                 if (session == getActiveSession()) { runOnUiThread(() -> { if (fullScreen) enterFullScreen(); else exitFullScreen(); }); }
                             }
                     @Override
@@ -1291,6 +1300,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 newTabSession.setContentDelegate(new ContentDelegate() {
                     @Override
                     public void onFullScreen(GeckoSession session, boolean fullScreen) {
+                        // This is for a new tab/popup. PiP logic is primarily for the main session.
                         if (session == getActiveSession()) { runOnUiThread(() -> { if (fullScreen) enterFullScreen(); else exitFullScreen(); }); }
                     }
                     @Override
@@ -1437,18 +1447,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         newSession.setContentDelegate(new ContentDelegate() {
             @Override
             public void onFullScreen(GeckoSession session, boolean fullScreen) {
-                if (session == getActiveSession()) { // Only react if the active session requests fullscreen
-                    Log.d(TAG, "onFullScreen called (Active Session): " + fullScreen);
-                    runOnUiThread(() -> {
-                        if (fullScreen) {
-                            enterFullScreen();
-                        } else {
-                            exitFullScreen();
-                        }
-                    });
-                }
+                // This is for a new tab/popup. PiP logic is primarily for the main session.
+                if (session == getActiveSession()) { runOnUiThread(() -> { if (fullScreen) enterFullScreen(); else exitFullScreen(); }); }
             }
-            // Implement other ContentDelegate methods as needed
             @Override
             public void onExternalResponse(GeckoSession session, org.mozilla.geckoview.WebResponse response) {
                 String uriString = response.uri;
@@ -2201,7 +2202,19 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
     // --- Fullscreen Helper Methods ---
     private void enterFullScreen() {
-        Log.d(TAG, "Entering fullscreen");
+        Log.d(TAG, "Entering fullscreen (enterFullScreen called)");
+        isInGeckoViewFullscreen = true; // GeckoView has requested fullscreen
+
+        // Don't hide system UI if we are already in PiP or about to enter it.
+        // The system handles UI for PiP.
+        if (isInPictureInPictureMode) {
+            Log.d(TAG, "Already in PiP mode or transitioning, not changing system UI from enterFullScreen.");
+            if (controlBarContainer != null) {
+                controlBarContainer.setVisibility(View.GONE); // Keep controls hidden in PiP
+            }
+            return;
+        }
+
         // Hide system UI (status bar, navigation bar)
         int uiOptions = View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                         | View.SYSTEM_UI_FLAG_FULLSCREEN
@@ -2218,7 +2231,19 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     }
 
     private void exitFullScreen() {
-        Log.d(TAG, "Exiting fullscreen");
+        Log.d(TAG, "Exiting fullscreen (exitFullScreen called)");
+        isInGeckoViewFullscreen = false; // GeckoView no longer desires fullscreen
+
+        // If we are exiting fullscreen and also in PiP mode, let PiP mode changes handle UI.
+        // Typically, exiting PiP will call onFullScreen(false) from GeckoView.
+        if (isInPictureInPictureMode) {
+            Log.d(TAG, "Currently in PiP mode, system will handle UI changes on PiP exit.");
+            // We might not need to do anything here if PiP exit flow is clean.
+            // If controlBarContainer was hidden for PiP, it should become visible
+            // when PiP ends and onPictureInPictureModeChanged(false) is called.
+            return;
+        }
+
         // Show system UI
         decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
 
@@ -2241,16 +2266,21 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        // If focus is regained and we are *supposed* to be fullscreen (check a flag if needed),
-        // re-hide the system UI as it might reappear on focus change.
-        // This is a common pattern but might need adjustment based on exact behavior.
-        // Example (needs a boolean flag like `isInFullscreenMode` managed by enter/exitFullScreen):
-        // if (hasFocus && isInFullscreenMode) {
-        //    decorView.setSystemUiVisibility(
-        //        View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-        //        | View.SYSTEM_UI_FLAG_FULLSCREEN
-        //        | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
-        // }
+        if (hasFocus) {
+            // Re-apply the immersive mode setting every time the window gains focus,
+            // as system might change UI flags when app is backgrounded/foregrounded.
+            // This is especially important for maintaining the desired immersive state.
+            Log.d(TAG, "onWindowFocusChanged(true): Re-applying immersive mode. Current switch state: " + panelImmersiveSwitch.isChecked());
+            applyImmersiveMode(panelImmersiveSwitch.isChecked());
+            
+            // The firstWindowFocus logic can be removed if the above handles it, 
+            // but keeping it for one initial explicit call after focus might still be beneficial.
+            if (firstWindowFocus) {
+                Log.d(TAG, "onWindowFocusChanged(true): First window focus, explicitly re-applying immersive mode.");
+                applyImmersiveMode(panelImmersiveSwitch.isChecked());
+                firstWindowFocus = false;
+            }
+        }
     }
 
     // Method to launch the Tab Switcher
@@ -3095,17 +3125,52 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
     private void applyImmersiveMode(boolean immersive) {
         if (android.os.Build.VERSION.SDK_INT >= 21) {
+            View decorView = getWindow().getDecorView();
+            int uiOptions = decorView.getSystemUiVisibility();
+
             if (immersive) {
+                // Flags to make content extend into status/nav bar areas
+                uiOptions |= View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
+                uiOptions |= View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
+                // uiOptions |= View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION; // Optional: if you want content behind nav bar too
+
+                // Flags to actually hide the status bar and nav bar (optional for nav bar)
+                uiOptions |= View.SYSTEM_UI_FLAG_FULLSCREEN; // Hides status bar
+                // uiOptions |= View.SYSTEM_UI_FLAG_HIDE_NAVIGATION; // Optional: Hides navigation bar
+
+                // Flag for sticky immersive mode
+                uiOptions |= View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+
+                // Make status bar transparent so if it temporarily appears (sticky mode), content is behind it
                 getWindow().setStatusBarColor(android.graphics.Color.TRANSPARENT);
-                getWindow().getDecorView().setSystemUiVisibility(
-                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                );
+                // Optional: Make navigation bar transparent if LAYOUT_HIDE_NAVIGATION is used
+                // getWindow().setNavigationBarColor(android.graphics.Color.TRANSPARENT);
+
             } else {
-                getWindow().setStatusBarColor(android.graphics.Color.BLACK);
-                getWindow().getDecorView().setSystemUiVisibility(
-                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                );
+                // Clear fullscreen flags
+                uiOptions &= ~View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
+                uiOptions &= ~View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
+                // uiOptions &= ~View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+                uiOptions &= ~View.SYSTEM_UI_FLAG_FULLSCREEN;
+                // uiOptions &= ~View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
+                uiOptions &= ~View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+
+                // Restore default status bar color (you might need to define one)
+                // For now, setting to a common default (e.g., black or your theme's primaryDark)
+                // If your theme handles this, you might not need to set it explicitly.
+                // Consider a theme attribute for this color.
+                TypedValue typedValue = new TypedValue();
+                getTheme().resolveAttribute(android.R.attr.statusBarColor, typedValue, true);
+                int statusBarColorDefault = typedValue.resourceId != 0 ? ContextCompat.getColor(this, typedValue.resourceId) : android.graphics.Color.BLACK;
+                getWindow().setStatusBarColor(statusBarColorDefault);
+
+
+                // Restore default navigation bar color if it was changed
+                // getTheme().resolveAttribute(android.R.attr.navigationBarColor, typedValue, true);
+                // int navigationBarColorDefault = typedValue.resourceId != 0 ? ContextCompat.getColor(this, typedValue.resourceId) : android.graphics.Color.BLACK;
+                // getWindow().setNavigationBarColor(navigationBarColorDefault);
             }
+            decorView.setSystemUiVisibility(uiOptions);
         }
     }
 
@@ -3129,4 +3194,70 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             }
         }
     }
+
+    // --- Picture-in-Picture Methods ---
+    @Override
+    public void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        GeckoSession activeSession = getActiveSession();
+        // Check if we are in a state where PiP is appropriate (e.g., video is fullscreen)
+        // For now, we'll use isInGeckoViewFullscreen as a proxy for this.
+        // You might need a more specific check if a video is actually playing.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            isInGeckoViewFullscreen && // Only enter PiP if content was fullscreen
+            getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
+            
+            Log.d(TAG, "onUserLeaveHint: Attempting to enter PiP mode.");
+            enterPictureInPictureModeWithCurrentParams();
+        }
+    }
+
+    private void enterPictureInPictureModeWithCurrentParams() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                // Define aspect ratio for PiP window (e.g., 16:9)
+                Rational aspectRatio = new Rational(16, 9);
+                PictureInPictureParams params = new PictureInPictureParams.Builder()
+                        .setAspectRatio(aspectRatio)
+                        .build();
+                enterPictureInPictureMode(params);
+            } catch (IllegalStateException e) {
+                Log.e(TAG, "Error entering PiP mode", e);
+                // This can happen if the activity is not in a state to enter PiP
+                // (e.g., not visible, or finishing)
+            }
+        }
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(boolean isInPicInPicMode, Configuration newConfig) {
+        super.onPictureInPictureModeChanged(isInPicInPicMode, newConfig);
+        this.isInPictureInPictureMode = isInPicInPicMode;
+        if (isInPicInPicMode) {
+            Log.d(TAG, "Entered Picture-in-Picture mode.");
+            // Hide app controls when in PiP
+            if (controlBarContainer != null) {
+                controlBarContainer.setVisibility(View.GONE);
+            }
+            // You might want to hide other non-video UI elements as well
+        } else {
+            Log.d(TAG, "Exited Picture-in-Picture mode.");
+            // Show app controls when PiP is exited
+            // The visibility of controlBarContainer will be handled by exitFullScreen
+            // or when returning to the app. We might need to explicitly show it if
+            // exiting PiP doesn't trigger a fullscreen exit.
+            if (controlBarContainer != null && !isInGeckoViewFullscreen) {
+                 controlBarContainer.setVisibility(View.VISIBLE);
+                 if (isControlBarExpanded) {
+                    showExpandedControls();
+                 } else {
+                    showMinimizedControls();
+                 }
+            }
+            // If exiting PiP and we were in GeckoView fullscreen, we might want to re-enter it.
+            // However, GeckoView's onFullScreen(false) should be triggered by the system
+            // when PiP ends, which would call our exitFullScreen().
+        }
+    }
+    // --- End Picture-in-Picture Methods ---
 } 
