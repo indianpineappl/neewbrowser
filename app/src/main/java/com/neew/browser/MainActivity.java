@@ -115,6 +115,7 @@ import java.text.DecimalFormat;
 import android.view.ViewTreeObserver;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
+import java.net.URISyntaxException; // <-- Add this import
 
 public class MainActivity extends AppCompatActivity implements ScrollDelegate, GeckoSession.PromptDelegate {
     private static final String TAG = "MainActivity";
@@ -871,7 +872,62 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         newSession.setNavigationDelegate(new NavigationDelegate() {
             @Override
              public GeckoResult<AllowOrDeny> onLoadRequest(GeckoSession session, NavigationDelegate.LoadRequest request) {
-                // Allow navigation requests for the main tab itself
+                String uriString = request.uri;
+                Log.d(TAG, "MainTab NavDelegate onLoadRequest: URI="+uriString + " (Session: " + sessionUrlMap.getOrDefault(session, "N/A") + ")");
+
+                if (uriString != null && uriString.startsWith("intent://")) {
+                    Log.i(TAG, "MainTab NavDelegate: Intercepted intent:// URI: " + uriString);
+                    runOnUiThread(() -> {
+                        try {
+                            Intent intent = Intent.parseUri(uriString, Intent.URI_INTENT_SCHEME);
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            Log.d(TAG, "MainTab NavDelegate: Parsed intent: " + intent.toString() + " Extras: " + (intent.getExtras() != null ? intent.getExtras().toString() : "null"));
+
+                            if (intent.resolveActivity(getPackageManager()) != null) {
+                                Log.i(TAG, "MainTab NavDelegate: Activity found for intent. Attempting to start...");
+                                startActivity(intent);
+                                Log.i(TAG, "MainTab NavDelegate: startActivity called for main intent.");
+                            } else {
+                                Log.w(TAG, "MainTab NavDelegate: No activity found for main intent. Checking fallback.");
+                                String fallbackUrl = intent.getStringExtra("browser_fallback_url");
+                                if (fallbackUrl != null && !fallbackUrl.isEmpty()) {
+                                    Log.i(TAG, "MainTab NavDelegate: Fallback URL found: " + fallbackUrl);
+                                    if (fallbackUrl.startsWith("https://play.google.com/store/") || fallbackUrl.startsWith("http://play.google.com/store/")) {
+                                        Log.d(TAG, "MainTab NavDelegate: Fallback is Play Store link. Attempting to open in Play Store app.");
+                                        try {
+                                            Intent fallbackIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(fallbackUrl));
+                                            fallbackIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                            fallbackIntent.setPackage("com.android.vending");
+                                            startActivity(fallbackIntent);
+                                            Log.i(TAG, "MainTab NavDelegate: startActivity called for Play Store fallback.");
+                                        } catch (android.content.ActivityNotFoundException anfe) {
+                                            Log.w(TAG, "MainTab NavDelegate: Play Store app not found for fallback. Loading URL in browser: " + fallbackUrl, anfe);
+                                            loadUriInGeckoView(session, fallbackUrl); // Fallback to loading in current session if Play Store app fails
+                                        } catch (Exception ex) {
+                                            Log.e(TAG, "MainTab NavDelegate: Error launching Play Store for fallback. Loading in browser.", ex);
+                                            loadUriInGeckoView(session, fallbackUrl);
+                                        }
+                                    } else {
+                                        Log.i(TAG, "MainTab NavDelegate: Fallback URL is not Play Store. Loading in browser: " + fallbackUrl);
+                                        loadUriInGeckoView(session, fallbackUrl); // Fallback to loading in current session
+                                    }
+                                } else {
+                                    Log.w(TAG, "MainTab NavDelegate: No activity found for intent and no browser_fallback_url.");
+                                    Toast.makeText(MainActivity.this, "No app found to open this link.", Toast.LENGTH_LONG).show();
+                                }
+                            }
+                        } catch (URISyntaxException e) {
+                            Log.e(TAG, "MainTab NavDelegate: Invalid intent URI syntax: " + uriString, e);
+                            Toast.makeText(MainActivity.this, "Invalid link format.", Toast.LENGTH_SHORT).show();
+                        } catch (Exception e) {
+                            Log.e(TAG, "MainTab NavDelegate: General error handling intent URI: " + uriString, e);
+                            Toast.makeText(MainActivity.this, "Could not open link.", Toast.LENGTH_SHORT).show();
+                        }
+                    });
+                    return GeckoResult.fromValue(AllowOrDeny.DENY); // DENY further loading by GeckoView
+                }
+                // Allow other navigation requests for the main tab itself
+                Log.d(TAG, "MainTab NavDelegate onLoadRequest: Allowing non-intent URI: " + uriString);
                 return GeckoResult.fromValue(AllowOrDeny.ALLOW);
             }
 
@@ -882,19 +938,18 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 if (newUri != null) {
                     sessionUrlMap.put(session, newUri);
                     if (session == getActiveSession()) {
-                        runOnUiThread(() -> {
+                            runOnUiThread(() -> {
                             urlBar.setText(newUri);
-                            if (!isControlBarExpanded) {
+                                if (!isControlBarExpanded) {
                                 minimizedUrlBar.setText(newUri);
-                            }
-                        });
+                                }
+                            });
+                        }
                     }
-                    saveSessionState(); // TEST: Re-enabled
-                }
-            }
+                    }
 
             // This onNewSession is called when the main tab (newSession) tries to open a popup/new window
-            @Override
+                    @Override
             public GeckoResult<GeckoSession> onNewSession(GeckoSession originatingSession, String uri) {
                 Log.d(TAG, "createNewTab NavDelegate: onNewSession called for URI: " + uri + " from session: " + sessionUrlMap.getOrDefault(originatingSession, "N/A"));
 
@@ -904,7 +959,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
                 // 2. Configure its delegates:
                 newTabSession.setProgressDelegate(new ProgressDelegate() {
-                    @Override
+                     @Override
                     public void onProgressChange(GeckoSession session, int progress) {
                         if (session == getActiveSession()) {
                             progressBar.setProgress(progress);
@@ -917,7 +972,61 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 newTabSession.setNavigationDelegate(new NavigationDelegate() {
                     @Override
                     public GeckoResult<AllowOrDeny> onLoadRequest(GeckoSession session, NavigationDelegate.LoadRequest request) {
-                        Log.d(TAG, "Popup's NavDelegate: onLoadRequest for " + request.uri);
+                        String uriString = request.uri;
+                        Log.d(TAG, "Popup NavDelegate onLoadRequest: URI="+uriString + " (Session: " + sessionUrlMap.getOrDefault(session, "N/A") + ")");
+
+                        if (uriString != null && uriString.startsWith("intent://")) {
+                            Log.i(TAG, "Popup NavDelegate: Intercepted intent:// URI: " + uriString);
+                            runOnUiThread(() -> {
+                                try {
+                                    Intent intent = Intent.parseUri(uriString, Intent.URI_INTENT_SCHEME);
+                                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                    Log.d(TAG, "Popup NavDelegate: Parsed intent: " + intent.toString() + " Extras: " + (intent.getExtras() != null ? intent.getExtras().toString() : "null"));
+
+                                    if (intent.resolveActivity(getPackageManager()) != null) {
+                                        Log.i(TAG, "Popup NavDelegate: Activity found for intent. Attempting to start...");
+                                        startActivity(intent);
+                                        Log.i(TAG, "Popup NavDelegate: startActivity called for main intent.");
+                                    } else {
+                                        Log.w(TAG, "Popup NavDelegate: No activity found for main intent. Checking fallback.");
+                                        String fallbackUrl = intent.getStringExtra("browser_fallback_url");
+                                        if (fallbackUrl != null && !fallbackUrl.isEmpty()) {
+                                            Log.i(TAG, "Popup NavDelegate: Fallback URL found: " + fallbackUrl);
+                                            if (fallbackUrl.startsWith("https://play.google.com/store/") || fallbackUrl.startsWith("http://play.google.com/store/")) {
+                                                Log.d(TAG, "Popup NavDelegate: Fallback is Play Store link. Attempting to open in Play Store app.");
+                                                try {
+                                                    Intent fallbackIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(fallbackUrl));
+                                                    fallbackIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                                    fallbackIntent.setPackage("com.android.vending");
+                                                    startActivity(fallbackIntent);
+                                                    Log.i(TAG, "Popup NavDelegate: startActivity called for Play Store fallback.");
+                                                } catch (android.content.ActivityNotFoundException anfe) {
+                                                    Log.w(TAG, "Popup NavDelegate: Play Store app not found for fallback. Loading URL in browser: " + fallbackUrl, anfe);
+                                                    loadUriInGeckoView(session, fallbackUrl);
+                                                } catch (Exception ex) {
+                                                    Log.e(TAG, "Popup NavDelegate: Error launching Play Store for fallback. Loading in browser.", ex);
+                                                    loadUriInGeckoView(session, fallbackUrl);
+                                                }
+                                            } else {
+                                                Log.i(TAG, "Popup NavDelegate: Fallback URL is not Play Store. Loading in browser: " + fallbackUrl);
+                                                loadUriInGeckoView(session, fallbackUrl);
+                                            }
+                                        } else {
+                                            Log.w(TAG, "Popup NavDelegate: No activity found for intent and no browser_fallback_url.");
+                                            Toast.makeText(MainActivity.this, "No app found to open this link.", Toast.LENGTH_LONG).show();
+                                        }
+                                    }
+                                } catch (URISyntaxException e) {
+                                    Log.e(TAG, "Popup NavDelegate: Invalid intent URI syntax: " + uriString, e);
+                                    Toast.makeText(MainActivity.this, "Invalid link format.", Toast.LENGTH_SHORT).show();
+                                } catch (Exception e) {
+                                    Log.e(TAG, "Popup NavDelegate: General error handling intent URI: " + uriString, e);
+                                    Toast.makeText(MainActivity.this, "Could not open link.", Toast.LENGTH_SHORT).show();
+                                }
+                            });
+                            return GeckoResult.fromValue(AllowOrDeny.DENY);
+                        }
+                        Log.d(TAG, "Popup NavDelegate onLoadRequest: Allowing non-intent URI: " + uriString);
                         return GeckoResult.fromValue(AllowOrDeny.ALLOW);
                     }
 
@@ -928,7 +1037,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         if (newUri != null) {
                             sessionUrlMap.put(session, newUri);
                             if (session == getActiveSession()) {
-                                runOnUiThread(() -> {
+                        runOnUiThread(() -> {
                                     urlBar.setText(newUri);
                                     if (!isControlBarExpanded) {
                                         minimizedUrlBar.setText(newUri);
@@ -945,7 +1054,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         final GeckoSession grandChildSession = new GeckoSession();
 
                         grandChildSession.setProgressDelegate(new ProgressDelegate() {
-                     @Override
+                    @Override
                             public void onProgressChange(GeckoSession session, int progress) {
                                 if (session == getActiveSession()) {
                                     progressBar.setProgress(progress);
@@ -958,8 +1067,63 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         grandChildSession.setNavigationDelegate(new NavigationDelegate() {
                     @Override
                             public GeckoResult<AllowOrDeny> onLoadRequest(GeckoSession session, NavigationDelegate.LoadRequest request) {
+                                String uriString = request.uri;
+                                Log.d(TAG, "GrandChild NavDelegate onLoadRequest: URI="+uriString + " (Session: " + sessionUrlMap.getOrDefault(session, "N/A") + ")");
+
+                                if (uriString != null && uriString.startsWith("intent://")) {
+                                    Log.i(TAG, "GrandChild NavDelegate: Intercepted intent:// URI: " + uriString);
+                                    runOnUiThread(() -> {
+                                        try {
+                                            Intent intent = Intent.parseUri(uriString, Intent.URI_INTENT_SCHEME);
+                                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                            Log.d(TAG, "GrandChild NavDelegate: Parsed intent: " + intent.toString() + " Extras: " + (intent.getExtras() != null ? intent.getExtras().toString() : "null"));
+
+                                            if (intent.resolveActivity(getPackageManager()) != null) {
+                                                Log.i(TAG, "GrandChild NavDelegate: Activity found for intent. Attempting to start...");
+                                                startActivity(intent);
+                                                Log.i(TAG, "GrandChild NavDelegate: startActivity called for main intent.");
+                                            } else {
+                                                Log.w(TAG, "GrandChild NavDelegate: No activity found for main intent. Checking fallback.");
+                                                String fallbackUrl = intent.getStringExtra("browser_fallback_url");
+                                                if (fallbackUrl != null && !fallbackUrl.isEmpty()) {
+                                                    Log.i(TAG, "GrandChild NavDelegate: Fallback URL found: " + fallbackUrl);
+                                                    if (fallbackUrl.startsWith("https://play.google.com/store/") || fallbackUrl.startsWith("http://play.google.com/store/")) {
+                                                        Log.d(TAG, "GrandChild NavDelegate: Fallback is Play Store link. Attempting to open in Play Store app.");
+                                                        try {
+                                                            Intent fallbackIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(fallbackUrl));
+                                                            fallbackIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                                            fallbackIntent.setPackage("com.android.vending");
+                                                            startActivity(fallbackIntent);
+                                                            Log.i(TAG, "GrandChild NavDelegate: startActivity called for Play Store fallback.");
+                                                        } catch (android.content.ActivityNotFoundException anfe) {
+                                                            Log.w(TAG, "GrandChild NavDelegate: Play Store app not found for fallback. Loading URL in browser: " + fallbackUrl, anfe);
+                                                            loadUriInGeckoView(session, fallbackUrl);
+                                                        } catch (Exception ex) {
+                                                            Log.e(TAG, "GrandChild NavDelegate: Error launching Play Store for fallback. Loading in browser.", ex);
+                                                            loadUriInGeckoView(session, fallbackUrl);
+                                                        }
+                                                    } else {
+                                                        Log.i(TAG, "GrandChild NavDelegate: Fallback URL is not Play Store. Loading in browser: " + fallbackUrl);
+                                                        loadUriInGeckoView(session, fallbackUrl);
+                                                    }
+                                                } else {
+                                                    Log.w(TAG, "GrandChild NavDelegate: No activity found for intent and no browser_fallback_url.");
+                                                    Toast.makeText(MainActivity.this, "No app found to open this link.", Toast.LENGTH_LONG).show();
+                                                }
+                                            }
+                                        } catch (URISyntaxException e) {
+                                            Log.e(TAG, "GrandChild NavDelegate: Invalid intent URI syntax: " + uriString, e);
+                                            Toast.makeText(MainActivity.this, "Invalid link format.", Toast.LENGTH_SHORT).show();
+                                        } catch (Exception e) {
+                                            Log.e(TAG, "GrandChild NavDelegate: General error handling intent URI: " + uriString, e);
+                                            Toast.makeText(MainActivity.this, "Could not open link.", Toast.LENGTH_SHORT).show();
+                                        }
+                                    });
+                                    return GeckoResult.fromValue(AllowOrDeny.DENY);
+                                }
+                                Log.d(TAG, "GrandChild NavDelegate onLoadRequest: Allowing non-intent URI: " + uriString);
                                 return GeckoResult.fromValue(AllowOrDeny.ALLOW);
-                            }
+                    }
 
                     @Override
                     public void onLocationChange(GeckoSession session, @Nullable String newUri, @NonNull List<GeckoSession.PermissionDelegate.ContentPermission> perms, @NonNull Boolean hasUserGesture) {
@@ -968,7 +1132,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         if (newUri != null) {
                             sessionUrlMap.put(session, newUri);
                             if (session == getActiveSession()) {
-                                runOnUiThread(() -> {
+                        runOnUiThread(() -> {
                                     urlBar.setText(newUri);
                                     if (!isControlBarExpanded) {
                                         minimizedUrlBar.setText(newUri);
@@ -994,8 +1158,108 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                             }
                     @Override
                             public void onExternalResponse(GeckoSession session, org.mozilla.geckoview.WebResponse response) {
-                                runOnUiThread(() -> handleDownloadResponse(response));
-                    }
+                                String uriString = response.uri;
+                                Log.d(TAG, "GrandChildPopup ContentDelegate onExternalResponse: URI received: " + uriString);
+
+                                if (uriString == null) {
+                                    Log.w(TAG, "GrandChildPopup ContentDelegate onExternalResponse: Null URI, falling back to download handler.");
+                                    runOnUiThread(() -> handleDownloadResponse(response));
+                                    return;
+                                }
+
+                                Uri parsedUri = Uri.parse(uriString);
+                                String scheme = parsedUri.getScheme();
+
+                                if ("intent".equalsIgnoreCase(scheme)) {
+                                    Log.d(TAG, "GrandChildPopup ContentDelegate: Handling intent scheme for URI: " + uriString);
+                                    runOnUiThread(() -> {
+                                        try {
+                                            Intent intent = Intent.parseUri(uriString, Intent.URI_INTENT_SCHEME);
+                                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                            Log.d(TAG, "GrandChildPopup ContentDelegate: Parsed intent: " + intent.toString() + " Extras: " + (intent.getExtras() != null ? intent.getExtras().toString() : "null"));
+
+                                            if (intent.resolveActivity(getPackageManager()) != null) {
+                                                Log.i(TAG, "GrandChildPopup ContentDelegate: Activity found for intent. Attempting to start...");
+                                                startActivity(intent);
+                                                Log.i(TAG, "GrandChildPopup ContentDelegate: startActivity called for main intent.");
+                                            } else {
+                                                Log.w(TAG, "GrandChildPopup ContentDelegate: No activity found for main intent. Checking fallback.");
+                                                String fallbackUrl = intent.getStringExtra("browser_fallback_url");
+                                                if (fallbackUrl != null && !fallbackUrl.isEmpty()) {
+                                                    Log.i(TAG, "GrandChildPopup ContentDelegate: Fallback URL found: " + fallbackUrl);
+                                                    if (fallbackUrl.startsWith("https://play.google.com/store/") || fallbackUrl.startsWith("http://play.google.com/store/")) {
+                                                        Log.d(TAG, "GrandChildPopup ContentDelegate: Fallback is Play Store link. Attempting to open in Play Store app.");
+                                                        try {
+                                                            Intent fallbackIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(fallbackUrl));
+                                                            fallbackIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                                            fallbackIntent.setPackage("com.android.vending");
+                                                            startActivity(fallbackIntent);
+                                                            Log.i(TAG, "GrandChildPopup ContentDelegate: startActivity called for Play Store fallback.");
+                                                        } catch (android.content.ActivityNotFoundException anfe) {
+                                                            Log.w(TAG, "GrandChildPopup ContentDelegate: Play Store app not found for fallback. Loading URL in browser: " + fallbackUrl, anfe);
+                                                            loadUriInGeckoView(session, fallbackUrl);
+                                                        } catch (Exception ex) {
+                                                            Log.e(TAG, "GrandChildPopup ContentDelegate: Error launching Play Store for fallback. Loading in browser.", ex);
+                                                            loadUriInGeckoView(session, fallbackUrl);
+                                                        }
+                                                    } else {
+                                                        Log.i(TAG, "GrandChildPopup ContentDelegate: Fallback URL is not Play Store. Loading in browser: " + fallbackUrl);
+                                                        loadUriInGeckoView(session, fallbackUrl);
+                                                    }
+                                                } else {
+                                                    Log.w(TAG, "GrandChildPopup ContentDelegate: No activity found for intent and no browser_fallback_url.");
+                                                    Toast.makeText(MainActivity.this, "No app found to open this link.", Toast.LENGTH_LONG).show();
+                                                }
+                                            }
+                                        } catch (URISyntaxException e) {
+                                            Log.e(TAG, "GrandChildPopup ContentDelegate: Invalid intent URI syntax: " + uriString, e);
+                                            Toast.makeText(MainActivity.this, "Invalid link format.", Toast.LENGTH_SHORT).show();
+                                        } catch (Exception e) {
+                                            Log.e(TAG, "GrandChildPopup ContentDelegate: General error handling intent URI: " + uriString, e);
+                                            Toast.makeText(MainActivity.this, "Could not open link.", Toast.LENGTH_SHORT).show();
+                                        }
+                                    });
+                                } else if ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) {
+                                    // Check if it's a Play Store link that should be opened externally
+                                    if (uriString.startsWith("https://play.google.com/store/") || uriString.startsWith("http://play.google.com/store/")) {
+                                        try {
+                                            Intent intent = new Intent(Intent.ACTION_VIEW, parsedUri);
+                                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                            intent.setPackage("com.android.vending"); // Target Play Store app
+                                            Log.d(TAG, "GrandChildPopup ContentDelegate: Attempting to launch Play Store with URI: " + uriString);
+                                            startActivity(intent);
+                                        } catch (android.content.ActivityNotFoundException e) {
+                                            Log.e(TAG, "GrandChildPopup ContentDelegate: Play Store app not found for URI: " + uriString, e);
+                                            Toast.makeText(MainActivity.this, "Play Store app not found. Trying to open in browser.", Toast.LENGTH_LONG).show();
+                                            loadUriInGeckoView(session, uriString); // Fallback to loading in GeckoView
+                                        } catch (Exception e) {
+                                            Log.e(TAG, "GrandChildPopup ContentDelegate: Error launching Play Store with URI: " + uriString, e);
+                                            Toast.makeText(MainActivity.this, "Could not open link in Play Store.", Toast.LENGTH_SHORT).show();
+                                            loadUriInGeckoView(session, uriString);
+                                        }
+                                    } else {
+                                        // For other HTTP/HTTPS links, assume it's a download if it reached onExternalResponse
+                                        Log.d(TAG, "GrandChildPopup ContentDelegate: HTTP/HTTPS URI is not Play Store, falling back to download handling: " + uriString);
+                                        runOnUiThread(() -> handleDownloadResponse(response));
+                                    }
+                                } else {
+                                    // For non-HTTP/HTTPS schemes (e.g., market://, mailto:, tel:, customscheme://)
+                                    try {
+                                        Intent intent = new Intent(Intent.ACTION_VIEW, parsedUri);
+                                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                        // Do NOT set package here, let the system resolve it
+                                        Log.d(TAG, "GrandChildPopup ContentDelegate: Attempting to launch generic Intent for scheme '" + scheme + "' with URI: " + uriString);
+                                        startActivity(intent);
+                                    } catch (android.content.ActivityNotFoundException e) {
+                                        Log.e(TAG, "GrandChildPopup ContentDelegate: No activity found to handle URI: " + uriString, e);
+                                        Toast.makeText(MainActivity.this, "No app found to open this link: " + scheme, Toast.LENGTH_LONG).show();
+                                        // Optionally, could try to load about:blank or show an error page in GeckoView
+                                    } catch (Exception e) {
+                                        Log.e(TAG, "GrandChildPopup ContentDelegate: Error launching generic Intent for URI: " + uriString, e);
+                                        Toast.makeText(MainActivity.this, "Could not open link.", Toast.LENGTH_SHORT).show();
+                                    }
+                                }
+                            }
                     @Override
                             public void onCloseRequest(GeckoSession session) {
                                 Log.d(TAG, "GrandChildPopup's ContentDelegate: onCloseRequest for " + sessionUrlMap.getOrDefault(session, "N/A"));
@@ -1031,7 +1295,102 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                     }
                     @Override
                     public void onExternalResponse(GeckoSession session, org.mozilla.geckoview.WebResponse response) {
-                        runOnUiThread(() -> handleDownloadResponse(response));
+                        String uriString = response.uri;
+                        Log.d(TAG, "Popup ContentDelegate onExternalResponse: URI received: " + uriString);
+
+                        if (uriString == null) {
+                            Log.w(TAG, "Popup ContentDelegate onExternalResponse: Null URI, falling back to download handler.");
+                            runOnUiThread(() -> handleDownloadResponse(response));
+                            return;
+                        }
+
+                        Uri parsedUri = Uri.parse(uriString);
+                        String scheme = parsedUri.getScheme();
+
+                        if ("intent".equalsIgnoreCase(scheme)) {
+                            Log.d(TAG, "Popup ContentDelegate: Handling intent scheme for URI: " + uriString);
+                            runOnUiThread(() -> {
+                                try {
+                                    Intent intent = Intent.parseUri(uriString, Intent.URI_INTENT_SCHEME);
+                                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                    Log.d(TAG, "Popup ContentDelegate: Parsed intent: " + intent.toString() + " Extras: " + (intent.getExtras() != null ? intent.getExtras().toString() : "null"));
+
+                                    if (intent.resolveActivity(getPackageManager()) != null) {
+                                        Log.i(TAG, "Popup ContentDelegate: Activity found for intent. Attempting to start...");
+                                        startActivity(intent);
+                                        Log.i(TAG, "Popup ContentDelegate: startActivity called for main intent.");
+                                    } else {
+                                        Log.w(TAG, "Popup ContentDelegate: No activity found for main intent. Checking fallback.");
+                                        String fallbackUrl = intent.getStringExtra("browser_fallback_url");
+                                        if (fallbackUrl != null && !fallbackUrl.isEmpty()) {
+                                            Log.i(TAG, "Popup ContentDelegate: Fallback URL found: " + fallbackUrl);
+                                            if (fallbackUrl.startsWith("https://play.google.com/store/") || fallbackUrl.startsWith("http://play.google.com/store/")) {
+                                                Log.d(TAG, "Popup ContentDelegate: Fallback is Play Store link. Attempting to open in Play Store app.");
+                                                try {
+                                                    Intent fallbackIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(fallbackUrl));
+                                                    fallbackIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                                    fallbackIntent.setPackage("com.android.vending");
+                                                    startActivity(fallbackIntent);
+                                                    Log.i(TAG, "Popup ContentDelegate: startActivity called for Play Store fallback.");
+                                                } catch (android.content.ActivityNotFoundException anfe) {
+                                                    Log.w(TAG, "Popup ContentDelegate: Play Store app not found for fallback. Loading URL in browser: " + fallbackUrl, anfe);
+                                                    loadUriInGeckoView(session, fallbackUrl);
+                                                } catch (Exception ex) {
+                                                    Log.e(TAG, "Popup ContentDelegate: Error launching Play Store for fallback. Loading in browser.", ex);
+                                                    loadUriInGeckoView(session, fallbackUrl);
+                                                }
+                                            } else {
+                                                Log.i(TAG, "Popup ContentDelegate: Fallback URL is not Play Store. Loading in browser: " + fallbackUrl);
+                                                loadUriInGeckoView(session, fallbackUrl);
+                                            }
+                                        } else {
+                                            Log.w(TAG, "Popup ContentDelegate: No activity found for intent and no browser_fallback_url.");
+                                            Toast.makeText(MainActivity.this, "No app found to open this link.", Toast.LENGTH_LONG).show();
+                                        }
+                                    }
+                                } catch (URISyntaxException e) {
+                                    Log.e(TAG, "Popup ContentDelegate: Invalid intent URI syntax: " + uriString, e);
+                                    Toast.makeText(MainActivity.this, "Invalid link format.", Toast.LENGTH_SHORT).show();
+                                } catch (Exception e) {
+                                    Log.e(TAG, "Popup ContentDelegate: General error handling intent URI: " + uriString, e);
+                                    Toast.makeText(MainActivity.this, "Could not open link.", Toast.LENGTH_SHORT).show();
+                                }
+                            });
+                        } else if ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) {
+                            if (uriString.startsWith("https://play.google.com/store/") || uriString.startsWith("http://play.google.com/store/")) {
+                                try {
+                                    Intent intent = new Intent(Intent.ACTION_VIEW, parsedUri);
+                                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                    intent.setPackage("com.android.vending");
+                                    Log.d(TAG, "Popup ContentDelegate: Attempting to launch Play Store with URI: " + uriString);
+                                    startActivity(intent);
+                                } catch (android.content.ActivityNotFoundException e) {
+                                    Log.e(TAG, "Popup ContentDelegate: Play Store app not found for URI: " + uriString, e);
+                                    Toast.makeText(MainActivity.this, "Play Store app not found. Trying to open in browser.", Toast.LENGTH_LONG).show();
+                                    loadUriInGeckoView(session, uriString);
+                                } catch (Exception e) {
+                                    Log.e(TAG, "Popup ContentDelegate: Error launching Play Store with URI: " + uriString, e);
+                                    Toast.makeText(MainActivity.this, "Could not open link in Play Store.", Toast.LENGTH_SHORT).show();
+                                    loadUriInGeckoView(session, uriString);
+                                }
+                            } else {
+                                Log.d(TAG, "Popup ContentDelegate: HTTP/HTTPS URI is not Play Store or Intent, falling back to download handling: " + uriString);
+                                runOnUiThread(() -> handleDownloadResponse(response));
+                            }
+                        } else {
+                            try {
+                                Intent intent = new Intent(Intent.ACTION_VIEW, parsedUri);
+                                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                Log.d(TAG, "Popup ContentDelegate: Attempting to launch generic Intent for scheme '" + scheme + "' with URI: " + uriString);
+                                startActivity(intent);
+                            } catch (android.content.ActivityNotFoundException e) {
+                                Log.e(TAG, "Popup ContentDelegate: No activity found to handle URI: " + uriString, e);
+                                Toast.makeText(MainActivity.this, "No app found to open this link: " + scheme, Toast.LENGTH_LONG).show();
+                            } catch (Exception e) {
+                                Log.e(TAG, "Popup ContentDelegate: Error launching generic Intent for URI: " + uriString, e);
+                                Toast.makeText(MainActivity.this, "Could not open link.", Toast.LENGTH_SHORT).show();
+                            }
+                        }
                     }
                     @Override
                     public void onCloseRequest(GeckoSession session) { // window.close() in the new tab
@@ -1092,7 +1451,102 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             // Implement other ContentDelegate methods as needed
             @Override
             public void onExternalResponse(GeckoSession session, org.mozilla.geckoview.WebResponse response) {
-                runOnUiThread(() -> handleDownloadResponse(response));
+                String uriString = response.uri;
+                Log.d(TAG, "Main ContentDelegate onExternalResponse: URI received: " + uriString);
+
+                if (uriString == null) {
+                    Log.w(TAG, "Main ContentDelegate onExternalResponse: Null URI, falling back to download handler.");
+                    runOnUiThread(() -> handleDownloadResponse(response));
+                    return;
+                }
+
+                Uri parsedUri = Uri.parse(uriString);
+                String scheme = parsedUri.getScheme();
+
+                if ("intent".equalsIgnoreCase(scheme)) {
+                    Log.d(TAG, "Main ContentDelegate: Handling intent scheme for URI: " + uriString);
+                    runOnUiThread(() -> {
+                        try {
+                            Intent intent = Intent.parseUri(uriString, Intent.URI_INTENT_SCHEME);
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            Log.d(TAG, "Main ContentDelegate: Parsed intent: " + intent.toString() + " Extras: " + (intent.getExtras() != null ? intent.getExtras().toString() : "null"));
+
+                            if (intent.resolveActivity(getPackageManager()) != null) {
+                                Log.i(TAG, "Main ContentDelegate: Activity found for intent. Attempting to start...");
+                                startActivity(intent);
+                                Log.i(TAG, "Main ContentDelegate: startActivity called for main intent.");
+                            } else {
+                                Log.w(TAG, "Main ContentDelegate: No activity found for main intent. Checking fallback.");
+                                String fallbackUrl = intent.getStringExtra("browser_fallback_url");
+                                if (fallbackUrl != null && !fallbackUrl.isEmpty()) {
+                                    Log.i(TAG, "Main ContentDelegate: Fallback URL found: " + fallbackUrl);
+                                    if (fallbackUrl.startsWith("https://play.google.com/store/") || fallbackUrl.startsWith("http://play.google.com/store/")) {
+                                        Log.d(TAG, "Main ContentDelegate: Fallback is Play Store link. Attempting to open in Play Store app.");
+                                        try {
+                                            Intent fallbackIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(fallbackUrl));
+                                            fallbackIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                            fallbackIntent.setPackage("com.android.vending");
+                                            startActivity(fallbackIntent);
+                                            Log.i(TAG, "Main ContentDelegate: startActivity called for Play Store fallback.");
+                                        } catch (android.content.ActivityNotFoundException anfe) {
+                                            Log.w(TAG, "Main ContentDelegate: Play Store app not found for fallback. Loading URL in browser: " + fallbackUrl, anfe);
+                                            loadUriInGeckoView(session, fallbackUrl);
+                                        } catch (Exception ex) {
+                                            Log.e(TAG, "Main ContentDelegate: Error launching Play Store for fallback. Loading in browser.", ex);
+                                            loadUriInGeckoView(session, fallbackUrl);
+                                        }
+                                    } else {
+                                        Log.i(TAG, "Main ContentDelegate: Fallback URL is not Play Store. Loading in browser: " + fallbackUrl);
+                                        loadUriInGeckoView(session, fallbackUrl);
+                                    }
+                                } else {
+                                    Log.w(TAG, "Main ContentDelegate: No activity found for intent and no browser_fallback_url.");
+                                    Toast.makeText(MainActivity.this, "No app found to open this link.", Toast.LENGTH_LONG).show();
+                                }
+                            }
+                        } catch (URISyntaxException e) {
+                            Log.e(TAG, "Main ContentDelegate: Invalid intent URI syntax: " + uriString, e);
+                            Toast.makeText(MainActivity.this, "Invalid link format.", Toast.LENGTH_SHORT).show();
+                        } catch (Exception e) {
+                            Log.e(TAG, "Main ContentDelegate: General error handling intent URI: " + uriString, e);
+                            Toast.makeText(MainActivity.this, "Could not open link.", Toast.LENGTH_SHORT).show();
+                        }
+                    });
+                } else if ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) {
+                    if (uriString.startsWith("https://play.google.com/store/") || uriString.startsWith("http://play.google.com/store/")) {
+                        try {
+                            Intent intent = new Intent(Intent.ACTION_VIEW, parsedUri);
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            intent.setPackage("com.android.vending");
+                            Log.d(TAG, "Main ContentDelegate: Attempting to launch Play Store with URI: " + uriString);
+                            startActivity(intent);
+                        } catch (android.content.ActivityNotFoundException e) {
+                            Log.e(TAG, "Main ContentDelegate: Play Store app not found for URI: " + uriString, e);
+                            Toast.makeText(MainActivity.this, "Play Store app not found. Trying to open in browser.", Toast.LENGTH_LONG).show();
+                            loadUriInGeckoView(session, uriString);
+                        } catch (Exception e) {
+                            Log.e(TAG, "Main ContentDelegate: Error launching Play Store with URI: " + uriString, e);
+                            Toast.makeText(MainActivity.this, "Could not open link in Play Store.", Toast.LENGTH_SHORT).show();
+                            loadUriInGeckoView(session, uriString);
+                        }
+                    } else {
+                        Log.d(TAG, "Main ContentDelegate: HTTP/HTTPS URI is not Play Store or Intent, falling back to download handling: " + uriString);
+                        runOnUiThread(() -> handleDownloadResponse(response));
+                    }
+                } else {
+                    try {
+                        Intent intent = new Intent(Intent.ACTION_VIEW, parsedUri);
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        Log.d(TAG, "Main ContentDelegate: Attempting to launch generic Intent for scheme '" + scheme + "' with URI: " + uriString);
+                        startActivity(intent);
+                    } catch (android.content.ActivityNotFoundException e) {
+                        Log.e(TAG, "Main ContentDelegate: No activity found to handle URI: " + uriString, e);
+                        Toast.makeText(MainActivity.this, "No app found to open this link: " + scheme, Toast.LENGTH_LONG).show();
+                    } catch (Exception e) {
+                        Log.e(TAG, "Main ContentDelegate: Error launching generic Intent for URI: " + uriString, e);
+                        Toast.makeText(MainActivity.this, "Could not open link.", Toast.LENGTH_SHORT).show();
+                    }
+                }
             }
 
             // Add onCloseRequest to the main session's ContentDelegate as well
@@ -2651,6 +3105,27 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 getWindow().getDecorView().setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                 );
+            }
+        }
+    }
+
+    // Helper method to load URI in GeckoView, abstracting the session choice
+    private void loadUriInGeckoView(GeckoSession currentSessionContext, String uriString) {
+        if (uriString == null || uriString.isEmpty()) {
+            Log.w(TAG, "loadUriInGeckoView: Null or empty URI string.");
+            return;
+        }
+        if (currentSessionContext != null) {
+            Log.d(TAG, "loadUriInGeckoView: Loading in provided session context.");
+            currentSessionContext.loadUri(uriString);
+        } else {
+            GeckoSession activeSession = getActiveSession();
+            if (activeSession != null) {
+                Log.d(TAG, "loadUriInGeckoView: Loading in active session.");
+                activeSession.loadUri(uriString);
+            } else {
+                Log.e(TAG, "loadUriInGeckoView: No session available to load URI: " + uriString);
+                Toast.makeText(MainActivity.this, "Cannot open link: No active browser tab.", Toast.LENGTH_SHORT).show();
             }
         }
     }
