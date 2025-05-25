@@ -151,9 +151,12 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private ImageButton minimizedForwardButton;
 
     // Scroll detection state
-    private boolean isControlBarExpanded = true;
+    private boolean isControlBarExpanded = true; // Default to true as per existing logic for initial state
+    private boolean isControlBarHidden = false; // New: true if both bars are GONE
     private int lastScrollY = 0;
     private static final int SCROLL_THRESHOLD = 50; // Pixels to scroll before triggering hide/show
+    private static final int TAP_THRESHOLD_BOTTOM_EDGE_DP = 60; // DP for tap detection
+    private int tapThresholdBottomEdgePx; // Will be calculated in onCreate
 
     private SharedPreferences prefs;
     private static final String PREF_COOKIES_ENABLED = "cookies_enabled";
@@ -237,6 +240,12 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        tapThresholdBottomEdgePx = (int) TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_DIP,
+                TAP_THRESHOLD_BOTTOM_EDGE_DP,
+                getResources().getDisplayMetrics()
+        );
 
         // Make status bar transparent and content immersive (initial setup)
         if (android.os.Build.VERSION.SDK_INT >= 21) {
@@ -484,7 +493,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         setupUrlBarListener();
         setupGeckoViewTouchListener();
         setupSettingsPanelListeners();
-        showExpandedControls(); // Start with expanded controls
+        showExpandedBar(); // New initial state call
 
         // Ensure GeckoView uses the correct session after potential restore
         if (getActiveSession() != null && geckoView.getSession() != getActiveSession()) {
@@ -730,12 +739,19 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
         // --- NEW TAB --- 
         newTabButton.setOnClickListener(v -> {
-            Log.d(TAG, "New Tab button clicked.");
+            Log.d(TAG, "Expanded New Tab button clicked.");
+            showExpandedBar(); // Ensure expanded bar is shown
             createNewTab(true); // Create and switch to the new tab
         });
         tabsButton.setOnClickListener(v -> {
-            Log.d(TAG, "Tabs button clicked. Launching TabSwitcherActivity.");
-            launchTabSwitcher();
+            Log.d(TAG, "Tabs button clicked.");
+            // Ensure the expanded bar is definitely visible and layout is stable before transition
+            showExpandedBar(); // This sets expandedControlBar.setVisibility(View.VISIBLE)
+                               // and minimizedControlBar.setVisibility(View.GONE)
+            v.post(() -> {
+                Log.d(TAG, "Executing launchTabSwitcher from post.");
+                launchTabSwitcher();
+            });
         });
 
         // Add listeners for MINIMIZED buttons
@@ -753,10 +769,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         });
         minimizedNewTabButton.setOnClickListener(v -> {
             Log.d(TAG, "Minimized New Tab button clicked.");
-              createNewTab(true); // Create and switch to the new tab
+            showExpandedBar(); // Ensure expanded bar is shown
+            createNewTab(true); // Create and switch to the new tab
         });
 
-        minimizedUrlBar.setOnClickListener(v -> showExpandedControls());
+        minimizedUrlBar.setOnClickListener(v -> showExpandedBar());
     }
 
      // Refactored method to set up URL bar listener
@@ -839,7 +856,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         if (imm != null) {
             imm.hideSoftInputFromWindow(view.getWindowToken(), 0);
             // Optionally clear focus from URL bar if it had it, 
-            // but avoid clearing focus generally as it might affect web content
+            // but avoid clearing focus generally as it might affect web content immediately
             // if (view == urlBar) { 
             //    urlBar.clearFocus();
             // }
@@ -1845,53 +1862,80 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
     // --- Control Bar State Logic ---
 
-    private void showExpandedControls() {
+    private void showExpandedBar() {
         if (expandedControlBar != null && minimizedControlBar != null) {
             expandedControlBar.setVisibility(View.VISIBLE);
             minimizedControlBar.setVisibility(View.GONE);
+            // Ensure the main URL bar is interactive
             urlBar.setFocusableInTouchMode(true);
             urlBar.setFocusable(true);
             urlBar.setClickable(true);
-            isControlBarExpanded = true; // Update state
-            Log.d(TAG, "Showing expanded controls");
+
+            isControlBarExpanded = true;
+            isControlBarHidden = false;
+            Log.d(TAG, "showExpandedBar: Expanded bar visible.");
         }
     }
 
-    private void showMinimizedControls() {
-        if (expandedControlBar != null && minimizedControlBar != null) {
-            String currentUrlText = urlBar.getText().toString();
-            minimizedUrlBar.setText(currentUrlText);
-
-            urlBar.setFocusable(false);
-            urlBar.setClickable(false);
-            
+    private void showMinimizedBar() {
+        if (expandedControlBar != null && minimizedControlBar != null && getActiveSession() != null) {
             expandedControlBar.setVisibility(View.GONE);
             minimizedControlBar.setVisibility(View.VISIBLE);
-            isControlBarExpanded = false; // Update state
-            Log.d(TAG, "Showing minimized controls. Copied text: " + currentUrlText);
-        } else {
-             Log.w(TAG, "Cannot show minimized controls - views null?");
+            // Main URL bar should not be interactive when minimized bar is shown
+            urlBar.setFocusable(false);
+            urlBar.setFocusableInTouchMode(false);
+            urlBar.setClickable(false);
+
+            isControlBarExpanded = false;
+            isControlBarHidden = false;
+            // Update the text of the minimized URL bar
+            String currentUrl = sessionUrlMap.getOrDefault(getActiveSession(), "");
+            minimizedUrlBar.setText(currentUrl);
+            Log.d(TAG, "showMinimizedBar: Minimized bar visible. URL: " + currentUrl);
+        } else if (getActiveSession() == null) {
+            Log.w(TAG, "showMinimizedBar: Cannot show, active session is null. Hiding both bars.");
+            hideBothBars(); // Fallback if no session
         }
     }
 
-    // --- End Control Bar State Logic ---
+    private void hideBothBars() {
+        if (expandedControlBar != null && minimizedControlBar != null) {
+            expandedControlBar.setVisibility(View.GONE);
+            minimizedControlBar.setVisibility(View.GONE);
+
+            isControlBarExpanded = false; // When hidden, it's not expanded
+            isControlBarHidden = true;
+            Log.d(TAG, "hideBothBars: Both control bars hidden.");
+        }
+    }
 
     @Override
     public void onScrollChanged(GeckoSession session, int scrollX, int scrollY) {
         int dy = scrollY - lastScrollY;
-        Log.d(TAG, "onScrollChanged: dy=" + dy + " scrollY=" + scrollY + " lastScrollY=" + lastScrollY + " expanded=" + isControlBarExpanded);
 
-        // Basic thresholding and state checking
-        if (dy > SCROLL_THRESHOLD && isControlBarExpanded) { 
-            showMinimizedControls();
-        } else if (dy < -SCROLL_THRESHOLD && !isControlBarExpanded) { 
-             showExpandedControls();
-         }
-         
-         // Update last position only if movement is significant enough
-         if (Math.abs(dy) > 5) { 
-            lastScrollY = scrollY;
-         }
+        // Don't do anything if the scroll is too small
+        if (Math.abs(dy) < SCROLL_THRESHOLD) {
+            // Update lastScrollY only if the scroll is not negligible,
+            // to avoid resetting it for very small movements that don't cross threshold.
+            if (Math.abs(dy) > 5) { // A smaller tolerance for updating lastScrollY
+                 lastScrollY = scrollY;
+            }
+            return;
+        }
+
+        if (dy > 0) { // Scrolling Down
+            if (!isControlBarHidden) { // Only hide if not already hidden
+                hideBothBars();
+                Log.d(TAG, "onScrollChanged: Scrolled DOWN - Hiding both bars.");
+            }
+        } else { // Scrolling Up (dy < 0)
+            if (isControlBarHidden || isControlBarExpanded) { // Show minimized if currently hidden OR if it was expanded (and now scrolled up)
+                showMinimizedBar();
+                Log.d(TAG, "onScrollChanged: Scrolled UP - Showing minimized bar.");
+            }
+        }
+
+        lastScrollY = scrollY; // Update scroll position
     }
 
     // Method to apply runtime settings based on SharedPreferences
@@ -2254,9 +2298,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         if (controlBarContainer != null) {
             controlBarContainer.setVisibility(View.VISIBLE);
             if (isControlBarExpanded) {
-                showExpandedControls();
+                showExpandedBar();
             } else {
-                showMinimizedControls();
+                showMinimizedBar();
             }
         }
     }
@@ -2315,11 +2359,12 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         intent.putExtra(TabSwitcherActivity.EXTRA_ACTIVE_TAB_INDEX, activeSessionIndex);
         intent.putStringArrayListExtra("EXTRA_TAB_SNAPSHOTS", snapshotBase64Strings); // Add snapshot data
         
-        ActivityOptionsCompat options = ActivityOptionsCompat.makeSceneTransitionAnimation(
-            this,
-            Pair.create(findViewById(R.id.tabsButton), "fab_transition")
-        );
-        tabSwitcherLauncher.launch(intent, options); // Launch with Compat options
+        // ActivityOptionsCompat options = ActivityOptionsCompat.makeSceneTransitionAnimation(
+        //     this,
+        //     Pair.create(findViewById(R.id.tabsButton), "fab_transition")
+        // );
+        // tabSwitcherLauncher.launch(intent, options); // Launch with Compat options
+        tabSwitcherLauncher.launch(intent); // Launch without transition options for testing
     }
 
     // Add pause/resume handling:
@@ -2428,24 +2473,35 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     // Add this method to setup the listener
     private void setupGeckoViewTouchListener() {
         geckoView.setOnTouchListener((v, event) -> {
-            // Check on ACTION_DOWN to react immediately on touch
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                // 1. Tap-to-show minimized bar logic
+                if (isControlBarHidden) {
+                    // Check if the tap is near the bottom edge of the GeckoView
+                    // (remembering the control bar is at the bottom of the screen)
+                    float tapY = event.getY(); // Y-coordinate relative to GeckoView
+                    int geckoViewHeight = geckoView.getHeight();
+
+                    // If GeckoView height is 0, we can't make a reliable calculation yet.
+                    if (geckoViewHeight > 0 && (geckoViewHeight - tapY) < tapThresholdBottomEdgePx) {
+                        showMinimizedBar();
+                        Log.d(TAG, "GeckoView tap near bottom edge detected while hidden, showing minimized bar.");
+                        // Potentially consume this touch so it doesn't also interact with web content immediately
+                        // return true; 
+                    }
+                }
+
+                // 2. Existing keyboard hiding logic
                 View currentFocus = getCurrentFocus();
-                // Hide keyboard only if focus is not on the main URL bar
-                // (assuming keyboard is up due to web content)
                 if (currentFocus != null && currentFocus != urlBar) {
                     Log.d(TAG, "Touch on GeckoView detected, hiding keyboard (current focus: " + currentFocus.getClass().getSimpleName() + ")");
                     hideKeyboard();
-                    // Returning 'false' allows the touch event to propagate to GeckoView for web interaction
-                    // return false; 
                 } else if (currentFocus == null) {
-                    // If nothing has focus, maybe hide keyboard too?
                     Log.d(TAG, "Touch on GeckoView detected (no focus), hiding keyboard.");
                     hideKeyboard();
-                    // return false;
                 }
             }
             // Return false so GeckoView still processes the touch for scrolling, clicking links etc.
+            // if the tap-to-show was not triggered and consumed.
             return false;
         });
     }
@@ -3249,15 +3305,15 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             if (controlBarContainer != null && !isInGeckoViewFullscreen) {
                  controlBarContainer.setVisibility(View.VISIBLE);
                  if (isControlBarExpanded) {
-                    showExpandedControls();
+                    showExpandedBar();
                  } else {
-                    showMinimizedControls();
+                    showMinimizedBar();
                  }
             }
-            // If exiting PiP and we were in GeckoView fullscreen, we might want to re-enter it.
-            // However, GeckoView's onFullScreen(false) should be triggered by the system
-            // when PiP ends, which would call our exitFullScreen().
         }
+        // If exiting PiP and we were in GeckoView fullscreen, we might want to re-enter it.
+        // However, GeckoView's onFullScreen(false) should be triggered by the system
+        // when PiP ends, which would call our exitFullScreen().
     }
     // --- End Picture-in-Picture Methods ---
 } 
