@@ -101,7 +101,8 @@
             android:layout_weight="1"
             android:src="@drawable/ic_tabs"
             android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="@string/action_tabs" />
+            android:contentDescription="@string/action_tabs"
+            android:transitionName="fab_transition" />
 
         <ImageButton
             android:id="@+id/forwardButton"
