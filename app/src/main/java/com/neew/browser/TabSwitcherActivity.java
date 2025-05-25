@@ -8,6 +8,9 @@ import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import java.util.ArrayList;
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
+import android.widget.ImageButton;
+import androidx.appcompat.app.AlertDialog;
+import android.view.View;
 
 public class TabSwitcherActivity extends AppCompatActivity {
 
@@ -17,6 +20,7 @@ public class TabSwitcherActivity extends AppCompatActivity {
     public static final String RESULT_SELECTED_TAB_INDEX = "com.neew.browser.RESULT_SELECTED_TAB_INDEX";
     public static final String RESULT_CLOSED_TAB_INDEX = "com.neew.browser.RESULT_CLOSED_TAB_INDEX";
     public static final String RESULT_CREATE_NEW_TAB = "com.neew.browser.RESULT_CREATE_NEW_TAB";
+    public static final String RESULT_CLEAR_ALL_TABS = "com.neew.browser.RESULT_CLEAR_ALL_TABS";
     public static final int CREATE_NEW_TAB_REQUEST_CODE = -2;
 
     private RecyclerView tabsRecyclerView;
@@ -25,6 +29,7 @@ public class TabSwitcherActivity extends AppCompatActivity {
     private ArrayList<String> tabSnapshotStrings; // To store received Base64 strings
     private int activeTabIndex;
     private FloatingActionButton addNewTabFab;
+    private ImageButton clearAllTabsButton;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -33,6 +38,7 @@ public class TabSwitcherActivity extends AppCompatActivity {
 
         tabsRecyclerView = findViewById(R.id.tabsRecyclerView);
         addNewTabFab = findViewById(R.id.addNewTabFab);
+        clearAllTabsButton = findViewById(R.id.clearAllTabsButton);
 
         // Get data from MainActivity
         tabUrls = getIntent().getStringArrayListExtra(EXTRA_TAB_URLS);
@@ -51,6 +57,7 @@ public class TabSwitcherActivity extends AppCompatActivity {
 
         setupRecyclerView();
         setupFabListener();
+        setupClearAllTabsButtonListener();
     }
 
     private void setupRecyclerView() {
@@ -96,6 +103,8 @@ public class TabSwitcherActivity extends AppCompatActivity {
                  if (position < tabSnapshotStrings.size()) {
                      tabSnapshotStrings.remove(position);
                  }
+                 // After removing a tab, re-check visibility of clear all button
+                 updateClearAllTabsButtonVisibility(); 
             }
         );
         tabsRecyclerView.setAdapter(tabAdapter);
@@ -108,5 +117,31 @@ public class TabSwitcherActivity extends AppCompatActivity {
             setResult(Activity.RESULT_OK, resultIntent);
             finish();
         });
+    }
+
+    private void setupClearAllTabsButtonListener() {
+        updateClearAllTabsButtonVisibility(); // Set initial visibility
+
+        clearAllTabsButton.setOnClickListener(v -> {
+            new AlertDialog.Builder(TabSwitcherActivity.this)
+                .setTitle("Clear All Tabs")
+                .setMessage("This will delete all open tabs.")
+                .setPositiveButton(android.R.string.ok, (dialog, which) -> {
+                    Intent resultIntent = new Intent();
+                    resultIntent.putExtra(RESULT_CLEAR_ALL_TABS, true);
+                    setResult(Activity.RESULT_OK, resultIntent);
+                    finish();
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+        });
+    }
+
+    private void updateClearAllTabsButtonVisibility() {
+        if (tabUrls != null && tabUrls.size() >= 2) {
+            clearAllTabsButton.setVisibility(View.VISIBLE);
+        } else {
+            clearAllTabsButton.setVisibility(View.GONE);
+        }
     }
 } 
