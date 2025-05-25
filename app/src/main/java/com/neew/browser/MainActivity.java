@@ -121,8 +121,15 @@ import android.os.Build;
 import android.util.Rational;
 import android.util.TypedValue;
 
+// For snapshot persistence
+import java.io.FileInputStream;
+import android.graphics.BitmapFactory;
+import java.security.MessageDigest;
+import java.math.BigInteger;
+
 public class MainActivity extends AppCompatActivity implements ScrollDelegate, GeckoSession.PromptDelegate {
     private static final String TAG = "MainActivity";
+    private static final String SNAPSHOT_DIRECTORY_NAME = "tab_snapshots";
 
     // --- Consolidated PromptDelegate Fields ---
     private FilePrompt pendingFilePrompt;
@@ -161,7 +168,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private SharedPreferences prefs;
     private static final String PREF_COOKIES_ENABLED = "cookies_enabled";
     // --- Session Persistence Keys ---
-    private static final String PREF_SAVED_URLS = "saved_urls";
+    private static final String PREF_SAVED_URLS_JSON_ARRAY = "saved_urls_json_array"; // Changed key
     private static final String PREF_ACTIVE_INDEX = "active_index";
     // --- End Session Persistence Keys ---
     // --- Ad Blocker Key ---
@@ -350,6 +357,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         } else if (data.hasExtra(TabSwitcherActivity.RESULT_CREATE_NEW_TAB)) {
                             Log.d(TAG, "Received result: Create new tab");
                             createNewTab(true);
+                        } else if (data.hasExtra(TabSwitcherActivity.RESULT_CLEAR_ALL_TABS)) { // New: Handle clear all tabs
+                            Log.d(TAG, "Received result: Clear all tabs");
+                            clearAllTabsAndCreateNew();
                         }
                     }
                 }
@@ -890,6 +900,13 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                     progressBar.setVisibility(progress == 100 ? View.GONE : View.VISIBLE);
                 }
             }
+            @Override
+            public void onPageStop(GeckoSession session, boolean success) {
+                if (success && session == getActiveSession() && geckoView.getSession() == session) {
+                    Log.d(TAG, "MainTab ProgressDelegate: onPageStop for active session. Capturing snapshot.");
+                    captureSnapshot(session);
+                }
+            }
              // Implement other ProgressDelegate methods like onPageStart/Stop if needed for this session
         });
 
@@ -992,6 +1009,13 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         }
                         Log.v(TAG, "NewTab/Popup Progress: " + progress + "% for " + sessionUrlMap.getOrDefault(session, "Unknown URI"));
                     }
+                    @Override
+                    public void onPageStop(GeckoSession session, boolean success) {
+                        if (success && session == getActiveSession() && geckoView.getSession() == session) {
+                            Log.d(TAG, "Popup ProgressDelegate: onPageStop for active session. Capturing snapshot.");
+                            captureSnapshot(session);
+                        }
+                    }
                 });
 
                 newTabSession.setNavigationDelegate(new NavigationDelegate() {
@@ -1086,6 +1110,13 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                                     progressBar.setVisibility(progress == 100 ? View.GONE : View.VISIBLE);
                                 }
                                 Log.v(TAG, "GrandChildPopup Progress: " + progress + "% for " + sessionUrlMap.getOrDefault(session, "Unknown URI"));
+                            }
+                    @Override
+                            public void onPageStop(GeckoSession session, boolean success) {
+                                if (success && session == getActiveSession() && geckoView.getSession() == session) {
+                                    Log.d(TAG, "GrandChild ProgressDelegate: onPageStop for active session. Capturing snapshot.");
+                                    captureSnapshot(session);
+                                }
                             }
                         });
 
@@ -1610,8 +1641,10 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
     // Method to switch the active tab
     private void switchToTab(int index) {
+        // --- AGGRESSIVE CLAMPING START ---
+        int targetIndex = index;
         if (geckoSessionList.isEmpty()) {
-            Log.e(TAG, "switchToTab called on an empty session list. Index was: " + index + ". Creating new tab as fallback.");
+            Log.e(TAG, "switchToTab called on an empty session list. Original index: " + index + ". Creating new tab as fallback.");
             this.activeSessionIndex = -1; // Ensure createNewTab knows no tab is active
             if (runtime != null) {
                 createNewTab(true); // This will eventually call switchToTab with a valid state
@@ -1621,31 +1654,28 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             return;
         }
 
-        if (index < 0 || index >= geckoSessionList.size()) {
-            Log.e(TAG, "switchToTab: Invalid index " + index + " for list size " + geckoSessionList.size() + ". Aborting switch.");
-            // Fallback: if the intended index is bad for a non-empty list, try to switch to index 0.
-            // This prevents the app from being stuck if logic elsewhere calculates a bad index.
-            if (!geckoSessionList.isEmpty()) {
-                Log.w(TAG, "switchToTab: Attempting to switch to index 0 as a fallback.");
-                // Avoid recursion if index 0 is also bad (shouldn't happen if list not empty)
-                if (0 >= 0 && 0 < geckoSessionList.size() && index != 0) { // prevent recursion if index was already 0 and invalid
-                    switchToTab(0);
-                }
-            }
-            return;
+        if (targetIndex >= geckoSessionList.size()) {
+            Log.w(TAG, "switchToTab: Index " + targetIndex + " is out of bounds for list size " + 
+                       geckoSessionList.size() + ". Clamping to last valid index: " + (geckoSessionList.size() - 1));
+            targetIndex = geckoSessionList.size() - 1;
         }
+        if (targetIndex < 0) {
+            Log.w(TAG, "switchToTab: Index " + targetIndex + " is negative. Clamping to 0.");
+            targetIndex = 0;
+        }
+        // --- AGGRESSIVE CLAMPING END ---
 
-        GeckoSession targetSession = geckoSessionList.get(index);
+        GeckoSession targetSession = geckoSessionList.get(targetIndex);
 
-        // If this tab (by index) is already the active one AND GeckoView is displaying its session
-        if (this.activeSessionIndex == index && geckoView.getSession() == targetSession) {
-            Log.d(TAG, "switchToTab: Tab " + index + " is already active and displayed. Updating UI only.");
+        // If this tab (by targetIndex) is already the active one AND GeckoView is displaying its session
+        if (this.activeSessionIndex == targetIndex && geckoView.getSession() == targetSession) {
+            Log.d(TAG, "switchToTab: Tab " + targetIndex + " is already active and displayed. Updating UI only.");
             updateUIForActiveSession(); // Ensure UI is fresh (e.g. URL bar)
             return;
         }
 
         // Proceed with the switch
-        Log.d(TAG, "Switching to tab index: " + index + ". Current global activeSessionIndex before switch: " + this.activeSessionIndex);
+        Log.d(TAG, "Switching to tab index: " + targetIndex + ". Current global activeSessionIndex before switch: " + this.activeSessionIndex);
 
         GeckoSession sessionCurrentlyInView = geckoView.getSession();
         if (sessionCurrentlyInView != null) {
@@ -1654,7 +1684,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 // Determine if the sessionCurrentlyInView was the 'logical' old active session
                 GeckoSession logicalOldActiveSession = (this.activeSessionIndex >= 0 && 
                                                         this.activeSessionIndex < geckoSessionList.size() && // check if old index is still valid (list might have changed)
-                                                        this.activeSessionIndex != index) // and not the target index
+                                                        this.activeSessionIndex != targetIndex) // and not the target index
                                                        ? geckoSessionList.get(this.activeSessionIndex) 
                                                        : null;
 
@@ -1670,11 +1700,12 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             Log.d(TAG, "Released session from GeckoView: " + sessionUrlMap.getOrDefault(sessionCurrentlyInView, "N/A"));
         }
 
-        this.activeSessionIndex = index;
+        this.activeSessionIndex = targetIndex;
         this.geckoSession = targetSession; // Update the global 'geckoSession' convenience field
         
         geckoView.setSession(targetSession);
         Log.d(TAG, "Attached session to GeckoView: " + sessionUrlMap.getOrDefault(targetSession, "N/A"));
+        // captureSnapshot(targetSession); // CAPTURE SNAPSHOT OF THE NEWLY ACTIVE TAB -> REMOVED, handled by onPageStop
 
         updateUIForActiveSession();
         saveSessionState();
@@ -1729,12 +1760,15 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                          // --- End Resize ---
                          
                         Log.d(TAG, "Snapshot resized to: " + resizedBitmap.getWidth() + "x" + resizedBitmap.getHeight());
-                        // if (!isSwitchingTabs && session == getActiveSession()) { // REMOVE CHECK
-                            sessionSnapshotMap.put(session, resizedBitmap); // Store the resized bitmap (NOT SoftReference)
-                        // }
-                        
-                        // When adding new:
-                        // totalSnapshotMemory += resizedBitmap.getByteCount(); // REMOVE
+                        sessionSnapshotMap.put(session, resizedBitmap); // Store the resized bitmap
+
+                        // --- Save snapshot to disk ---
+                        String url = sessionUrlMap.getOrDefault(session, null);
+                        if (url != null) {
+                            saveSnapshotToDisk(resizedBitmap, url);
+                        }
+                        // --- End save snapshot to disk ---
+
                     } else {
                          Log.w(TAG, "Snapshot capture returned null bitmap for session index: " + geckoSessionList.indexOf(session));
                     }
@@ -1791,11 +1825,16 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
         Log.d(TAG, "Closing tab index: " + indexToClose);
         GeckoSession sessionToClose = geckoSessionList.remove(indexToClose);
-        sessionUrlMap.remove(sessionToClose);
+        String urlOfClosedTab = sessionUrlMap.remove(sessionToClose);
         Bitmap removedSnapshot = sessionSnapshotMap.remove(sessionToClose);
         if (removedSnapshot != null && !removedSnapshot.isRecycled()) {
             removedSnapshot.recycle();
         }
+        // --- Delete snapshot from disk ---
+        if (urlOfClosedTab != null) {
+            deleteSnapshotFromDisk(urlOfClosedTab);
+        }
+        // --- End delete snapshot from disk ---
         sessionToClose.close();
 
         int oldGlobalActiveSessionIndex = this.activeSessionIndex; // Capture before any potential changes by switchToTab
@@ -2329,11 +2368,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
     // Method to launch the Tab Switcher
     private void launchTabSwitcher() {
-        // --- Capture snapshot of the CURRENT tab before launching switcher ---
-        GeckoSession currentSession = getActiveSession();
-        if (currentSession != null) {
-             captureSnapshot(currentSession); // Ensure latest snapshot is taken
-        }
+        // --- Capture snapshot of the CURRENT tab before launching switcher --- (REMOVED - should be up-to-date from onPageStop)
+        // GeckoSession currentSession = getActiveSession();
+        // if (currentSession != null) {
+        //      captureSnapshot(currentSession); // Ensure latest snapshot is taken
+        // }
         // --- End Snapshot Capture ---
         
         Intent intent = new Intent(this, TabSwitcherActivity.class);
@@ -2402,15 +2441,14 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         Log.d(TAG, "[StorageDebug] saveSessionState CALLED");
         SharedPreferences.Editor editor = prefs.edit();
 
-        // Save URLs
-        Set<String> urlsToSave = new HashSet<>();
+        // Save URLs as a JSON array string
+        JSONArray urlsJsonArray = new JSONArray();
         for (GeckoSession session : geckoSessionList) {
-            // Use the stored URL from the map, fallback if somehow missing
-            urlsToSave.add(sessionUrlMap.getOrDefault(session, "about:blank"));
+            urlsJsonArray.put(sessionUrlMap.getOrDefault(session, "about:blank"));
         }
-        Log.d(TAG, "[StorageDebug] Saving URLs: " + urlsToSave);
-        // Using Set<String> which SharedPreferences can handle directly
-        editor.putStringSet(PREF_SAVED_URLS, urlsToSave);
+        String urlsJsonString = urlsJsonArray.toString();
+        Log.d(TAG, "[StorageDebug] Saving URLs JSON: " + urlsJsonString);
+        editor.putString(PREF_SAVED_URLS_JSON_ARRAY, urlsJsonString);
 
         // Clamp activeSessionIndex to valid range before saving
         int clampedActiveIndex = activeSessionIndex;
@@ -2421,22 +2459,38 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         Log.d(TAG, "[StorageDebug] Saving active index: " + clampedActiveIndex);
 
         editor.apply(); // Use apply() for asynchronous saving
-        Log.d(TAG, "[StorageDebug] Session state saved. Tabs: " + urlsToSave.size() + ", Active Index: " + clampedActiveIndex);
+        Log.d(TAG, "[StorageDebug] Session state saved. Tabs: " + urlsJsonArray.length() + ", Active Index: " + clampedActiveIndex);
     }
 
     private boolean restoreSessionState() {
         Log.d(TAG, "[StorageDebug] restoreSessionState CALLED");
-        Set<String> savedUrls = prefs.getStringSet(PREF_SAVED_URLS, null);
+        String savedUrlsJsonString = prefs.getString(PREF_SAVED_URLS_JSON_ARRAY, null); // Changed key
         int savedActiveIndex = prefs.getInt(PREF_ACTIVE_INDEX, -1);
 
-        Log.d(TAG, "[StorageDebug] Found saved URLs: " + savedUrls + ", Saved Active Index: " + savedActiveIndex);
+        Log.d(TAG, "[StorageDebug] Found saved URLs JSON: " + savedUrlsJsonString + ", Saved Active Index: " + savedActiveIndex);
 
-        if (savedUrls == null || savedUrls.isEmpty()) {
-            Log.d(TAG, "[StorageDebug] No saved URLs found.");
+        if (savedUrlsJsonString == null || savedUrlsJsonString.isEmpty()) {
+            Log.d(TAG, "[StorageDebug] No saved URLs JSON found.");
             return false;
         }
 
-        Log.d(TAG, "[StorageDebug] Found saved state. URLs: " + savedUrls.size() + ", Active Index: " + savedActiveIndex);
+        List<String> savedUrlsList = new ArrayList<>();
+        try {
+            JSONArray urlsJsonArray = new JSONArray(savedUrlsJsonString);
+            for (int i = 0; i < urlsJsonArray.length(); i++) {
+                savedUrlsList.add(urlsJsonArray.getString(i));
+            }
+        } catch (JSONException e) {
+            Log.e(TAG, "[StorageDebug] Failed to parse saved URLs JSON", e);
+            return false;
+        }
+
+        if (savedUrlsList.isEmpty()) {
+            Log.d(TAG, "[StorageDebug] Parsed URLs list is empty.");
+            return false;
+        }
+
+        Log.d(TAG, "[StorageDebug] Found saved state. URLs: " + savedUrlsList.size() + ", Active Index: " + savedActiveIndex);
 
         // Clear any potentially existing (should be empty) sessions before restoring
         geckoSessionList.clear();
@@ -2447,10 +2501,22 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         // Recreate sessions - NOTE: Order might not be preserved perfectly with Set
         // If order is critical, saving URLs as a JSON array string would be better.
         int restoredIndex = 0;
-        for (String url : savedUrls) {
+        for (String url : savedUrlsList) { // Iterate over the parsed list
             // Create tabs but don't switch view yet
             Log.d(TAG, "[StorageDebug] Restoring tab: " + url);
-            createNewTab(url, false);
+            createNewTab(url, false); // This will add the session to geckoSessionList and sessionUrlMap
+            
+            // --- Attempt to load snapshot from disk ---
+            GeckoSession justCreatedSession = geckoSessionList.get(geckoSessionList.size() - 1); // Get the session that was just added
+            Bitmap loadedSnapshot = loadSnapshotFromDisk(url);
+            if (loadedSnapshot != null) {
+                sessionSnapshotMap.put(justCreatedSession, loadedSnapshot);
+                Log.d(TAG, "[StorageDebug] Loaded snapshot from disk for: " + url);
+            } else {
+                Log.d(TAG, "[StorageDebug] No snapshot found on disk for: " + url);
+            }
+            // --- End attempt to load snapshot ---
+
             restoredIndex++;
         }
 
@@ -3316,4 +3382,145 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         // when PiP ends, which would call our exitFullScreen().
     }
     // --- End Picture-in-Picture Methods ---
+
+    // --- Snapshot File Management Helpers ---
+    private File getSnapshotDirectory() {
+        File snapshotDir = new File(getCacheDir(), SNAPSHOT_DIRECTORY_NAME);
+        if (!snapshotDir.exists()) {
+            if (!snapshotDir.mkdirs()) {
+                Log.e(TAG, "Failed to create snapshot directory: " + snapshotDir.getAbsolutePath());
+            }
+        }
+        return snapshotDir;
+    }
+
+    private String getSnapshotFilename(String url) {
+        if (url == null || url.isEmpty()) {
+            return null;
+        }
+        try {
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            byte[] messageDigest = md.digest(url.getBytes());
+            BigInteger no = new BigInteger(1, messageDigest);
+            String hashtext = no.toString(16);
+            while (hashtext.length() < 32) {
+                hashtext = "0" + hashtext;
+            }
+            return hashtext + ".png"; // Save as PNG
+        } catch (java.security.NoSuchAlgorithmException e) {
+            Log.e(TAG, "MD5 algorithm not found for snapshot filename", e);
+            // Fallback to a simpler, less ideal naming if MD5 fails (should not happen)
+            return url.replaceAll("[^a-zA-Z0-9.-]", "_") + ".png";
+        }
+    }
+
+    private void saveSnapshotToDisk(Bitmap bitmap, String url) {
+        String filename = getSnapshotFilename(url);
+        if (filename == null || bitmap == null) {
+            Log.w(TAG, "Cannot save snapshot to disk, filename or bitmap is null. URL: " + url);
+            return;
+        }
+        File snapshotDir = getSnapshotDirectory();
+        if (!snapshotDir.exists() && !snapshotDir.mkdirs()) {
+             Log.e(TAG, "Failed to create snapshot directory for saving: " + snapshotDir.getAbsolutePath());
+             return;
+        }
+        File file = new File(snapshotDir, filename);
+        try (FileOutputStream out = new FileOutputStream(file)) {
+            bitmap.compress(Bitmap.CompressFormat.PNG, 90, out); // PNG format, 90 quality
+            Log.d(TAG, "Snapshot saved to disk: " + file.getAbsolutePath());
+        } catch (Exception e) {
+            Log.e(TAG, "Error saving snapshot to disk: " + file.getAbsolutePath(), e);
+        }
+    }
+
+    private @Nullable Bitmap loadSnapshotFromDisk(String url) {
+        String filename = getSnapshotFilename(url);
+        if (filename == null) {
+            return null;
+        }
+        File snapshotDir = getSnapshotDirectory();
+        File file = new File(snapshotDir, filename);
+
+        if (file.exists()) {
+            try (FileInputStream fis = new FileInputStream(file)) {
+                Bitmap bitmap = BitmapFactory.decodeStream(fis);
+                Log.d(TAG, "Snapshot loaded from disk: " + file.getAbsolutePath());
+                return bitmap;
+            } catch (Exception e) {
+                Log.e(TAG, "Error loading snapshot from disk: " + file.getAbsolutePath(), e);
+                return null;
+            }
+        } else {
+            // Log.d(TAG, "Snapshot file not found on disk: " + file.getAbsolutePath()); // Can be noisy
+            return null;
+        }
+    }
+
+    private void deleteSnapshotFromDisk(String url) {
+        String filename = getSnapshotFilename(url);
+        if (filename == null) {
+            return;
+        }
+        File snapshotDir = getSnapshotDirectory();
+        File file = new File(snapshotDir, filename);
+        if (file.exists()) {
+            if (file.delete()) {
+                Log.d(TAG, "Snapshot deleted from disk: " + file.getAbsolutePath());
+            } else {
+                Log.w(TAG, "Failed to delete snapshot from disk: " + file.getAbsolutePath());
+            }
+        }
+    }
+
+    private void deleteAllSnapshotsFromDisk() {
+        File snapshotDir = getSnapshotDirectory();
+        if (snapshotDir.exists() && snapshotDir.isDirectory()) {
+            File[] files = snapshotDir.listFiles();
+            if (files != null) {
+                for (File file : files) {
+                    if (file.delete()) {
+                        Log.d(TAG, "Deleted snapshot file: " + file.getAbsolutePath());
+                    } else {
+                        Log.w(TAG, "Failed to delete snapshot file: " + file.getAbsolutePath());
+                    }
+                }
+            }
+            Log.i(TAG, "All snapshots deleted from disk directory: " + snapshotDir.getAbsolutePath());
+        }
+    }
+    // --- End Snapshot File Management Helpers ---
+
+    // Method to clear all tabs and open a new default tab
+    private void clearAllTabsAndCreateNew() {
+        Log.d(TAG, "Clearing all tabs.");
+        // Close all existing sessions
+        synchronized (geckoSessionList) {
+            for (GeckoSession session : new ArrayList<>(geckoSessionList)) { // Iterate over a copy
+                // Clean up snapshot from map and disk if it exists for this session
+                String url = sessionUrlMap.get(session);
+                if (url != null) {
+                    deleteSnapshotFromDisk(url); // Delete from disk
+                }
+                sessionSnapshotMap.remove(session); // Remove from memory map
+                sessionUrlMap.remove(session); // Remove from URL map
+                session.close();
+            }
+            geckoSessionList.clear();
+        }
+
+        // Clear all snapshots from the disk directory as a final sweep (as per requirement)
+        deleteAllSnapshotsFromDisk(); 
+
+        activeSessionIndex = -1; // Reset active index
+        this.geckoSession = null; // Clear the global convenience field
+
+        // Create a new default tab (e.g., Google homepage)
+        createNewTab("https://www.google.com", true);
+
+        // Update UI (e.g., if there's a tab count display, it should reflect 1)
+        updateUIForActiveSession(); // This will also update the URL bar for the new tab
+        saveSessionState(); // Persist the new state (one tab)
+        Toast.makeText(this, "All tabs cleared.", Toast.LENGTH_SHORT).show();
+    }
 } 
