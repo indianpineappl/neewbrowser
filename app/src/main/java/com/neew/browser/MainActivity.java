@@ -126,6 +126,9 @@ import java.io.FileInputStream;
 import android.graphics.BitmapFactory;
 import java.security.MessageDigest;
 import java.math.BigInteger;
+// import org.mozilla.geckoview.GeckoSession.ConsoleMessage; // Import for ConsoleDelegate
+
+import com.google.firebase.analytics.FirebaseAnalytics;
 
 public class MainActivity extends AppCompatActivity implements ScrollDelegate, GeckoSession.PromptDelegate {
     private static final String TAG = "MainActivity";
@@ -243,6 +246,8 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private boolean isInPictureInPictureMode = false; // To track PiP state
     private boolean firstWindowFocus = true; // Add this new field
 
+    private FirebaseAnalytics mFirebaseAnalytics;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -311,13 +316,15 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
         // Initialize Gecko Runtime (only once)
         if (runtime == null) {
-            Log.d(TAG, "Creating GeckoRuntime (default settings)");
+            Log.d(TAG, "Creating GeckoRuntime with console output enabled");
 
-            // Create runtime with default settings
-            runtime = GeckoRuntime.create(this);
-            Log.i(TAG, "GeckoRuntime created with default settings.");
+            // Create runtime with console output enabled
+            GeckoRuntimeSettings.Builder runtimeSettingsBuilder = new GeckoRuntimeSettings.Builder();
+            runtimeSettingsBuilder.consoleOutput(true);
+            runtime = GeckoRuntime.create(this, runtimeSettingsBuilder.build());
+            Log.i(TAG, "GeckoRuntime created with console output enabled.");
 
-            applyRuntimeSettings(); // Apply dynamic settings AFTER creation using direct setters
+            applyRuntimeSettings(); // Apply other dynamic settings
             initializeUBlockOrigin(); // Initialize uBlock Origin after runtime is ready
 
         } else {
@@ -533,6 +540,8 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         registerReceiver(downloadCompleteReceiver, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
 
         checkAndShowStorageWarning();
+
+        mFirebaseAnalytics = FirebaseAnalytics.getInstance(this);
     }
 
     private void checkAndShowStorageWarning() {
@@ -760,7 +769,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                                // and minimizedControlBar.setVisibility(View.GONE)
             v.post(() -> {
                 Log.d(TAG, "Executing launchTabSwitcher from post.");
-                launchTabSwitcher();
+            launchTabSwitcher();
             });
         });
 
@@ -780,7 +789,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         minimizedNewTabButton.setOnClickListener(v -> {
             Log.d(TAG, "Minimized New Tab button clicked.");
             showExpandedBar(); // Ensure expanded bar is shown
-            createNewTab(true); // Create and switch to the new tab
+              createNewTab(true); // Create and switch to the new tab
         });
 
         minimizedUrlBar.setOnClickListener(v -> showExpandedBar());
@@ -790,9 +799,6 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private void setupUrlBarListener() {
         urlBar.setOnClickListener(v -> {
             urlBar.post(() -> urlBar.selectAll());
-            // Optionally, also show the keyboard if it's not already visible
-            // InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-            // imm.showSoftInput(urlBar, InputMethodManager.SHOW_IMPLICIT);
         });
 
         urlBar.setOnFocusChangeListener((v, hasFocus) -> {
@@ -971,6 +977,24 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 // Allow other navigation requests for the main tab itself
                 Log.d(TAG, "MainTab NavDelegate onLoadRequest: Allowing non-intent URI: " + uriString);
                 return GeckoResult.fromValue(AllowOrDeny.ALLOW);
+            }
+
+            @Override
+            public GeckoResult<String> onLoadError(GeckoSession session, String uri, WebRequestError error) {
+                Log.e(TAG, "onLoadError: Uri=" + uri + ", Error=" + error.category + ": " + error.getMessage()); // Changed error.description to error.getMessage()
+                if (session == getActiveSession()) { // Only show if it's the active tab
+                    Toast.makeText(MainActivity.this, "Error: Could not load page. It might be blocked or unavailable.", Toast.LENGTH_LONG).show();
+                    // Optionally, load a custom error page or clear the view
+                    // For example, to load a blank page:
+                    // session.loadUri("about:blank"); 
+                    // Or a custom HTML error page from assets:
+                    // session.loadUri("file:///android_asset/error_page.html");
+                }
+                // Ensure progress bar is hidden on error
+                if (progressBar != null) {
+                    progressBar.setVisibility(View.GONE);
+                }
+                return null; // Return null as per GeckoResult<String>
             }
 
             @Override
@@ -1328,6 +1352,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         grandChildSession.setPromptDelegate(MainActivity.this);
                         grandChildSession.setScrollDelegate(MainActivity.this);
 
+                        // Add ConsoleDelegate for the grandchild popup session
+                        // grandChildSession.setConsoleDelegate(new GeckoSession.ConsoleDelegate() { ... });
+
                         synchronized (geckoSessionList) { geckoSessionList.add(grandChildSession); }
                         sessionUrlMap.put(grandChildSession, newUriFromPopup != null ? newUriFromPopup : "about:blank");
 
@@ -1466,6 +1493,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 newTabSession.setPromptDelegate(MainActivity.this); 
                 newTabSession.setScrollDelegate(MainActivity.this); 
                 // ***** END CRITICAL FIX *****
+
+                // Add ConsoleDelegate for the new tab/popup session
+                // newTabSession.setConsoleDelegate(new GeckoSession.ConsoleDelegate() { ... });
 
                 // 3. Add to tab management list (ensure thread safety if needed)
                 synchronized (geckoSessionList) {
@@ -1616,6 +1646,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
         newSession.setScrollDelegate(this); // Set MainActivity as scroll delegate
         newSession.setPromptDelegate(this); // Added for regular new sessions
+
+        // Add ConsoleDelegate to log web console messages
+        // newSession.setConsoleDelegate(new GeckoSession.ConsoleDelegate() { ... });
 
         geckoSessionList.add(newSession);
         String targetUrl = (initialUrl != null && !initialUrl.isEmpty()) ? initialUrl : "about:blank";
@@ -1924,7 +1957,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             urlBar.setFocusable(false);
             urlBar.setFocusableInTouchMode(false);
             urlBar.setClickable(false);
-
+            
             isControlBarExpanded = false;
             isControlBarHidden = false;
             // Update the text of the minimized URL bar
