@@ -6,9 +6,15 @@
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
     <color name="light_gray">#FFE0E0E0</color>
-    <color name="icon_gray">#FFD9D9D9</color>
-    <color name="address_text_gray">#FF3C3C3C</color>
+    <color name="icon_gray">#222222</color>
+    <color name="address_text_gray">#71716F</color>
     
     <!-- Settings Panel Colors -->
     <color name="settings_toggle_active">#daf0ff</color>
+
+    <color name="control_bar_bg">#FFFFFF</color>
+    <color name="control_bar_shadow">#22000000</color>
+
+    <color name="settings_panel_bg">#FFFFFF</color>
+    <color name="settings_panel_text">#222222</color>
 </resources> 

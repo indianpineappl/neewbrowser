@@ -4,7 +4,7 @@
     android:layout_width="match_parent"
     android:layout_height="?attr/actionBarSize" 
     android:orientation="horizontal"
-    android:background="@android:color/black"
+    android:background="@color/control_bar_bg"
     android:gravity="center_vertical"
     android:elevation="4dp"
     android:visibility="gone"> <!-- Hidden by default -->
