@@ -375,13 +375,10 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
             if (!actionableIntentPending) {
                 Log.d(TAG, "onCreate: No specific actionable intent found, attempting to restore session state.");
-                // Delay session creation to allow runtime to fully initialize
-                new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                    if (!restoreSessionState()) {
-                        Log.d(TAG, "onCreate: Session restore failed or no state found, creating a default new tab.");
-                        createNewTab(null, true); // Create a default tab if restore fails
-                    }
-                }, 500); // Wait for runtime to be stable
+                if (!restoreSessionState()) {
+                    Log.d(TAG, "onCreate: Session restore failed or no state found, creating a default new tab.");
+                    createNewTab(null, true); // Create a default tab if restore fails
+                }
             } else {
                 Log.d(TAG, "onCreate: Actionable intent will be handled by onResume/handleIntent. No session restored or default tab created here.");
                 // For actionable intents, we'll let onResume/handleIntent create the tab when ready
@@ -389,13 +386,10 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         } else {
             // No intent at all, definitely try to restore session or create default.
             Log.d(TAG, "onCreate: No initial intent, attempting to restore session state.");
-            // Delay session creation to allow runtime to fully initialize
-            new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                if (!restoreSessionState()) {
-                    Log.d(TAG, "onCreate: Session restore failed (no initial intent), creating a default new tab.");
-                    createNewTab(null, true); // Create a default tab if restore fails
-                }
-            }, 500); // Wait for runtime to be stable
+            if (!restoreSessionState()) {
+                Log.d(TAG, "onCreate: Session restore failed (no initial intent), creating a default new tab.");
+                createNewTab(null, true); // Create a default tab if restore fails
+            }
         }
 
         // --- Register Activity Result Launchers (TabSwitcher, FilePicker) --- (Moved earlier, assuming this is ok)
@@ -919,7 +913,10 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         backButton.setOnClickListener(v -> {
             GeckoSession activeSession = getActiveSession();
             if (activeSession != null) {
+                Log.d(TAG, "Back button clicked - calling goBack() on active session");
                 activeSession.goBack();
+            } else {
+                Log.w(TAG, "Back button clicked but no active session");
             }
         });
         forwardButton.setOnClickListener(v -> {
@@ -961,7 +958,12 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         // Add listeners for MINIMIZED buttons
         minimizedBackButton.setOnClickListener(v -> {
              GeckoSession activeSession = getActiveSession();
-             if (activeSession != null) activeSession.goBack();
+             if (activeSession != null) {
+                 Log.d(TAG, "Minimized back button clicked - calling goBack() on active session");
+                 activeSession.goBack();
+             } else {
+                 Log.w(TAG, "Minimized back button clicked but no active session");
+             }
         });
         minimizedForwardButton.setOnClickListener(v -> {
              GeckoSession activeSession = getActiveSession();
@@ -982,6 +984,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
      // Refactored method to set up URL bar listener
     private void setupUrlBarListener() {
+        // Setup listeners for the main URL bar
         urlBar.setOnClickListener(v -> {
             urlBar.post(() -> urlBar.selectAll());
         });
@@ -997,7 +1000,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             if (actionId == EditorInfo.IME_ACTION_GO || actionId == EditorInfo.IME_ACTION_NEXT) { 
                 String rawInput = urlBar.getText().toString();
                 String input = rawInput.trim(); 
-                Log.d(TAG, "Input received: '" + input + "'"); 
+                Log.d(TAG, "Main URL bar input received: '" + input + "'"); 
 
                 if (input.isEmpty()) {
                     return true; // Consume the action
@@ -1010,6 +1013,47 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                     activeSession.loadUri(urlToLoad);
                     Log.d(TAG, "Called loadUri with: " + urlToLoad);
                     hideKeyboard();
+                } else if (activeSession == null) {
+                     Log.e(TAG, "activeSession is null, cannot load URI.");
+                } else {
+                    Log.e(TAG, "urlToLoad is null (likely encoding error), not loading.");
+                }
+                return true;
+            }
+            return false;
+        });
+
+        // Setup listeners for the minimized URL bar
+        minimizedUrlBar.setOnClickListener(v -> {
+            minimizedUrlBar.post(() -> minimizedUrlBar.selectAll());
+        });
+
+        minimizedUrlBar.setOnFocusChangeListener((v, hasFocus) -> {
+            if (hasFocus) {
+                // Post to ensure selection happens after focus events are fully processed
+                minimizedUrlBar.post(() -> minimizedUrlBar.selectAll());
+            }
+        });
+
+        minimizedUrlBar.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_GO || actionId == EditorInfo.IME_ACTION_NEXT) { 
+                String rawInput = minimizedUrlBar.getText().toString();
+                String input = rawInput.trim(); 
+                Log.d(TAG, "Minimized URL bar input received: '" + input + "'"); 
+
+                if (input.isEmpty()) {
+                    return true; // Consume the action
+                }
+
+                String urlToLoad = processUrlInput(input);
+                GeckoSession activeSession = getActiveSession();
+
+                if (urlToLoad != null && activeSession != null) {
+                    activeSession.loadUri(urlToLoad);
+                    Log.d(TAG, "Called loadUri with: " + urlToLoad);
+                    hideKeyboard();
+                    // Update both URL bars to show the same content
+                    urlBar.setText(input);
                 } else if (activeSession == null) {
                      Log.e(TAG, "activeSession is null, cannot load URI.");
                 } else {
@@ -1197,22 +1241,51 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 return null; // Return null as per GeckoResult<String>
             }
 
-            @Override
+                        @Override
             public void onLocationChange(GeckoSession session, @Nullable String newUri, @NonNull List<GeckoSession.PermissionDelegate.ContentPermission> perms, @NonNull Boolean hasUserGesture) {
                 Log.d(TAG, "NavDelegate: onLocationChange for session: " + sessionUrlMap.getOrDefault(session, "N/A") + " to URI: " + newUri +
                            " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
                 if (newUri != null) {
                     sessionUrlMap.put(session, newUri);
                     if (session == getActiveSession()) {
-                            runOnUiThread(() -> {
+                        runOnUiThread(() -> {
+                            // Always update both URL bars to keep them synchronized
                             urlBar.setText(newUri);
-                                if (!isControlBarExpanded) {
-                                minimizedUrlBar.setText(newUri);
-                                }
-                            });
-                        }
+                            minimizedUrlBar.setText(newUri);
+                        });
                     }
-                    }
+                }
+            }
+
+            @Override
+            public void onCanGoBack(GeckoSession session, boolean canGoBack) {
+                Log.d(TAG, "NavDelegate: onCanGoBack - session can go back: " + canGoBack);
+                if (session == getActiveSession()) {
+                    runOnUiThread(() -> {
+                        // Update back button states based on navigation capability
+                        backButton.setEnabled(canGoBack);
+                        minimizedBackButton.setEnabled(canGoBack);
+                        // Optionally change button appearance
+                        backButton.setAlpha(canGoBack ? 1.0f : 0.5f);
+                        minimizedBackButton.setAlpha(canGoBack ? 1.0f : 0.5f);
+                    });
+                }
+            }
+
+            @Override
+            public void onCanGoForward(GeckoSession session, boolean canGoForward) {
+                Log.d(TAG, "NavDelegate: onCanGoForward - session can go forward: " + canGoForward);
+                if (session == getActiveSession()) {
+                    runOnUiThread(() -> {
+                        // Update forward button states based on navigation capability
+                        forwardButton.setEnabled(canGoForward);
+                        minimizedForwardButton.setEnabled(canGoForward);
+                        // Optionally change button appearance
+                        forwardButton.setAlpha(canGoForward ? 1.0f : 0.5f);
+                        minimizedForwardButton.setAlpha(canGoForward ? 1.0f : 0.5f);
+                    });
+                }
+            }
 
             // This onNewSession is called when the main tab (newSession) tries to open a popup/new window
                     @Override
@@ -1313,11 +1386,10 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         if (newUri != null) {
                             sessionUrlMap.put(session, newUri);
                             if (session == getActiveSession()) {
-                        runOnUiThread(() -> {
+                                runOnUiThread(() -> {
+                                    // Always update both URL bars to keep them synchronized
                                     urlBar.setText(newUri);
-                                    if (!isControlBarExpanded) {
-                                        minimizedUrlBar.setText(newUri);
-                                    }
+                                    minimizedUrlBar.setText(newUri);
                                 });
                             }
                             saveSessionState(); // TEST: Re-enabled
@@ -1418,11 +1490,10 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         if (newUri != null) {
                             sessionUrlMap.put(session, newUri);
                             if (session == getActiveSession()) {
-                        runOnUiThread(() -> {
+                                runOnUiThread(() -> {
+                                    // Always update both URL bars to keep them synchronized
                                     urlBar.setText(newUri);
-                                    if (!isControlBarExpanded) {
-                                        minimizedUrlBar.setText(newUri);
-                                    }
+                                    minimizedUrlBar.setText(newUri);
                                 });
                             }
                             saveSessionState(); // TEST: Re-enabled
@@ -2068,10 +2139,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             Log.d(TAG, "Updating UI for Active Session: URL=" + currentUrl);
             
             runOnUiThread(() -> {
+                // Always update both URL bars to keep them synchronized
                 urlBar.setText(currentUrl);
-                if (!isControlBarExpanded) {
-                    minimizedUrlBar.setText(currentUrl);
-                }
+                minimizedUrlBar.setText(currentUrl);
                 progressBar.setProgress(0);
                 progressBar.setVisibility(View.GONE);
             });
@@ -2083,14 +2153,16 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     @Override
     public void onBackPressed() {
         if (settingsPanelLayout.getVisibility() == View.VISIBLE) {
+            Log.d(TAG, "onBackPressed: Settings panel visible, hiding it");
             hideSettingsPanel(false);
             return;
         }
         GeckoSession activeSession = getActiveSession();
         if (activeSession != null) {
-             Log.d(TAG, "onBackPressed: Calling goBack() on active GeckoSession.");
+             Log.d(TAG, "onBackPressed: Calling goBack() on active GeckoSession");
              activeSession.goBack();
         } else {
+             Log.w(TAG, "onBackPressed: No active session, calling super.onBackPressed()");
              super.onBackPressed();
         }
     }
@@ -2912,13 +2984,13 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     }
 
     // Add pause/resume handling:
-    // @Override // REMOVE
-    // protected void onPause() {
-    //     super.onPause();
-    //     if (isFinishing()) {
-    //         clearAllSnapshots();
-    //     }
-    // }
+    @Override
+    protected void onPause() {
+        super.onPause();
+        Log.d(TAG, "onPause called - saving session state");
+        // Save session state when app goes to background
+        saveSessionState();
+    }
 
     // private void clearAllSnapshots() { // REMOVE
     //     synchronized (geckoSessionList) { // Synchronize access if modifying map concurrently
