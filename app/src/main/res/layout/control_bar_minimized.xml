@@ -37,7 +37,7 @@
         android:layout_marginEnd="4dp"
         android:background="@drawable/url_bar_background" 
         android:padding="8dp" 
-        android:textColor="@color/address_text_gray"
+        android:textColor="@color/address_bar_text"
         android:textSize="14sp"
         android:maxLines="1"
         android:ellipsize="end"

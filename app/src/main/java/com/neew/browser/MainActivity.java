@@ -21,6 +21,12 @@ import android.util.Patterns;
 import java.net.URLEncoder;
 import java.io.UnsupportedEncodingException;
 import android.widget.Toast;
+import android.widget.PopupWindow;
+import android.content.ClipboardManager;
+import android.content.ClipData;
+import android.view.LayoutInflater;
+import android.view.ViewGroup;
+import android.view.Gravity;
 import android.os.Handler;
 import android.os.Looper;
 import android.widget.LinearLayout;
@@ -241,10 +247,21 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
     private static final String PREF_IMMERSIVE_MODE_ENABLED = "immersive_mode_enabled";
     private SwitchCompat panelImmersiveSwitch;
+    private SwitchCompat panelDesktopModeSwitch;
+    
+    // User Agent configuration
+    private static final String PREF_USER_AGENT_MODE = "user_agent_mode"; // "mobile", "desktop", "custom"
+    private static final String DEFAULT_USER_AGENT_MODE = "mobile";
 
     private boolean isInGeckoViewFullscreen = false; // To track if GeckoView requested fullscreen
     private boolean isInPictureInPictureMode = false; // To track PiP state
     private boolean firstWindowFocus = true; // Add this new field
+
+    // Context menu fields
+    private PopupWindow contextMenuPopup;
+    private View contextMenuView;
+    private GeckoSession.ContentDelegate.ContextElement currentContextElement;
+    private String currentContextUrl;
 
     private FirebaseAnalytics mFirebaseAnalytics;
 
@@ -313,6 +330,13 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         });
         // Apply immersive mode on startup - This will be re-asserted in onWindowFocusChanged too
         applyImmersiveMode(panelImmersiveSwitch.isChecked());
+
+        // Initialize Desktop Mode Switch
+        panelDesktopModeSwitch = findViewById(R.id.panelDesktopModeSwitch);
+        setupDesktopModeSwitch();
+
+        // Initialize context menu
+        initializeContextMenu();
 
         // Initialize Gecko Runtime (only once)
         if (runtime == null) {
@@ -893,6 +917,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         Log.d(TAG, "Creating new tab. Initial URL: " + initialUrl + ", Switch: " + switchToTab);
         GeckoSession newSession = new GeckoSession();
         
+        // Apply user agent settings before opening
+        applyUserAgentToSession(newSession);
+        
         newSession.open(runtime);
         Log.d(TAG, "Opened new GeckoSession");
         
@@ -1022,6 +1049,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 // 1. Create the GeckoSession object for the new tab/popup.
                 //    DO NOT CALL .open(runtime) on it here. GeckoView will do that.
                 final GeckoSession newTabSession = new GeckoSession();
+                
+                // Apply user agent settings to the popup session
+                applyUserAgentToSession(newTabSession);
 
                 // 2. Configure its delegates:
                 newTabSession.setProgressDelegate(new ProgressDelegate() {
@@ -1125,6 +1155,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                     public GeckoResult<GeckoSession> onNewSession(GeckoSession currentPopupSession, String newUriFromPopup) {
                         Log.i(TAG, "Popup's NavDelegate: Allowing nested popup from " + newUriFromPopup + " (no domain restriction).");
                         final GeckoSession grandChildSession = new GeckoSession();
+                        
+                        // Apply user agent settings to the grandchild session
+                        applyUserAgentToSession(grandChildSession);
 
                         grandChildSession.setProgressDelegate(new ProgressDelegate() {
                     @Override
@@ -1487,6 +1520,24 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                             session.close();
                         }
                     }
+
+                    @Override
+                    public void onContextMenu(GeckoSession session, int screenX, int screenY, 
+                                             GeckoSession.ContentDelegate.ContextElement element) {
+                        // Filter out JavaScript and mailto URLs
+                        String linkUri = element.linkUri;
+                        if (linkUri != null && (linkUri.startsWith("javascript:") || linkUri.startsWith("mailto:"))) {
+                            Log.d(TAG, "Popup Context menu blocked for " + linkUri.substring(0, Math.min(linkUri.length(), 20)) + "...");
+                            return;
+                        }
+
+                        // Show context menu for supported elements with links
+                        if (element.linkUri != null) {
+                            Log.d(TAG, "Popup Context menu triggered for linkUri: " + element.linkUri + 
+                                       ", type: " + element.type + " at (" + screenX + "," + screenY + ")");
+                            showContextMenu(screenX, screenY, element);
+                        }
+                    }
                 });
 
                 // ***** THIS IS THE CRITICAL FIX *****
@@ -1640,6 +1691,24 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 } else {
                     // If for some reason it's not in our main list, just close the session.
                     session.close();
+                }
+            }
+
+            @Override
+            public void onContextMenu(GeckoSession session, int screenX, int screenY, 
+                                     GeckoSession.ContentDelegate.ContextElement element) {
+                // Filter out JavaScript and mailto URLs
+                String linkUri = element.linkUri;
+                if (linkUri != null && (linkUri.startsWith("javascript:") || linkUri.startsWith("mailto:"))) {
+                    Log.d(TAG, "Context menu blocked for " + linkUri.substring(0, Math.min(linkUri.length(), 20)) + "...");
+                    return;
+                }
+
+                // Show context menu for supported elements with links
+                if (element.linkUri != null) {
+                    Log.d(TAG, "Context menu triggered for linkUri: " + element.linkUri + 
+                               ", type: " + element.type + " at (" + screenX + "," + screenY + ")");
+                    showContextMenu(screenX, screenY, element);
                 }
             }
         });
@@ -2011,6 +2080,219 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     }
 
     // Method to apply runtime settings based on SharedPreferences
+    private void setupDesktopModeSwitch() {
+        // Set current state based on saved preference
+        String currentMode = prefs.getString(PREF_USER_AGENT_MODE, DEFAULT_USER_AGENT_MODE);
+        boolean isDesktopMode = currentMode.equals("desktop");
+        panelDesktopModeSwitch.setChecked(isDesktopMode);
+        
+        // Set listener for changes (but don't apply immediately - wait for Apply button)
+        panelDesktopModeSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            Log.d(TAG, "Desktop mode switch changed to: " + isChecked);
+            // Changes will be applied when user clicks Apply button
+        });
+    }
+
+    private void initializeContextMenu() {
+        LayoutInflater inflater = LayoutInflater.from(this);
+        contextMenuView = inflater.inflate(R.layout.context_menu_layout, null);
+        
+        // Set up click listeners for menu items
+        contextMenuView.findViewById(R.id.context_menu_open_new_tab).setOnClickListener(v -> {
+            handleContextMenuAction("open_new_tab");
+        });
+        
+        contextMenuView.findViewById(R.id.context_menu_open_background_tab).setOnClickListener(v -> {
+            handleContextMenuAction("open_background_tab");
+        });
+        
+        contextMenuView.findViewById(R.id.context_menu_copy_link).setOnClickListener(v -> {
+            handleContextMenuAction("copy_link");
+        });
+        
+        contextMenuView.findViewById(R.id.context_menu_share_link).setOnClickListener(v -> {
+            handleContextMenuAction("share_link");
+        });
+        
+        contextMenuView.findViewById(R.id.context_menu_download).setOnClickListener(v -> {
+            handleContextMenuAction("download");
+        });
+        
+        Log.d(TAG, "Context menu initialized");
+    }
+
+    private void showContextMenu(int screenX, int screenY, GeckoSession.ContentDelegate.ContextElement element) {
+        if (contextMenuView == null) {
+            Log.w(TAG, "Context menu view not initialized");
+            return;
+        }
+
+        // Store the current context
+        currentContextElement = element;
+        currentContextUrl = element.linkUri;
+
+        // Configure menu items based on element type
+        View downloadOption = contextMenuView.findViewById(R.id.context_menu_download);
+        if (element.type == GeckoSession.ContentDelegate.ContextElement.TYPE_IMAGE) {
+            downloadOption.setVisibility(View.VISIBLE);
+            currentContextUrl = element.srcUri != null ? element.srcUri : element.linkUri;
+        } else {
+            downloadOption.setVisibility(View.GONE);
+        }
+
+        // Create and show popup
+        if (contextMenuPopup != null) {
+            contextMenuPopup.dismiss();
+        }
+
+        contextMenuPopup = new PopupWindow(contextMenuView, 
+            ViewGroup.LayoutParams.WRAP_CONTENT, 
+            ViewGroup.LayoutParams.WRAP_CONTENT, 
+            true);
+        
+        contextMenuPopup.setOutsideTouchable(true);
+        contextMenuPopup.setFocusable(true);
+
+        // Convert screen coordinates to view coordinates
+        int[] location = new int[2];
+        geckoView.getLocationOnScreen(location);
+        int x = screenX - location[0];
+        int y = screenY - location[1];
+
+        // Ensure menu doesn't go off screen
+        contextMenuView.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+        int menuWidth = contextMenuView.getMeasuredWidth();
+        int menuHeight = contextMenuView.getMeasuredHeight();
+        
+        if (x + menuWidth > geckoView.getWidth()) {
+            x = geckoView.getWidth() - menuWidth;
+        }
+        if (y + menuHeight > geckoView.getHeight()) {
+            y = y - menuHeight;
+        }
+        
+        x = Math.max(0, x);
+        y = Math.max(0, y);
+
+        try {
+            contextMenuPopup.showAtLocation(geckoView, Gravity.NO_GRAVITY, x, y);
+            Log.d(TAG, "Context menu shown at (" + x + "," + y + ") for " + element.type + " element");
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to show context menu", e);
+        }
+    }
+
+    private void hideContextMenu() {
+        if (contextMenuPopup != null && contextMenuPopup.isShowing()) {
+            contextMenuPopup.dismiss();
+            contextMenuPopup = null;
+        }
+        currentContextElement = null;
+        currentContextUrl = null;
+    }
+
+    private void handleContextMenuAction(String action) {
+        // Store URL before hiding menu to prevent race condition
+        String urlToProcess = currentContextUrl;
+        GeckoSession.ContentDelegate.ContextElement elementToProcess = currentContextElement;
+        
+        // Hide the context menu first
+        hideContextMenu();
+        
+        if (urlToProcess == null) {
+            Log.w(TAG, "No context URL available for action: " + action);
+            return;
+        }
+
+        Log.d(TAG, "Handling context menu action: " + action + " for URL: " + urlToProcess);
+
+        switch (action) {
+            case "open_new_tab":
+                createNewTab(urlToProcess, true); // Create and switch to new tab
+                break;
+                
+            case "open_background_tab":
+                createNewTab(urlToProcess, false); // Create but don't switch
+                break;
+                
+            case "copy_link":
+                ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                ClipData clip = ClipData.newPlainText("Link URL", urlToProcess);
+                clipboard.setPrimaryClip(clip);
+                Toast.makeText(this, "Link copied to clipboard", Toast.LENGTH_SHORT).show();
+                break;
+                
+            case "share_link":
+                Intent shareIntent = new Intent(Intent.ACTION_SEND);
+                shareIntent.setType("text/plain");
+                shareIntent.putExtra(Intent.EXTRA_TEXT, urlToProcess);
+                startActivity(Intent.createChooser(shareIntent, "Share link"));
+                break;
+                
+            case "download":
+                if (elementToProcess != null && 
+                    elementToProcess.type == GeckoSession.ContentDelegate.ContextElement.TYPE_IMAGE) {
+                    // Handle image download
+                    handleImageDownload(urlToProcess);
+                }
+                break;
+                
+            default:
+                Log.w(TAG, "Unknown context menu action: " + action);
+        }
+    }
+
+    private void handleImageDownload(String imageUrl) {
+        if (imageUrl == null || imageUrl.isEmpty()) {
+            Toast.makeText(this, "Unable to download: Invalid image URL", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        // Create a simple download using the existing download infrastructure
+        try {
+            // Create a WebResponse for the image
+            GeckoSession activeSession = getActiveSession();
+            if (activeSession != null) {
+                // Load the image URL in a way that triggers download
+                Intent downloadIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(imageUrl));
+                downloadIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                
+                try {
+                    startActivity(downloadIntent);
+                } catch (Exception e) {
+                    // If no app can handle it, show a message
+                    Toast.makeText(this, "No app available to download image", Toast.LENGTH_SHORT).show();
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error downloading image", e);
+            Toast.makeText(this, "Download failed", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private String getUserAgent(String mode) {
+        String version = BuildConfig.VERSION_NAME;
+        String geckoVersion = "129.0"; // Keep synchronized with GeckoView version
+        
+        switch (mode) {
+            case "desktop":
+                return "Mozilla/5.0 (X11; Linux x86_64; rv:" + geckoVersion + ") Gecko/20100101 Firefox/" + geckoVersion + " IndicBrowser/" + version;
+            case "mobile":
+            default:
+                // Use Android-style mobile user agent that Google recognizes
+                return "Mozilla/5.0 (Linux; Android 14; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 IndicBrowser/" + version;
+        }
+    }
+
+    private void applyUserAgentToSession(GeckoSession session) {
+        if (session != null) {
+            String userAgentMode = prefs.getString(PREF_USER_AGENT_MODE, DEFAULT_USER_AGENT_MODE);
+            String userAgent = getUserAgent(userAgentMode);
+            session.getSettings().setUserAgentOverride(userAgent);
+            Log.d(TAG, "Applied user agent to session: " + userAgent + " (mode: " + userAgentMode + ")");
+        }
+    }
+
     private void applyRuntimeSettings() {
         if (runtime == null) {
             Log.e(TAG, "applyRuntimeSettings: Runtime is null!");
@@ -2022,6 +2304,12 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
         settings.setJavaScriptEnabled(true);
         settings.setRemoteDebuggingEnabled(true); // Enable remote debugging
+
+        // --- Apply User Agent Settings ---
+        String userAgentMode = prefs.getString(PREF_USER_AGENT_MODE, DEFAULT_USER_AGENT_MODE);
+        String userAgent = getUserAgent(userAgentMode);
+        // Note: User agent is set on GeckoSessionSettings, not GeckoRuntimeSettings
+        Log.d(TAG, "User agent prepared: " + userAgent + " (mode: " + userAgentMode + ")");
 
         ContentBlocking.Settings cbSettings = settings.getContentBlocking();
 
@@ -2065,7 +2353,14 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 if (!panelRect.contains((int) motionEvent.getRawX(), (int) motionEvent.getRawY())) {
                     hideSettingsPanel(false); // Hide without applying if touched outside
                 }
-            } 
+            }
+            
+            // Hide context menu if visible and user taps elsewhere
+            if (contextMenuPopup != null && contextMenuPopup.isShowing() && 
+                motionEvent.getAction() == MotionEvent.ACTION_DOWN) {
+                hideContextMenu();
+            }
+            
             // Also handle keyboard hide logic from previous implementation
              if (motionEvent.getAction() == MotionEvent.ACTION_DOWN) {
                  View currentFocus = getCurrentFocus();
@@ -2096,6 +2391,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         if (panelUBlockSwitch != null) { // Add null check for safety
             panelUBlockSwitch.setChecked(prefs.getBoolean(PREF_UBLOCK_ENABLED, false));
         }
+        
+        // Load current desktop mode selection
+        String currentUserAgentMode = prefs.getString(PREF_USER_AGENT_MODE, DEFAULT_USER_AGENT_MODE);
+        boolean isDesktopMode = currentUserAgentMode.equals("desktop");
+        panelDesktopModeSwitch.setChecked(isDesktopMode);
 
         settingsPanelLayout.setVisibility(View.VISIBLE); // Make it visible first
 
@@ -2141,18 +2441,33 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         boolean cookiesChecked = panelCookieSwitch.isChecked();
         boolean adBlockerChecked = panelAdBlockerSwitch.isChecked();
         boolean uBlockChecked = (panelUBlockSwitch != null) && panelUBlockSwitch.isChecked(); // Add null check
-        Log.d(TAG, "Applying Settings from Panel: Cookies = " + cookiesChecked + ", Blocker = " + adBlockerChecked + ", uBlock = " + uBlockChecked);
+        
+        // Get desktop mode selection
+        boolean desktopModeChecked = panelDesktopModeSwitch.isChecked();
+        String userAgentMode = desktopModeChecked ? "desktop" : "mobile";
+        
+        Log.d(TAG, "Applying Settings from Panel: Cookies = " + cookiesChecked + ", Blocker = " + adBlockerChecked + ", uBlock = " + uBlockChecked + ", UserAgent = " + userAgentMode);
 
         // Save the new preferences
         prefs.edit()
              .putBoolean(PREF_COOKIES_ENABLED, cookiesChecked)
              .putBoolean(PREF_AD_BLOCKER_ENABLED, adBlockerChecked)
              .putBoolean(PREF_UBLOCK_ENABLED, uBlockChecked) // Save uBlock state
+             .putString(PREF_USER_AGENT_MODE, userAgentMode) // Save user agent mode
              .apply();
 
         // Apply GeckoView settings dynamically
         applyRuntimeSettings();
         setUBlockOriginEnabled(uBlockChecked); // Enable/disable uBlock
+
+        // Update user agent for all existing sessions if it was changed
+        String previousUserAgentMode = prefs.getString(PREF_USER_AGENT_MODE, DEFAULT_USER_AGENT_MODE);
+        if (!userAgentMode.equals(previousUserAgentMode)) {
+            Log.d(TAG, "User agent mode changed from " + previousUserAgentMode + " to " + userAgentMode + ". Updating all sessions.");
+            for (GeckoSession session : geckoSessionList) {
+                applyUserAgentToSession(session);
+            }
+        }
 
         Toast.makeText(MainActivity.this, "Settings updated.", Toast.LENGTH_SHORT).show();
         hideSettingsPanel(true); // Hide panel after applying
