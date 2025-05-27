@@ -33,3 +33,6 @@ java_pid*.hprof
 # Android app specific
 app/build/
 app/release/ 
+
+# Ignore large play store logo
+app/src/main/main_logo-playstore.png 
