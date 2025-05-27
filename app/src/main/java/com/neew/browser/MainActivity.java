@@ -338,35 +338,67 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         // Initialize context menu
         initializeContextMenu();
 
-        // Initialize Gecko Runtime (only once)
-        if (runtime == null) {
-            Log.d(TAG, "Creating GeckoRuntime with console output enabled");
+        // Create GeckoRuntime directly in MainActivity with safety checks
+        try {
+            if (runtime == null) {
+                Log.d(TAG, "Creating GeckoRuntime with default settings...");
+                runtime = GeckoRuntime.create(this);
+                Log.i(TAG, "GeckoRuntime created successfully.");
+                
+                // Apply minimal settings after a short delay
+                new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                    try {
+                        applyRuntimeSettings(); 
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error applying runtime settings", e);
+                    }
+                }, 200);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to create GeckoRuntime!", e);
+            Toast.makeText(this, "Critical Error: Browser engine failed to initialize.", Toast.LENGTH_LONG).show();
+            finish();
+            return;
+        }
 
-            // Create runtime with console output enabled
-            GeckoRuntimeSettings.Builder runtimeSettingsBuilder = new GeckoRuntimeSettings.Builder();
-            runtimeSettingsBuilder.consoleOutput(true);
-            runtime = GeckoRuntime.create(this, runtimeSettingsBuilder.build());
-            Log.i(TAG, "GeckoRuntime created with console output enabled.");
+        // --- Restore Session State / Handle Intent ---
+        Intent initialIntent = getIntent();
+        boolean actionableIntentPending = false;
+        if (initialIntent != null) {
+            String action = initialIntent.getAction();
+            Uri data = initialIntent.getData();
+            String type = initialIntent.getType();
 
-            applyRuntimeSettings(); // Apply other dynamic settings
-            initializeUBlockOrigin(); // Initialize uBlock Origin after runtime is ready
+            actionableIntentPending = (Intent.ACTION_VIEW.equals(action) && data != null) ||
+                                       (Intent.ACTION_SEND.equals(action) && "text/plain".equals(type) && initialIntent.hasExtra(Intent.EXTRA_TEXT)) ||
+                                       (Intent.ACTION_WEB_SEARCH.equals(action) && initialIntent.hasExtra(android.app.SearchManager.QUERY));
 
+            if (!actionableIntentPending) {
+                Log.d(TAG, "onCreate: No specific actionable intent found, attempting to restore session state.");
+                // Delay session creation to allow runtime to fully initialize
+                new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                    if (!restoreSessionState()) {
+                        Log.d(TAG, "onCreate: Session restore failed or no state found, creating a default new tab.");
+                        createNewTab(null, true); // Create a default tab if restore fails
+                    }
+                }, 500); // Wait for runtime to be stable
+            } else {
+                Log.d(TAG, "onCreate: Actionable intent will be handled by onResume/handleIntent. No session restored or default tab created here.");
+                // For actionable intents, we'll let onResume/handleIntent create the tab when ready
+            }
         } else {
-            Log.d(TAG, "Reusing existing GeckoRuntime");
-            // If reusing, maybe re-apply dynamic settings?
-            applyRuntimeSettings(); // Consider if needed on reuse
-            initializeUBlockOrigin(); // Initialize uBlock Origin if runtime is being reused
+            // No intent at all, definitely try to restore session or create default.
+            Log.d(TAG, "onCreate: No initial intent, attempting to restore session state.");
+            // Delay session creation to allow runtime to fully initialize
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                if (!restoreSessionState()) {
+                    Log.d(TAG, "onCreate: Session restore failed (no initial intent), creating a default new tab.");
+                    createNewTab(null, true); // Create a default tab if restore fails
+                }
+            }, 500); // Wait for runtime to be stable
         }
 
-        // --- Restore Session State --- 
-        if (geckoSessionList.isEmpty() && !restoreSessionState()) {
-            // If restore failed or no saved state, create a single initial tab
-            Log.d(TAG, "No saved state found or restore failed, creating initial tab.");
-            createNewTab("https://www.google.com", true); // Create and make active
-        }
-        // --- End Restore Session State ---
-
-        // --- Register Activity Result Launcher --- 
+        // --- Register Activity Result Launchers (TabSwitcher, FilePicker) --- (Moved earlier, assuming this is ok)
         tabSwitcherLauncher = registerForActivityResult(
             new ActivityResultContracts.StartActivityForResult(),
             result -> {
@@ -552,6 +584,55 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
              Log.e(TAG, "Error: No active session and session list is empty after onCreate logic.");
         }
 
+        showExpandedBar();
+
+        // Ensure GeckoView has the correct session *after* all onCreate logic (restore/intent check)
+        // This part is crucial for linking GeckoView to the initially active tab.
+        if (getActiveSession() != null) {
+             if (geckoView.getSession() != getActiveSession()) {
+                 Log.d(TAG, "onCreate: Setting GeckoView session to the active session post all logic.");
+                 geckoView.setSession(getActiveSession());
+             }
+             updateUIForActiveSession();
+        } else if (!actionableIntentPending && geckoSessionList.isEmpty()) {
+             // This case should ideally be covered by the logic above creating a default tab.
+             Log.e(TAG, "onCreate Critical Error: No active session, no pending actionable intent, and session list is empty after all setup. This should not happen.");
+             // As a last resort, if everything failed and no actionable intent is coming, create a tab.
+             createNewTab(true); // Create a new default tab
+             if (getActiveSession() != null) {
+                geckoView.setSession(getActiveSession());
+                updateUIForActiveSession();
+                Log.d(TAG, "onCreate: Created a last-resort default tab and set it to GeckoView.");
+             } else {
+                // This is a very bad state, means createNewTab failed catastrophically.
+                Log.e(TAG, "onCreate FATAL: Last-resort createNewTab failed. Finishing activity.");
+                Toast.makeText(this, "Fatal error initializing browser tabs.", Toast.LENGTH_LONG).show();
+                finish();
+                return; // Early exit from onCreate
+             }
+        } else if (actionableIntentPending) {
+            Log.d(TAG, "onCreate: An actionable intent is pending. GeckoView will get its session in onResume via handleIntent.");
+            // It's okay for getActiveSession() to be null here if an intent will load a new page in onResume.
+            // GeckoView should be prepared to receive its session later in this scenario.
+            // If no sessions were restored and an intent is coming, createNewTab in handleIntent will be the first.
+            // Ensure the UI doesn't show stale data if there are no initial tabs.
+            if (geckoSessionList.isEmpty()) {
+                urlBar.setText(""); // Clear URL bar if no tabs and waiting for intent
+                if (!isControlBarExpanded) {
+                    minimizedUrlBar.setText("");
+                }
+                progressBar.setVisibility(View.GONE);
+            }
+        } else if (geckoSessionList.isEmpty()) {
+            // This means actionableIntentPending is false, and getActiveSession() was null, 
+            // but geckoSessionList is ALSO empty. This implies restoreSessionState() failed AND the subsequent
+            // createNewTab(true) in the !actionableIntentPending block also failed to populate the list.
+            Log.e(TAG, "onCreate FATAL: No active session, no pending intent, and session list is empty after attempting default tab creation. Finishing activity.");
+            Toast.makeText(this, "Fatal error setting up initial browser tab.", Toast.LENGTH_LONG).show();
+            finish();
+            return; // Early exit
+        }
+
         // Register download complete receiver
         downloadCompleteReceiver = new BroadcastReceiver() {
             @Override
@@ -566,6 +647,86 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         checkAndShowStorageWarning();
 
         mFirebaseAnalytics = FirebaseAnalytics.getInstance(this);
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        Log.d(TAG, "onNewIntent received: " + intent.getAction() + " Data: " + intent.getDataString());
+        // Make sure to set the new intent as the one for the activity
+        setIntent(intent);
+        // Handle the intent, for example, by loading the URL if it's a VIEW action
+        // We will call a common handler from onResume to avoid duplicate logic
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        Log.d(TAG, "onResume called. Processing intent.");
+        // Process the intent every time the activity resumes to catch initial launch and onNewIntent cases
+        handleIntent(getIntent());
+        
+        // Re-apply immersive mode on resume as system might clear flags when app is backgrounded
+        if (panelImmersiveSwitch != null) { // Ensure switch is initialized
+            applyImmersiveMode(panelImmersiveSwitch.isChecked());
+        }
+        // ... other onResume logic ...
+    }
+
+    private void handleIntent(Intent intent) {
+        if (intent == null) {
+            Log.d(TAG, "handleIntent: Intent is null.");
+            return;
+        }
+
+        String action = intent.getAction();
+        Uri data = intent.getData();
+        String type = intent.getType();
+
+        Log.d(TAG, "handleIntent: Action=" + action + ", Data=" + (data != null ? data.toString() : "null") + ", Type=" + type);
+
+        if (Intent.ACTION_VIEW.equals(action) && data != null) {
+            String urlToLoad = data.toString();
+            Log.i(TAG, "Intent received: ACTION_VIEW with URL: " + urlToLoad);
+            if (getActiveSession() != null) {
+                // Load in current tab or create new one - for simplicity, let's load in current or new if none
+                getActiveSession().loadUri(urlToLoad);
+                updateUIForActiveSession(); // Make sure URL bar reflects the new URL
+            } else {
+                // If no active session, create a new tab with this URL
+                Log.d(TAG, "No active session, creating new tab for URL: " + urlToLoad);
+                createNewTab(urlToLoad, true);
+            }
+        } else if (Intent.ACTION_SEND.equals(action) && "text/plain".equals(type)) {
+            String sharedText = intent.getStringExtra(Intent.EXTRA_TEXT);
+            if (sharedText != null) {
+                // If text is shared, it might be a URL. Try to load it.
+                // You might want more sophisticated URL detection or UI to confirm.
+                Log.i(TAG, "Intent received: ACTION_SEND with text: " + sharedText);
+                String urlToLoad = processUrlInput(sharedText); // Use your existing URL processing
+                if (getActiveSession() != null && urlToLoad != null) {
+                    getActiveSession().loadUri(urlToLoad);
+                    updateUIForActiveSession();
+                } else if (urlToLoad != null) {
+                    createNewTab(urlToLoad, true);
+                }
+            }
+        } else if (Intent.ACTION_WEB_SEARCH.equals(action)) {
+            String query = intent.getStringExtra(android.app.SearchManager.QUERY);
+            if (query != null) {
+                Log.i(TAG, "Intent received: ACTION_WEB_SEARCH with query: " + query);
+                String urlToLoad = processUrlInput(query); // Search via Google or your default
+                 if (getActiveSession() != null && urlToLoad != null) {
+                    getActiveSession().loadUri(urlToLoad);
+                    updateUIForActiveSession();
+                } else if (urlToLoad != null) {
+                    createNewTab(urlToLoad, true);
+                }
+            }
+        }
+        // Clear the intent action after processing to avoid reprocessing on next onResume without a new intent
+        // intent.setAction(null); // Be careful with this, might have unintended consequences if intent is needed later.
+                                // A boolean flag like `intentProcessed` might be safer.
     }
 
     private void checkAndShowStorageWarning() {
@@ -915,13 +1076,25 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         }
 
         Log.d(TAG, "Creating new tab. Initial URL: " + initialUrl + ", Switch: " + switchToTab);
-        GeckoSession newSession = new GeckoSession();
         
-        // Apply user agent settings before opening
-        applyUserAgentToSession(newSession);
-        
-        newSession.open(runtime);
-        Log.d(TAG, "Opened new GeckoSession");
+        GeckoSession newSession;
+        try {
+            newSession = new GeckoSession();
+            
+            // Apply user agent settings before opening
+            try {
+                applyUserAgentToSession(newSession);
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to apply user agent to session, continuing with defaults", e);
+            }
+            
+            newSession.open(runtime);
+            Log.d(TAG, "Opened new GeckoSession");
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to create or open GeckoSession", e);
+            Toast.makeText(this, "Failed to create new tab", Toast.LENGTH_SHORT).show();
+            return;
+        }
         
         // Add delegates AFTER opening
         newSession.setProgressDelegate(new ProgressDelegate() {
@@ -1833,11 +2006,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         // snapshotHandler.removeCallbacksAndMessages(session); // REMOVE
         // snapshotHandler.postDelayed(() -> { // REMOVE
 
-            // Actual capture logic
-            // synchronized (geckoSessionList) { // REMOVE CONTAINS CHECK
-                GeckoResult<Bitmap> result = geckoView.capturePixels();
+                    // Actual capture logic with compositor check
+        try {
+            GeckoResult<Bitmap> result = geckoView.capturePixels();
 
-                result.accept(originalBitmap -> {
+            result.accept(originalBitmap -> {
                     if (originalBitmap != null) {
                          Log.d(TAG, "Snapshot captured successfully for session index: " + geckoSessionList.indexOf(session) + 
                                " (Original size: " + originalBitmap.getWidth() + "x" + originalBitmap.getHeight() + ")");
@@ -1877,7 +2050,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 }, e -> {
                      Log.e(TAG, "Snapshot capture failed for session index: " + geckoSessionList.indexOf(session), e);
                 });
-            // } // REMOVE CONTAINS CHECK END
+        } catch (IllegalStateException e) {
+            Log.w(TAG, "Snapshot capture skipped - compositor not ready for session index: " + geckoSessionList.indexOf(session));
+        } catch (Exception e) {
+            Log.e(TAG, "Unexpected error during snapshot capture for session index: " + geckoSessionList.indexOf(session), e);
+        }
 
         // }, SNAPSHOT_DEBOUNCE_MS); // REMOVE
     }
@@ -2298,45 +2475,25 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             Log.e(TAG, "applyRuntimeSettings: Runtime is null!");
             return;
         }
-        Log.d(TAG, "Applying dynamic runtime settings...");
+        Log.d(TAG, "Applying minimal runtime settings...");
 
-        GeckoRuntimeSettings settings = runtime.getSettings();
+        try {
+            GeckoRuntimeSettings settings = runtime.getSettings();
 
-        settings.setJavaScriptEnabled(true);
-        settings.setRemoteDebuggingEnabled(true); // Enable remote debugging
+            // Only apply the most basic, essential settings
+            settings.setJavaScriptEnabled(true);
 
-        // --- Apply User Agent Settings ---
-        String userAgentMode = prefs.getString(PREF_USER_AGENT_MODE, DEFAULT_USER_AGENT_MODE);
-        String userAgent = getUserAgent(userAgentMode);
-        // Note: User agent is set on GeckoSessionSettings, not GeckoRuntimeSettings
-        Log.d(TAG, "User agent prepared: " + userAgent + " (mode: " + userAgentMode + ")");
+            // --- Apply User Agent Settings ---
+            String userAgentMode = prefs.getString(PREF_USER_AGENT_MODE, DEFAULT_USER_AGENT_MODE);
+            String userAgent = getUserAgent(userAgentMode);
+            // Note: User agent is set on GeckoSessionSettings, not GeckoRuntimeSettings
+            Log.d(TAG, "User agent prepared: " + userAgent + " (mode: " + userAgentMode + ")");
 
-        ContentBlocking.Settings cbSettings = settings.getContentBlocking();
-
-        // --- Apply Cookie Settings ---
-        boolean cookiesEnabled = prefs.getBoolean(PREF_COOKIES_ENABLED, true); // Default true
-        Log.d(TAG, "Applying dynamic Cookies enabled: " + cookiesEnabled);
-        cbSettings.setCookieBehavior(
-            cookiesEnabled ? ContentBlocking.CookieBehavior.ACCEPT_NON_TRACKERS // Corrected constant
-                           : ContentBlocking.CookieBehavior.ACCEPT_NONE);
-
-        // --- Apply Ad Blocker Settings (Default/Implicit) ---
-        // TrackingProtectionLevel is not explicitly set here to avoid potential API issues encountered before.
-        // The default level or the one from a loaded config (if any) will be used.
-
-        // --- Attempt to disable WebM/VP9 for MSE (Removed as setPreference is not available) ---
-        // try {
-        //     Log.d(TAG, "Attempting to set media.mediasource.webm.enabled to false");
-        //     settings.setPreference("media.mediasource.webm.enabled", false); 
-        //     Log.i(TAG, "Successfully called setPreference for media.mediasource.webm.enabled");
-        // } catch (Exception e) {
-        //     Log.e(TAG, "Failed to set media.mediasource.webm.enabled preference", e);
-        // }
-
-        // Apply the modified settings (ContentBlocking and JavaScript are set on the 'settings' object directly)
-        // runtime.setSettings(settings); // This line is problematic, settings are applied via direct setters or at creation
-        Log.d(TAG, "Dynamic runtime settings application finished.");
-        // Moved uBlock initialization to be called after applyRuntimeSettings in onCreate
+            // Skip cookie settings for now to avoid potential conflicts
+            Log.d(TAG, "Minimal runtime settings application finished.");
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to apply runtime settings", e);
+        }
     }
 
     // --- Settings Panel Logic ---
