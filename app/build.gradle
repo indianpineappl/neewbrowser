@@ -12,15 +12,15 @@ android {
         // ndk {
         //     abiFilters "arm64-v8a"
         // }
-        versionCode 163
-        versionName "1.6.3"
+        versionCode 164
+        versionName "1.6.4"
     }
     signingConfigs {
         release {
-            storeFile file("keystore.jks")
-            storePassword "android"
-            keyAlias "androiddebugkey"
-            keyPassword "android"
+            storeFile file("indic-browser-key.jks")
+            storePassword "IndicBrowser2025"
+            keyAlias "indic-browser-key"
+            keyPassword "IndicBrowser2025"
         }
     }
     buildTypes {

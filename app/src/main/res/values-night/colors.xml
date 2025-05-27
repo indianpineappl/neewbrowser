@@ -5,4 +5,9 @@
     <color name="settings_panel_bg">#000000</color>
     <color name="settings_panel_text">#FFFFFF</color>
     <color name="control_bar_shadow">#44000000</color>
+    
+    <!-- Address Bar Colors (Dark Mode) -->
+    <color name="address_bar_bg">#1F1F1F</color>
+    <color name="address_bar_text">#FFFFFF</color>
+    <color name="address_bar_hint">#AAAAAA</color>
 </resources> 
