@@ -129,7 +129,7 @@ Depending on your location, you may have the following rights:
 
 If you have questions about this Privacy Policy or our privacy practices, please contact us at:
 
-**Email**: support@indicapps.com  
+**Email**: indic.apps.developer@gmail.com  
 **Website**: https://www.indicapps.com  
 
 ## Technical Details
