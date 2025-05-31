@@ -108,6 +108,16 @@ public class TabSwitcherActivity extends AppCompatActivity {
             }
         );
         tabsRecyclerView.setAdapter(tabAdapter);
+
+        // Automatically scroll to the last tab
+        if (tabAdapter.getItemCount() > 0) {
+            tabsRecyclerView.post(new Runnable() {
+                @Override
+                public void run() {
+                    tabsRecyclerView.scrollToPosition(tabAdapter.getItemCount() - 1);
+                }
+            });
+        }
     }
 
     private void setupFabListener() {
