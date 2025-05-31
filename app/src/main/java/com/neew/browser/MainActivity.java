@@ -570,7 +570,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 }
             }
         };
-        registerReceiver(downloadCompleteReceiver, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) { // UPSIDE_DOWN_CAKE is Android 14 (API 34)
+            registerReceiver(downloadCompleteReceiver, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(downloadCompleteReceiver, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
+        }
 
         checkAndShowStorageWarning();
 
@@ -2362,7 +2366,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 if (!panelRect.contains((int) motionEvent.getRawX(), (int) motionEvent.getRawY())) {
                     hideSettingsPanel(false); // Hide without applying if touched outside
                 }
-            }
+            } 
             
             // Hide context menu if visible and user taps elsewhere
             if (contextMenuPopup != null && contextMenuPopup.isShowing() && 
