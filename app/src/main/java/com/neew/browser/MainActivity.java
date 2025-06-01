@@ -145,6 +145,9 @@ import android.util.Log; // If not already present
 import java.util.List; // If not already present (for ActivityManager.AppTask)
 // java.io.UnsupportedEncodingException is handled by its fully qualified name in the code
 
+import android.webkit.MimeTypeMap; // Added for MimeTypeMap
+import android.webkit.URLUtil; // Added for URLUtil
+
 public class MainActivity extends AppCompatActivity implements ScrollDelegate, GeckoSession.PromptDelegate {
     private static final String TAG = "MainActivity";
     private static final String SNAPSHOT_DIRECTORY_NAME = "tab_snapshots";
@@ -3017,16 +3020,39 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         // Clear any pending response as we are proceeding now
         pendingDownloadResponse = null;
 
-        String fileName = "downloaded_file";
         String url = response.uri;
         String contentDisposition = response.headers != null ? response.headers.get("content-disposition") : null;
-        if (contentDisposition != null) {
-            // Basic parsing for filename - might need improvement for complex cases
-            String[] parts = contentDisposition.split("filename=");
-            if (parts.length > 1) {
-                fileName = parts[1].replaceAll("[\\\"';]", "").trim(); 
+        String mimeType = response.headers != null ? response.headers.get("content-type") : null;
+        if (mimeType == null || mimeType.isEmpty()) {
+            String fileExtension = MimeTypeMap.getFileExtensionFromUrl(url);
+            if (fileExtension != null && !fileExtension.isEmpty()) {
+                mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(fileExtension);
             }
         }
+
+        String fileName = URLUtil.guessFileName(url, contentDisposition, mimeType);
+        // Fallback if guessFileName returns something generic or empty
+        if (fileName == null || fileName.isEmpty() || fileName.equals("downloadfile") || fileName.equals("dat")) {
+            Log.w(TAG, "URLUtil.guessFileName returned a generic/empty name: " + fileName + ". Attempting to derive from URL path.");
+            if (url != null) {
+                Uri parsedUri = Uri.parse(url);
+                String path = parsedUri.getPath();
+                if (path != null && !path.isEmpty()) {
+                    String lastSegment = parsedUri.getLastPathSegment();
+                    if (lastSegment != null && !lastSegment.isEmpty()) {
+                        fileName = lastSegment;
+                    } else {
+                        fileName = "downloaded_file"; // Ultimate fallback
+                    }
+                } else {
+                    fileName = "downloaded_file"; // Ultimate fallback
+                }
+            } else {
+                fileName = "downloaded_file"; // Ultimate fallback
+            }
+             Log.d(TAG, "Fallback filename derived: " + fileName);
+        }
+
         // Consider using ContentResolver and MediaStore for more robust filename/path generation on newer Android versions
         String destDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath();
         String filePath = destDir + "/" + fileName;
