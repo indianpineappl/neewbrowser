@@ -2399,7 +2399,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
     private void showSettingsPanel() {
         // Load current settings into switches before showing
-        panelCookieSwitch.setChecked(prefs.getBoolean(PREF_COOKIES_ENABLED, false));
+        panelCookieSwitch.setChecked(prefs.getBoolean(PREF_COOKIES_ENABLED, true)); // Changed default to true
         panelAdBlockerSwitch.setChecked(prefs.getBoolean(PREF_AD_BLOCKER_ENABLED, true));
         if (panelUBlockSwitch != null) { // Add null check for safety
             panelUBlockSwitch.setChecked(prefs.getBoolean(PREF_UBLOCK_ENABLED, false));
