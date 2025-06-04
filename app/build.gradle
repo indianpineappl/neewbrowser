@@ -12,7 +12,6 @@ android {
         // ndk {
         //     abiFilters "arm64-v8a"
         // }
-        versionCode 172
         versionName "1.7.0"
     }
     signingConfigs {
@@ -59,9 +58,9 @@ android {
                 commandLine 'git', 'rev-list', '--count', 'HEAD'
                 standardOutput = stdout
             }
-            return Integer.parseInt(stdout.toString().trim())
+            return 200 + Integer.parseInt(stdout.toString().trim())
         } catch (Exception e) {
-            return 1
+            return 201 // Base offset + 1 as a fallback
         }
     }
     defaultConfig.versionName = getVersionNameFromGit()
