@@ -2327,14 +2327,14 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             session.getSettings().setUserAgentOverride(userAgent);
             Log.d(TAG, "Applied user agent to session: " + userAgent + " (mode: " + userAgentMode + ") for URL context: " + (urlContext != null ? urlContext : "N/A"));
 
-            // Align viewport behavior with User Agent mode -- REMOVED FOR THIS COMMIT
-            // if ("desktop".equals(userAgentMode)) {
-            //     session.getSettings().setViewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP);
-            //     Log.d(TAG, "Using desktop viewport mode for session.");
-            // } else {
-            //     session.getSettings().setViewportMode(GeckoSessionSettings.VIEWPORT_MODE_MOBILE);
-            //     Log.d(TAG, "Using mobile viewport mode for session.");
-            // }
+            // Align viewport behavior with User Agent mode
+            if ("desktop".equals(userAgentMode)) {
+                session.getSettings().setViewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP);
+                Log.d(TAG, "Using desktop viewport mode for session.");
+            } else {
+                session.getSettings().setViewportMode(GeckoSessionSettings.VIEWPORT_MODE_MOBILE);
+                Log.d(TAG, "Using mobile viewport mode for session.");
+            }
         }
     }
 
