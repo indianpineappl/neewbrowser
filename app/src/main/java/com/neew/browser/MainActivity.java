@@ -262,10 +262,12 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private static final String PREF_IMMERSIVE_MODE_ENABLED = "immersive_mode_enabled";
     private SwitchCompat panelImmersiveSwitch;
     private SwitchCompat panelDesktopModeSwitch;
+    private SwitchCompat panelFullDesktopModelSwitch; // New Switch field
     
     // User Agent configuration
     private static final String PREF_USER_AGENT_MODE = "user_agent_mode"; // "mobile", "desktop", "custom"
     private static final String DEFAULT_USER_AGENT_MODE = "mobile";
+    private static final String PREF_FULL_DESKTOP_MODEL_ENABLED = "full_desktop_model_enabled"; // New preference key
 
     private boolean isInGeckoViewFullscreen = false; // To track if GeckoView requested fullscreen
     private boolean isInPictureInPictureMode = false; // To track PiP state
@@ -351,6 +353,32 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         // Initialize Desktop Mode Switch
         panelDesktopModeSwitch = findViewById(R.id.panelDesktopModeSwitch);
         setupDesktopModeSwitch();
+
+        // Initialize Full Desktop Model Switch
+        panelFullDesktopModelSwitch = findViewById(R.id.panelFullDesktopModelSwitch); // Assuming this ID will be in your XML
+        if (panelFullDesktopModelSwitch != null) {
+            boolean fullDesktopEnabledPref = prefs.getBoolean(PREF_FULL_DESKTOP_MODEL_ENABLED, false); // Default to false
+            panelFullDesktopModelSwitch.setChecked(fullDesktopEnabledPref);
+            
+            panelFullDesktopModelSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                if (isChecked) { // If user is trying to turn ON the Full Desktop Model switch
+                    if (panelDesktopModeSwitch != null && !panelDesktopModeSwitch.isChecked()) {
+                        // Desktop Mode is OFF, so prevent Full Desktop Model from being turned ON
+                        Toast.makeText(MainActivity.this, "Please enable Desktop Mode first", Toast.LENGTH_SHORT).show();
+                        panelFullDesktopModelSwitch.setChecked(false); // Revert the switch to OFF
+                    } else {
+                        // Desktop Mode is ON (or switch is null, though unlikely here), allow Full Desktop Model to be ON
+                        Log.d(TAG, "Full Desktop Model switch in panel set to: " + isChecked);
+                    }
+                } else {
+                    // User is turning OFF the Full Desktop Model switch, always allow this
+                    Log.d(TAG, "Full Desktop Model switch in panel set to: " + isChecked);
+                }
+                // Actual saving and application of this state will happen in applySettingsFromPanel()
+            });
+        } else {
+            Log.w(TAG, "panelFullDesktopModelSwitch is null. Please add it to your layout XML with ID 'panelFullDesktopModelSwitch'.");
+        }
 
         // Initialize context menu
         initializeContextMenu();
@@ -2327,13 +2355,23 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             session.getSettings().setUserAgentOverride(userAgent);
             Log.d(TAG, "Applied user agent to session: " + userAgent + " (mode: " + userAgentMode + ") for URL context: " + (urlContext != null ? urlContext : "N/A"));
 
-            // Align viewport behavior with User Agent mode
+            // Viewport mode logic revised:
+            // Only set viewport to DESKTOP if effective UA is desktop AND full desktop model is explicitly enabled.
+            // Otherwise, do not set viewport mode, allowing GeckoView to default (mobile for mobile UA, auto-adjust for desktop UA without full model).
             if ("desktop".equals(userAgentMode)) {
-                session.getSettings().setViewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP);
-                Log.d(TAG, "Using desktop viewport mode for session.");
+                boolean fullDesktopModelEnabled = prefs.getBoolean(PREF_FULL_DESKTOP_MODEL_ENABLED, false);
+                if (fullDesktopModelEnabled) {
+                    session.getSettings().setViewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP);
+                    Log.d(TAG, "Viewport: DESKTOP (Desktop UA + Full Model ON)");
+                } else {
+                    // Desktop UA is set, but Full Desktop Model is OFF.
+                    // No explicit viewport set, allowing site to auto-adjust to device width.
+                    Log.d(TAG, "Viewport: NOT SET (Desktop UA + Full Model OFF - allows auto-adjustment)");
+                }
             } else {
-                session.getSettings().setViewportMode(GeckoSessionSettings.VIEWPORT_MODE_MOBILE);
-                Log.d(TAG, "Using mobile viewport mode for session.");
+                // Mobile UA is set.
+                // No explicit viewport set, GeckoView defaults to mobile.
+                Log.d(TAG, "Viewport: NOT SET (Mobile UA - defaults to mobile)");
             }
         }
     }
@@ -2442,6 +2480,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         boolean isDesktopMode = currentUserAgentMode.equals("desktop");
         panelDesktopModeSwitch.setChecked(isDesktopMode);
 
+        // Load current full desktop model selection
+        if (panelFullDesktopModelSwitch != null) {
+            panelFullDesktopModelSwitch.setChecked(prefs.getBoolean(PREF_FULL_DESKTOP_MODEL_ENABLED, false)); // Default to false
+        }
+
         settingsPanelLayout.setVisibility(View.VISIBLE); // Make it visible first
 
         settingsPanelLayout.post(() -> {
@@ -2490,8 +2533,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         // Get desktop mode selection
         boolean desktopModeChecked = panelDesktopModeSwitch.isChecked();
         String userAgentMode = desktopModeChecked ? "desktop" : "mobile";
+
+        // Get full desktop model selection
+        boolean fullDesktopModelChecked = (panelFullDesktopModelSwitch != null) && panelFullDesktopModelSwitch.isChecked();
         
-        Log.d(TAG, "Applying Settings from Panel: Cookies = " + cookiesChecked + ", Blocker = " + adBlockerChecked + ", uBlock = " + uBlockChecked + ", UserAgent = " + userAgentMode);
+        Log.d(TAG, "Applying Settings from Panel: Cookies = " + cookiesChecked + ", Blocker = " + adBlockerChecked + ", uBlock = " + uBlockChecked + ", UserAgent = " + userAgentMode + ", FullDesktopModel = " + fullDesktopModelChecked);
 
         // Save the new preferences
         prefs.edit()
@@ -2499,28 +2545,24 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
              .putBoolean(PREF_AD_BLOCKER_ENABLED, adBlockerChecked)
              .putBoolean(PREF_UBLOCK_ENABLED, uBlockChecked) // Save uBlock state
              .putString(PREF_USER_AGENT_MODE, userAgentMode) // Save user agent mode
+             .putBoolean(PREF_FULL_DESKTOP_MODEL_ENABLED, fullDesktopModelChecked) // Save new preference
              .apply();
 
         // Apply GeckoView settings dynamically
         applyRuntimeSettings();
         setUBlockOriginEnabled(uBlockChecked); // Enable/disable uBlock
 
-        // Update user agent for all existing sessions if it was changed
-        String previousUserAgentMode = prefs.getString(PREF_USER_AGENT_MODE, DEFAULT_USER_AGENT_MODE);
-        if (!userAgentMode.equals(previousUserAgentMode)) {
-            Log.d(TAG, "User agent mode changed from " + previousUserAgentMode + " to " + userAgentMode + ". Updating all sessions.");
-            for (GeckoSession session : geckoSessionList) {
-                // Pass the URL context for each session
-                applyUserAgentToSession(session, sessionUrlMap.get(session));
-            }
+        // Update user agent and viewport for all existing sessions because settings might have changed
+        Log.d(TAG, "Settings changed. Re-evaluating UA and viewport for all sessions.");
+        for (GeckoSession session : geckoSessionList) {
+            applyUserAgentToSession(session, sessionUrlMap.get(session));
         }
 
-        // Force reload of active session to reflect any UA changes immediately
+        // Force reload of active session to reflect any UA/viewport changes immediately
         GeckoSession currentActiveSession = getActiveSession();
         if (currentActiveSession != null) {
-            Log.d(TAG, "Settings changed, re-applying UA to active session and reloading.");
-            // Ensure the active session has the most up-to-date UA based on current prefs and its URL
-            applyUserAgentToSession(currentActiveSession, sessionUrlMap.get(currentActiveSession)); 
+            Log.d(TAG, "Settings changed, explicitly reloading active session.");
+            // applyUserAgentToSession was already called in the loop above for the active session
             currentActiveSession.reload();
         }
 
