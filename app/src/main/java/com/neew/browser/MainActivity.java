@@ -147,8 +147,9 @@ import java.util.List; // If not already present (for ActivityManager.AppTask)
 
 import android.webkit.MimeTypeMap; // Added for MimeTypeMap
 import android.webkit.URLUtil; // Added for URLUtil
+import org.mozilla.geckoview.MediaSession; // Added this import
 
-public class MainActivity extends AppCompatActivity implements ScrollDelegate, GeckoSession.PromptDelegate {
+public class MainActivity extends AppCompatActivity implements ScrollDelegate, GeckoSession.PromptDelegate, MediaSession.Delegate {
     private static final String TAG = "MainActivity";
     private static final String SNAPSHOT_DIRECTORY_NAME = "tab_snapshots";
 
@@ -268,6 +269,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private boolean isInGeckoViewFullscreen = false; // To track if GeckoView requested fullscreen
     private boolean isInPictureInPictureMode = false; // To track PiP state
     private boolean firstWindowFocus = true; // Add this new field
+
+    private boolean isMediaActuallyPlaying = false; // New: To track if media is playing in the active session
+    private GeckoSession mediaPlayingSession = null; // New: To track which session is playing media
 
     // Context menu fields
     private PopupWindow contextMenuPopup;
@@ -939,6 +943,8 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         newSession.open(runtime);
         Log.d(TAG, "Opened new GeckoSession");
         
+        newSession.setMediaSessionDelegate(this); // Set MediaSession delegate
+
         // Add delegates AFTER opening
         newSession.setProgressDelegate(new ProgressDelegate() {
             @Override
@@ -1068,6 +1074,8 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 
                 // Apply user agent settings to the popup session
                 applyUserAgentToSession(newTabSession);
+                
+                newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.this
 
                 // 2. Configure its delegates:
                 newTabSession.setProgressDelegate(new ProgressDelegate() {
@@ -1174,6 +1182,8 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         
                         // Apply user agent settings to the grandchild session
                         applyUserAgentToSession(grandChildSession);
+
+                        grandChildSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.this
 
                         grandChildSession.setProgressDelegate(new ProgressDelegate() {
                     @Override
@@ -3780,11 +3790,15 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         // For now, we'll use isInGeckoViewFullscreen as a proxy for this.
         // You might need a more specific check if a video is actually playing.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-            isInGeckoViewFullscreen && // Only enter PiP if content was fullscreen
+            isMediaActuallyPlaying && activeSession == mediaPlayingSession && // Use new media playing state
             getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
             
-            Log.d(TAG, "onUserLeaveHint: Attempting to enter PiP mode.");
+            Log.d(TAG, "onUserLeaveHint: Attempting to enter PiP mode because media is playing.");
             enterPictureInPictureModeWithCurrentParams();
+        } else {
+            Log.d(TAG, "onUserLeaveHint: Conditions for PiP not met. isMediaActuallyPlaying=" + isMediaActuallyPlaying +
+                       ", activeSession == mediaPlayingSession: " + (activeSession == mediaPlayingSession) +
+                       ", isInGeckoViewFullscreen=" + isInGeckoViewFullscreen);
         }
     }
 
@@ -3977,5 +3991,71 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         saveSessionState(); // Persist the new state (one tab)
         Toast.makeText(this, "All tabs cleared.", Toast.LENGTH_SHORT).show();
     }
+
+    // --- MediaSession.Delegate Implementation ---
+
+    @Override
+    public void onActivated(@NonNull GeckoSession session, @NonNull MediaSession mediaSession) {
+        // A media session has become active.
+        // This might be a good place to reset isMediaActuallyPlaying if the active media session changes.
+        Log.d(TAG, "MediaSession.Delegate: onActivated for session: " + sessionUrlMap.getOrDefault(session, "N/A"));
+        // If this newly activated session is not the one we thought was playing, reset.
+        if (mediaPlayingSession != null && mediaPlayingSession != session && session == getActiveSession()) {
+            isMediaActuallyPlaying = false;
+            // mediaPlayingSession will be updated by onPlay if it starts playing.
+        }
+         // If the activated session is the current active tab, we might anticipate playback.
+        // However, onPlay is a more direct indicator.
+    }
+
+    @Override
+    public void onDeactivated(@NonNull GeckoSession session, @NonNull MediaSession mediaSession) {
+        // A media session has become inactive.
+        Log.d(TAG, "MediaSession.Delegate: onDeactivated for session: " + sessionUrlMap.getOrDefault(session, "N/A"));
+        if (session == mediaPlayingSession) {
+            isMediaActuallyPlaying = false;
+            mediaPlayingSession = null;
+            Log.d(TAG, "MediaSession.Delegate: Media playback stopped (deactivated) for active session.");
+        }
+    }
+
+    @Override
+    public void onPlay(@NonNull GeckoSession session, @NonNull MediaSession mediaSession) {
+        Log.d(TAG, "MediaSession.Delegate: onPlay for session: " + sessionUrlMap.getOrDefault(session, "N/A"));
+        if (session == getActiveSession()) {
+            isMediaActuallyPlaying = true;
+            mediaPlayingSession = session;
+            Log.d(TAG, "MediaSession.Delegate: Media playback started for active session.");
+        } else {
+            // Media started in a background tab. We might want to handle this differently or ignore for PiP.
+            // For now, PiP is only concerned with the active tab.
+            Log.d(TAG, "MediaSession.Delegate: Media playback started for background session.");
+        }
+    }
+
+    @Override
+    public void onPause(@NonNull GeckoSession session, @NonNull MediaSession mediaSession) {
+        Log.d(TAG, "MediaSession.Delegate: onPause for session: " + sessionUrlMap.getOrDefault(session, "N/A"));
+        if (session == mediaPlayingSession) { // Check if it's the session we were tracking
+            isMediaActuallyPlaying = false;
+            mediaPlayingSession = null; // Clear the playing session
+            Log.d(TAG, "MediaSession.Delegate: Media playback paused for previously playing session.");
+        }
+    }
+
+    @Override
+    public void onStop(@NonNull GeckoSession session, @NonNull MediaSession mediaSession) {
+        Log.d(TAG, "MediaSession.Delegate: onStop for session: " + sessionUrlMap.getOrDefault(session, "N/A"));
+        if (session == mediaPlayingSession) { // Check if it's the session we were tracking
+            isMediaActuallyPlaying = false;
+            mediaPlayingSession = null; // Clear the playing session
+            Log.d(TAG, "MediaSession.Delegate: Media playback stopped for previously playing session.");
+        }
+    }
+
+    // Optional: Implement other MediaSession.Delegate methods if needed (onMetadata, onFeatures, etc.)
+    // For PiP, onPlay/onPause/onStop are the most critical.
+
+    // --- End MediaSession.Delegate Implementation ---
 
 }
