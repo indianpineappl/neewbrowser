@@ -12,8 +12,8 @@ android {
         // ndk {
         //     abiFilters "arm64-v8a"
         // }
-        versionCode 167
-        versionName "1.6.7"
+        versionCode 171
+        versionName "1.6.11"
     }
     signingConfigs {
         release {
