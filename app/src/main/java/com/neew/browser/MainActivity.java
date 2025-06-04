@@ -148,6 +148,7 @@ import java.util.List; // If not already present (for ActivityManager.AppTask)
 import android.webkit.MimeTypeMap; // Added for MimeTypeMap
 import android.webkit.URLUtil; // Added for URLUtil
 import org.mozilla.geckoview.MediaSession; // Added this import
+import org.mozilla.geckoview.GeckoSessionSettings; // Added this import
 
 public class MainActivity extends AppCompatActivity implements ScrollDelegate, GeckoSession.PromptDelegate, MediaSession.Delegate {
     private static final String TAG = "MainActivity";
@@ -938,7 +939,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         GeckoSession newSession = new GeckoSession();
         
         // Apply user agent settings before opening
-        applyUserAgentToSession(newSession);
+        applyUserAgentToSession(newSession, initialUrl);
         
         newSession.open(runtime);
         Log.d(TAG, "Opened new GeckoSession");
@@ -1073,7 +1074,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 final GeckoSession newTabSession = new GeckoSession();
                 
                 // Apply user agent settings to the popup session
-                applyUserAgentToSession(newTabSession);
+                applyUserAgentToSession(newTabSession, uri);
                 
                 newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.this
 
@@ -1177,11 +1178,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
                     @Override
                     public GeckoResult<GeckoSession> onNewSession(GeckoSession currentPopupSession, String newUriFromPopup) {
-                        Log.i(TAG, "Popup's NavDelegate: Allowing nested popup from " + newUriFromPopup + " (no domain restriction).");
+                        Log.i(TAG, "Grandchild Popup NavDelegate: onNewSession for URI: " + newUriFromPopup + " from popup session: " + sessionUrlMap.getOrDefault(currentPopupSession, "N/A"));
                         final GeckoSession grandChildSession = new GeckoSession();
                         
-                        // Apply user agent settings to the grandchild session
-                        applyUserAgentToSession(grandChildSession);
+                        // Apply user agent settings to the grandchild popup session
+                        applyUserAgentToSession(grandChildSession, newUriFromPopup);
 
                         grandChildSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.this
 
@@ -2310,12 +2311,30 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         }
     }
 
-    private void applyUserAgentToSession(GeckoSession session) {
+    private void applyUserAgentToSession(GeckoSession session, @Nullable String urlContext) { // Added urlContext
         if (session != null) {
-            String userAgentMode = prefs.getString(PREF_USER_AGENT_MODE, DEFAULT_USER_AGENT_MODE);
+            String userAgentMode;
+            // Check if the URL context is for YouTube
+            if (urlContext != null && (urlContext.contains("youtube.com") || urlContext.contains("youtu.be"))) {
+                userAgentMode = "desktop"; // Force desktop mode for YouTube for PiP
+                Log.d(TAG, "YouTube URL detected ('" + urlContext + "'), forcing desktop User-Agent.");
+            } else {
+                // Otherwise, use the general preference
+                userAgentMode = prefs.getString(PREF_USER_AGENT_MODE, DEFAULT_USER_AGENT_MODE);
+            }
+            
             String userAgent = getUserAgent(userAgentMode);
             session.getSettings().setUserAgentOverride(userAgent);
-            Log.d(TAG, "Applied user agent to session: " + userAgent + " (mode: " + userAgentMode + ")");
+            Log.d(TAG, "Applied user agent to session: " + userAgent + " (mode: " + userAgentMode + ") for URL context: " + (urlContext != null ? urlContext : "N/A"));
+
+            // Align viewport behavior with User Agent mode -- REMOVED FOR THIS COMMIT
+            // if ("desktop".equals(userAgentMode)) {
+            //     session.getSettings().setViewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP);
+            //     Log.d(TAG, "Using desktop viewport mode for session.");
+            // } else {
+            //     session.getSettings().setViewportMode(GeckoSessionSettings.VIEWPORT_MODE_MOBILE);
+            //     Log.d(TAG, "Using mobile viewport mode for session.");
+            // }
         }
     }
 
@@ -2491,12 +2510,22 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         if (!userAgentMode.equals(previousUserAgentMode)) {
             Log.d(TAG, "User agent mode changed from " + previousUserAgentMode + " to " + userAgentMode + ". Updating all sessions.");
             for (GeckoSession session : geckoSessionList) {
-                applyUserAgentToSession(session);
+                // Pass the URL context for each session
+                applyUserAgentToSession(session, sessionUrlMap.get(session));
             }
         }
 
-        Toast.makeText(MainActivity.this, "Settings updated.", Toast.LENGTH_SHORT).show();
-        hideSettingsPanel(true); // Hide panel after applying
+        // Force reload of active session to reflect any UA changes immediately
+        GeckoSession currentActiveSession = getActiveSession();
+        if (currentActiveSession != null) {
+            Log.d(TAG, "Settings changed, re-applying UA to active session and reloading.");
+            // Ensure the active session has the most up-to-date UA based on current prefs and its URL
+            applyUserAgentToSession(currentActiveSession, sessionUrlMap.get(currentActiveSession)); 
+            currentActiveSession.reload();
+        }
+
+        hideSettingsPanel(true); // Hide and confirm changes were applied
+        Toast.makeText(this, "Settings applied. Some changes may require a restart or new tab.", Toast.LENGTH_LONG).show();
     }
     // --- End Settings Panel Logic ---
 
