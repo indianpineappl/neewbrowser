@@ -13,6 +13,7 @@
 /captures/
 .externalNativeBuild/
 .cxx/
+/.idea/deploymentTargetSelector.xml
 
 # Keystore files
 *.jks
