@@ -2339,40 +2339,30 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         }
     }
 
-    private void applyUserAgentToSession(GeckoSession session, @Nullable String urlContext) { // Added urlContext
-        if (session != null) {
-            String userAgentMode;
-            // Check if the URL context is for YouTube
-            if (urlContext != null && (urlContext.contains("youtube.com") || urlContext.contains("youtu.be"))) {
-                userAgentMode = "desktop"; // Force desktop mode for YouTube for PiP
-                Log.d(TAG, "YouTube URL detected ('" + urlContext + "'), forcing desktop User-Agent.");
-            } else {
-                // Otherwise, use the general preference
-                userAgentMode = prefs.getString(PREF_USER_AGENT_MODE, DEFAULT_USER_AGENT_MODE);
-            }
-            
-            String userAgent = getUserAgent(userAgentMode);
-            session.getSettings().setUserAgentOverride(userAgent);
-            Log.d(TAG, "Applied user agent to session: " + userAgent + " (mode: " + userAgentMode + ") for URL context: " + (urlContext != null ? urlContext : "N/A"));
+    private void applyUserAgentToSession(GeckoSession session, @Nullable String urlContext) { // urlContext can be used for very specific future overrides if needed
+        if (session == null) return;
 
-            // Viewport mode logic revised:
-            // Only set viewport to DESKTOP if effective UA is desktop AND full desktop model is explicitly enabled.
-            // Otherwise, do not set viewport mode, allowing GeckoView to default (mobile for mobile UA, auto-adjust for desktop UA without full model).
-            if ("desktop".equals(userAgentMode)) {
-                boolean fullDesktopModelEnabled = prefs.getBoolean(PREF_FULL_DESKTOP_MODEL_ENABLED, false);
-                if (fullDesktopModelEnabled) {
-                    session.getSettings().setViewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP);
-                    Log.d(TAG, "Viewport: DESKTOP (Desktop UA + Full Model ON)");
-                } else {
-                    // Desktop UA is set, but Full Desktop Model is OFF.
-                    // No explicit viewport set, allowing site to auto-adjust to device width.
-                    Log.d(TAG, "Viewport: NOT SET (Desktop UA + Full Model OFF - allows auto-adjustment)");
-                }
+        String userAgentModeFromPrefs = prefs.getString(PREF_USER_AGENT_MODE, DEFAULT_USER_AGENT_MODE);
+        
+        String userAgent = getUserAgent(userAgentModeFromPrefs); // getUserAgent("mobile") or getUserAgent("desktop")
+        session.getSettings().setUserAgentOverride(userAgent);
+        Log.d(TAG, "Applied user agent string: [" + userAgent + "] (derived from mode: " + userAgentModeFromPrefs + ") to session for URL context: [" + (urlContext != null ? urlContext : "N/A") + "]");
+
+        // Viewport logic:
+        if (userAgentModeFromPrefs.equals("desktop")) {
+            boolean fullDesktopModelEnabled = prefs.getBoolean(PREF_FULL_DESKTOP_MODEL_ENABLED, false);
+            if (fullDesktopModelEnabled) {
+                session.getSettings().setViewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP);
+                Log.d(TAG, "Viewport Setting: DESKTOP (Reason: UA mode 'desktop' AND Full Desktop Model is ON)");
             } else {
-                // Mobile UA is set.
-                // No explicit viewport set, GeckoView defaults to mobile.
-                Log.d(TAG, "Viewport: NOT SET (Mobile UA - defaults to mobile)");
+                // Desktop UA is set, but Full Desktop Model is OFF.
+                // Per user feedback, DO NOT set viewport to mobile here. Let GeckoView/site handle it.
+                // No explicit session.getSettings().setViewportMode(...) call in this sub-branch.
+                Log.d(TAG, "Viewport Setting: NOT SET EXPLICITLY (Reason: UA mode 'desktop' AND Full Desktop Model is OFF - allowing auto-adjustment or site default)");
             }
+        } else { // Mobile UA mode
+            session.getSettings().setViewportMode(GeckoSessionSettings.VIEWPORT_MODE_MOBILE);
+            Log.d(TAG, "Viewport Setting: MOBILE (Reason: UA mode 'mobile')");
         }
     }
 
@@ -2526,48 +2516,144 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     }
 
     private void applySettingsFromPanel() {
-        boolean cookiesChecked = panelCookieSwitch.isChecked();
-        boolean adBlockerChecked = panelAdBlockerSwitch.isChecked();
-        boolean uBlockChecked = (panelUBlockSwitch != null) && panelUBlockSwitch.isChecked(); // Add null check
-        
-        // Get desktop mode selection
-        boolean desktopModeChecked = panelDesktopModeSwitch.isChecked();
-        String userAgentMode = desktopModeChecked ? "desktop" : "mobile";
+        Log.d(TAG, "applySettingsFromPanel called");
+        SharedPreferences.Editor editor = prefs.edit();
 
-        // Get full desktop model selection
-        boolean fullDesktopModelChecked = (panelFullDesktopModelSwitch != null) && panelFullDesktopModelSwitch.isChecked();
-        
-        Log.d(TAG, "Applying Settings from Panel: Cookies = " + cookiesChecked + ", Blocker = " + adBlockerChecked + ", uBlock = " + uBlockChecked + ", UserAgent = " + userAgentMode + ", FullDesktopModel = " + fullDesktopModelChecked);
+        boolean cookiesEnabled = panelCookieSwitch.isChecked();
+        boolean adBlockerEnabled = panelAdBlockerSwitch.isChecked();
+        boolean uBlockEnabled = panelUBlockSwitch.isChecked();
+        boolean immersiveModeEnabled = panelImmersiveSwitch.isChecked();
+        // Get the NEW desktop mode state from the switch
+        boolean newDesktopModeStateFromSwitch = panelDesktopModeSwitch.isChecked(); // true for desktop, false for mobile
+        boolean fullDesktopModelEnabled = panelFullDesktopModelSwitch.isChecked();
 
-        // Save the new preferences
-        prefs.edit()
-             .putBoolean(PREF_COOKIES_ENABLED, cookiesChecked)
-             .putBoolean(PREF_AD_BLOCKER_ENABLED, adBlockerChecked)
-             .putBoolean(PREF_UBLOCK_ENABLED, uBlockChecked) // Save uBlock state
-             .putString(PREF_USER_AGENT_MODE, userAgentMode) // Save user agent mode
-             .putBoolean(PREF_FULL_DESKTOP_MODEL_ENABLED, fullDesktopModelChecked) // Save new preference
-             .apply();
+        // Determine the old user agent mode to see if it changed
+        String oldUserAgentModeFromPrefs = prefs.getString(PREF_USER_AGENT_MODE, DEFAULT_USER_AGENT_MODE);
+        boolean oldDesktopModeState = oldUserAgentModeFromPrefs.equals("desktop");
 
-        // Apply GeckoView settings dynamically
-        applyRuntimeSettings();
-        setUBlockOriginEnabled(uBlockChecked); // Enable/disable uBlock
 
-        // Update user agent and viewport for all existing sessions because settings might have changed
-        Log.d(TAG, "Settings changed. Re-evaluating UA and viewport for all sessions.");
-        for (GeckoSession session : geckoSessionList) {
-            applyUserAgentToSession(session, sessionUrlMap.get(session));
+        String newUserAgentMode = newDesktopModeStateFromSwitch ? "desktop" : "mobile";
+        editor.putString(PREF_USER_AGENT_MODE, newUserAgentMode); // Save the new mode ("desktop" or "mobile")
+        // Also update the boolean pref "desktop_mode_enabled" if it's used elsewhere for quick checks, for consistency.
+        editor.putBoolean("desktop_mode_enabled", newDesktopModeStateFromSwitch);
+
+
+        editor.putBoolean(PREF_COOKIES_ENABLED, cookiesEnabled);
+        editor.putBoolean(PREF_AD_BLOCKER_ENABLED, adBlockerEnabled); // Standard blocker
+        editor.putBoolean(PREF_UBLOCK_ENABLED, uBlockEnabled);         // uBlock Origin
+        editor.putBoolean(PREF_IMMERSIVE_MODE_ENABLED, immersiveModeEnabled);
+        // editor.putBoolean("desktop_mode_enabled", newDesktopModeStateFromSwitch); // Already set above
+        editor.putBoolean(PREF_FULL_DESKTOP_MODEL_ENABLED, fullDesktopModelEnabled);
+
+        editor.apply();
+
+        // Apply runtime settings that don't require session recreation
+        applyRuntimeSettings(); // This handles cookie settings, content blocking
+
+        // Apply immersive mode
+        applyImmersiveMode(immersiveModeEnabled);
+
+        // Apply User Agent to all existing sessions
+        Log.d(TAG, "Settings Panel: Applying UA based on new mode: " + newUserAgentMode + " to all sessions.");
+        for (GeckoSession existingSession : geckoSessionList) {
+            applyUserAgentToSession(existingSession, sessionUrlMap.get(existingSession)); // Pass URL for context
         }
 
-        // Force reload of active session to reflect any UA/viewport changes immediately
-        GeckoSession currentActiveSession = getActiveSession();
-        if (currentActiveSession != null) {
-            Log.d(TAG, "Settings changed, explicitly reloading active session.");
-            // applyUserAgentToSession was already called in the loop above for the active session
-            currentActiveSession.reload();
-        }
+        // Reload/Load URI for the active tab to reflect UA and potential URL changes immediately
+        GeckoSession activeSession = getActiveSession();
+        if (activeSession != null) {
+            String activeUrl = sessionUrlMap.getOrDefault(activeSession, null); // Get current URL from map
+            Log.d(TAG, "Settings Panel: Active session URL for potential cleaning: " + activeUrl);
 
-        hideSettingsPanel(true); // Hide and confirm changes were applied
-        Toast.makeText(this, "Settings applied. Some changes may require a restart or new tab.", Toast.LENGTH_LONG).show();
+            // Check if UA mode was just switched FROM desktop TO mobile
+            // oldDesktopModeState is true if PREF_USER_AGENT_MODE was "desktop" BEFORE this change
+            // newDesktopModeStateFromSwitch is true if the switch is NOW set to desktop mode
+            if (oldDesktopModeState && !newDesktopModeStateFromSwitch) { // Switched FROM desktop TO mobile
+                Log.d(TAG, "UA mode switched from desktop to mobile. Attempting to clean URL.");
+                if (activeUrl != null && !activeUrl.isEmpty() && !activeUrl.equals("about:blank")) {
+                    try {
+                        Uri originalUri = Uri.parse(activeUrl);
+                        Uri.Builder newUriBuilder = originalUri.buildUpon().clearQuery(); // Start fresh with query params
+                        boolean urlWasModified = false;
+                        Set<String> paramNames = originalUri.getQueryParameterNames();
+
+                        for (String paramName : paramNames) {
+                            List<String> values = originalUri.getQueryParameters(paramName); 
+                            boolean keepParam = true;
+
+                            // Pattern 1: paramName is "desktop" and value is "true", "1", or "on" (case-insensitive for name and value)
+                            if (paramName.equalsIgnoreCase("desktop") &&
+                                values.stream().anyMatch(val -> val.equalsIgnoreCase("true") || val.equals("1") || val.equalsIgnoreCase("on"))) {
+                                keepParam = false;
+                                Log.d(TAG, "URL Clean: Removing 'desktop' param: " + paramName + "=" + values);
+                            }
+
+                            // Pattern 2: paramValue is "desktop" or "full" (case-insensitive) for common param names
+                            if (keepParam &&
+                                (paramName.equalsIgnoreCase("app") ||
+                                 paramName.equalsIgnoreCase("view") ||
+                                 paramName.equalsIgnoreCase("mode") ||
+                                 paramName.equalsIgnoreCase("device") ||
+                                 paramName.equalsIgnoreCase("version") ||
+                                 paramName.equalsIgnoreCase("variant") ||
+                                 paramName.equalsIgnoreCase("layout") ||
+                                 paramName.equalsIgnoreCase("site")) &&
+                                values.stream().anyMatch(val -> val.equalsIgnoreCase("desktop") || val.equalsIgnoreCase("full"))) {
+                                keepParam = false;
+                                Log.d(TAG, "URL Clean: Removing desktop-indicating value for param: " + paramName + "=" + values);
+                            }
+
+                            // Pattern 3: paramName implies mobile/desktop toggle, value indicates desktop (e.g., m=0, mobile=false)
+                            if (keepParam && paramName.equalsIgnoreCase("m") && values.stream().anyMatch(val -> val.equals("0") || val.equalsIgnoreCase("false"))) {
+                                keepParam = false;
+                                Log.d(TAG, "URL Clean: Removing 'm=0' or 'm=false' style param: " + paramName + "=" + values);
+                            }
+                             if (keepParam && paramName.equalsIgnoreCase("mobile") && values.stream().anyMatch(val -> val.equalsIgnoreCase("false") || val.equals("0"))) {
+                                keepParam = false;
+                                Log.d(TAG, "URL Clean: Removing 'mobile=false' or 'mobile=0' style param: " + paramName + "=" + values);
+                            }
+
+
+                            if (keepParam) {
+                                for (String value : values) { 
+                                    newUriBuilder.appendQueryParameter(paramName, value);
+                                }
+                            } else {
+                                urlWasModified = true; 
+                            }
+                        }
+
+                        if (urlWasModified) {
+                            String cleanedUrl = newUriBuilder.build().toString();
+                            // If all query parameters were removed and the original URL had a query,
+                            // the cleaned URL might end with just "?". Remove it.
+                            if (cleanedUrl.endsWith("?") && 
+                                originalUri.getQuery() != null && !originalUri.getQuery().isEmpty() &&
+                                (newUriBuilder.build().getQuery() == null || newUriBuilder.build().getQuery().isEmpty())) {
+                                cleanedUrl = cleanedUrl.substring(0, cleanedUrl.length() - 1);
+                            }
+                            Log.d(TAG, "Settings Panel: Loading cleaned URL for mobile mode: " + cleanedUrl);
+                            activeSession.loadUri(cleanedUrl);
+                        } else {
+                            Log.d(TAG, "Settings Panel: URL not identified as needing cleaning for mobile mode. Reloading normally.");
+                            activeSession.reload();
+                        }
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error parsing or cleaning URL: " + activeUrl, e);
+                        activeSession.reload(); // Fallback to reload on error
+                    }
+                } else {
+                    Log.d(TAG, "Settings Panel: Active URL is null, empty, or about:blank. Reloading normally.");
+                    activeSession.reload(); 
+                }
+            } else { 
+                Log.d(TAG, "Settings Panel: UA mode not switched from desktop to mobile, or no active URL. Reloading active session.");
+                activeSession.reload();
+            }
+        } else {
+            Log.w(TAG, "Settings Panel: No active session to reload/load for UA/URL changes.");
+        }
+        hideSettingsPanel(true); // Re-add this line to close panel after applying
     }
     // --- End Settings Panel Logic ---
 

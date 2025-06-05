@@ -92,7 +92,7 @@
         android:id="@+id/panelFullDesktopModelSwitch"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Enable Full Desktop Model"
+        android:text="Enable Full Desktop Mode"
         android:textColor="@color/settings_panel_text"
         app:thumbTint="@color/switch_thumb_tint"
         app:trackTint="@color/switch_track_tint"
