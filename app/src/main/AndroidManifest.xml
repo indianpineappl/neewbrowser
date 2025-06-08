@@ -10,12 +10,27 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" tools:ignore="QueryAllPackagesPermission" />
 
+    <!-- TV-specific features -->
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+    <uses-feature
+        android:name="android.software.leanback"
+        android:required="true" />
+    <uses-feature
+        android:name="android.hardware.wifi"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.ethernet"
+        android:required="false" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/main_logo"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/main_logo_round"
         android:supportsRtl="true"
+        android:banner="@mipmap/main_logo"
         android:theme="@style/Theme.NeewBrowser">
         <activity
             android:name=".MainActivity"
@@ -23,10 +38,11 @@
             android:windowSoftInputMode="stateUnspecified|adjustPan"
             android:supportsPictureInPicture="true"
             android:launchMode="singleTask"
+            android:screenOrientation="landscape"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|uiMode">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
             
             <!-- Intent filter to handle web browsing -->
@@ -62,11 +78,13 @@
         <activity
             android:name=".TabSwitcherActivity"
             android:label="Tabs"
+            android:screenOrientation="landscape"
             android:theme="@style/Theme.AppCompat.NoActionBar" />
 
         <activity
             android:name=".DownloadsActivity"
             android:label="Downloads"
+            android:screenOrientation="landscape"
             android:parentActivityName=".MainActivity"
             android:theme="@style/Theme.NeewBrowser"> 
             <meta-data
