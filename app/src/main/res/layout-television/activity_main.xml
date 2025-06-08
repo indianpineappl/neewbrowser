@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.coordinatorlayout.widget.CoordinatorLayout 
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    tools:context=".MainActivity">
+
+    <LinearLayout
+        android:id="@+id/main_content_area" 
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+        <!-- Persistent Address Bar for TV -->
+        <include layout="@layout/control_bar_expanded" />
+
+        <!-- ProgressBar -->
+        <ProgressBar
+            android:id="@+id/progressBar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:indeterminate="false"
+            android:max="100"
+            android:visibility="gone" />
+
+        <!-- GeckoView fills the remaining space -->
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <org.mozilla.geckoview.GeckoView
+                android:id="@+id/geckoView"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"/>
+
+            <!-- TV Cursor View -->
+            <com.neew.browser.TvCursorView
+                android:id="@+id/tvCursorView"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:visibility="gone"/>
+
+        </FrameLayout>
+
+    </LinearLayout>
+
+    <!-- Settings Panel (Initially Gone) -->
+    <include
+        layout="@layout/settings_panel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_marginBottom="?attr/actionBarSize"/>
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout> 
