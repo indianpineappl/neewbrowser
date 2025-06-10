@@ -290,13 +290,17 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     }
 
     private TvCursorView tvCursorView;
-    private static final int CURSOR_STEP_SIZE = 5; // Pixels to move per D-pad press
-    private static final int SCROLL_THRESHOLD_PERCENT = 30; // Percentage of screen height to trigger scrolling
-    private static final int SCROLL_STEP_SIZE = 10; // Initial scroll step size
-    private static final int MAX_SCROLL_STEP_SIZE = 50; // Maximum scroll step size
-    private Handler scrollHandler = new Handler(Looper.getMainLooper());
-    private int currentScrollStepSize = SCROLL_STEP_SIZE;
-    private boolean isScrolling = false;
+    private boolean isUiFocused = false; // New field to track if UI (control bar/settings) has focus
+    private List<View> controlBarElements;
+    private List<View> settingsPanelElements;
+    private static final int CURSOR_STEP_SIZE = 20; // Pixels to move cursor per key press
+    private static final int SCROLL_AMOUNT_PER_PRESS = 100; // Increased scroll amount for more noticeable scrolling
+    private long mGestureDownTime = 0; // To track gesture start time for reliable clicks
+    private boolean mUrlBarHasInitialTvFocus = true; // To manage TV URL bar click behavior
+    private boolean mIsScrollingUp = false; // Track if we're currently scrolling up
+    private boolean mWaitingForScrollComplete = false; // Track if we're waiting for a scroll to complete
+    private int mLastScrollY = 0; // Track last scroll position
+    private boolean mCanScrollUp = true; // Track if we can scroll up
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -359,13 +363,26 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         minimizedRefreshButton = findViewById(R.id.minimizedRefreshButton);
         minimizedForwardButton = findViewById(R.id.minimizedForwardButton);
         
+        // Initialize lists for focusable UI elements
+        controlBarElements = Arrays.asList(
+                settingsButton, urlBar, backButton, forwardButton, newTabButton, tabsButton, downloadsButton
+        );
+        
         // Initialize Settings Panel components
         settingsPanelLayout = findViewById(R.id.settingsPanelLayout);
         panelCookieSwitch = findViewById(R.id.panelCookieSwitch);
         panelAdBlockerSwitch = findViewById(R.id.panelAdBlockerSwitch);
         panelUBlockSwitch = findViewById(R.id.panelUBlockSwitch);
+        panelImmersiveSwitch = findViewById(R.id.panelImmersiveSwitch);
+        panelDesktopModeSwitch = findViewById(R.id.panelDesktopModeSwitch);
+        panelFullDesktopModelSwitch = findViewById(R.id.panelFullDesktopModelSwitch);
         panelApplyButton = findViewById(R.id.panelApplyButton);
         panelCancelButton = findViewById(R.id.panelCancelButton);
+
+        settingsPanelElements = Arrays.asList(
+                panelCookieSwitch, panelAdBlockerSwitch, panelUBlockSwitch, panelImmersiveSwitch,
+                panelDesktopModeSwitch, panelFullDesktopModelSwitch, panelApplyButton, panelCancelButton
+        );
 
         panelImmersiveSwitch = findViewById(R.id.panelImmersiveSwitch);
         // Set Immersive Mode enabled by default (true)
@@ -607,6 +624,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         setupUrlBarListener();
         setupGeckoViewTouchListener();
         setupSettingsPanelListeners();
+        setupGlobalLayoutListener(); // Listen for keyboard visibility changes
         showExpandedBar(); // New initial state call
 
         // Ensure GeckoView uses the correct session after potential restore
@@ -832,109 +850,124 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     // Refactored method to set up common button listeners
     private void setupButtonListeners() {
         if (backButton != null) {
-            backButton.setOnClickListener(v -> {
-                GeckoSession activeSession = getActiveSession();
+        backButton.setOnClickListener(v -> {
+            GeckoSession activeSession = getActiveSession();
                 if (activeSession != null) activeSession.goBack();
-            });
+        });
         }
 
         if (forwardButton != null) {
-            forwardButton.setOnClickListener(v -> {
-                GeckoSession activeSession = getActiveSession();
+        forwardButton.setOnClickListener(v -> {
+            GeckoSession activeSession = getActiveSession();
                 if (activeSession != null) activeSession.goForward();
-            });
+        });
         }
 
         if (refreshButton != null) {
-            refreshButton.setOnClickListener(v -> {
-                GeckoSession activeSession = getActiveSession();
-                if (activeSession != null) {
-                    activeSession.reload();
-                }
-            });
+        refreshButton.setOnClickListener(v -> {
+            GeckoSession activeSession = getActiveSession();
+            if (activeSession != null) {
+                activeSession.reload();
+            }
+        });
         }
 
         if (settingsButton != null) {
-            settingsButton.setOnClickListener(v -> toggleSettingsPanel());
+        settingsButton.setOnClickListener(v -> toggleSettingsPanel());
         }
-
+        
         if (downloadsButton != null) {
-            downloadsButton.setOnClickListener(v -> {
-                Intent intent = new Intent(MainActivity.this, DownloadsActivity.class);
-                startActivity(intent);
-            });
+        downloadsButton.setOnClickListener(v -> {
+            Intent intent = new Intent(MainActivity.this, DownloadsActivity.class);
+            startActivity(intent);
+        });
         }
 
         if (newTabButton != null) {
-            newTabButton.setOnClickListener(v -> {
-                Log.d(TAG, "Expanded New Tab button clicked.");
+        newTabButton.setOnClickListener(v -> {
+            Log.d(TAG, "Expanded New Tab button clicked.");
                 if (!isTvDevice()) {
-                    showExpandedBar(); // Ensure expanded bar is shown
+            showExpandedBar(); // Ensure expanded bar is shown
                 }
-                createNewTab(true); // Create and switch to the new tab
-            });
+            createNewTab(true); // Create and switch to the new tab
+        });
         }
 
         if (tabsButton != null) {
-            tabsButton.setOnClickListener(v -> {
-                Log.d(TAG, "Tabs button clicked.");
+        tabsButton.setOnClickListener(v -> {
+            Log.d(TAG, "Tabs button clicked.");
                 if (!isTvDevice()) {
                     showExpandedBar();
                 }
-                v.post(() -> {
-                    Log.d(TAG, "Executing launchTabSwitcher from post.");
-                    launchTabSwitcher();
-                });
+            v.post(() -> {
+                Log.d(TAG, "Executing launchTabSwitcher from post.");
+            launchTabSwitcher();
             });
+        });
         }
 
         // Add listeners for MINIMIZED buttons only if they exist
         if (minimizedBackButton != null) {
-            minimizedBackButton.setOnClickListener(v -> {
-                GeckoSession activeSession = getActiveSession();
-                if (activeSession != null) activeSession.goBack();
-            });
+        minimizedBackButton.setOnClickListener(v -> {
+             GeckoSession activeSession = getActiveSession();
+             if (activeSession != null) activeSession.goBack();
+        });
         }
 
         if (minimizedForwardButton != null) {
-            minimizedForwardButton.setOnClickListener(v -> {
-                GeckoSession activeSession = getActiveSession();
-                if (activeSession != null) activeSession.goForward();
-            });
+        minimizedForwardButton.setOnClickListener(v -> {
+             GeckoSession activeSession = getActiveSession();
+             if (activeSession != null) activeSession.goForward();
+        });
         }
 
         if (minimizedRefreshButton != null) {
-            minimizedRefreshButton.setOnClickListener(v -> {
-                GeckoSession activeSession = getActiveSession();
-                if (activeSession != null) activeSession.reload();
-            });
+        minimizedRefreshButton.setOnClickListener(v -> {
+             GeckoSession activeSession = getActiveSession();
+             if (activeSession != null) activeSession.reload();
+        });
         }
 
         if (minimizedNewTabButton != null) {
-            minimizedNewTabButton.setOnClickListener(v -> {
-                Log.d(TAG, "Minimized New Tab button clicked.");
+        minimizedNewTabButton.setOnClickListener(v -> {
+            Log.d(TAG, "Minimized New Tab button clicked.");
                 if (!isTvDevice()) {
-                    showExpandedBar(); // Ensure expanded bar is shown
+            showExpandedBar(); // Ensure expanded bar is shown
                 }
-                createNewTab(true); // Create and switch to the new tab
-            });
+              createNewTab(true); // Create and switch to the new tab
+        });
         }
 
         if (minimizedUrlBar != null) {
-            minimizedUrlBar.setOnClickListener(v -> showExpandedBar());
+        minimizedUrlBar.setOnClickListener(v -> showExpandedBar());
         }
     }
 
      // Refactored method to set up URL bar listener
     private void setupUrlBarListener() {
+        // On TV, the click listener is not needed for the main URL bar,
+        // as focus change handles selection and keyboard.
+        // On mobile, the click listener selects all text.
         urlBar.setOnClickListener(v -> {
-            urlBar.post(() -> urlBar.selectAll());
+            if (!isTvDevice()) {
+                urlBar.post(() -> urlBar.selectAll());
+            }
         });
 
         urlBar.setOnFocusChangeListener((v, hasFocus) -> {
-            if (hasFocus) {
-                // Post to ensure selection happens after focus events are fully processed
-                urlBar.post(() -> urlBar.selectAll());
+            if (isTvDevice()) {
+                if (hasFocus) {
+                    // When the URL bar gains focus on TV, select all text and show the keyboard.
+                    urlBar.post(() -> {
+                        urlBar.selectAll();
+                        showKeyboard(urlBar);
+                    });
+                }
+            } else {
+                // On mobile, preserve the original select-on-focus behavior.
+                if (hasFocus) {
+                    urlBar.post(() -> urlBar.selectAll());
+                }
             }
         });
 
@@ -2018,7 +2051,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     @Override
     public void onBackPressed() {
         if (settingsPanelLayout.getVisibility() == View.VISIBLE) {
-            hideSettingsPanel(false);
+            hideSettingsPanel();
             return;
         }
         GeckoSession activeSession = getActiveSession();
@@ -2164,31 +2197,32 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
     @Override
     public void onScrollChanged(GeckoSession session, int scrollX, int scrollY) {
+        // Update our scroll tracking
+        mLastScrollY = scrollY;
+        mCanScrollUp = scrollY > 0;
+        
+        // Existing scroll handling code
         int dy = scrollY - lastScrollY;
-
-        // Don't do anything if the scroll is too small
         if (Math.abs(dy) < SCROLL_THRESHOLD) {
-            // Update lastScrollY only if the scroll is not negligible,
-            // to avoid resetting it for very small movements that don't cross threshold.
-            if (Math.abs(dy) > 5) { // A smaller tolerance for updating lastScrollY
-                 lastScrollY = scrollY;
+            if (Math.abs(dy) > 5) {
+                lastScrollY = scrollY;
             }
             return;
         }
 
-        if (dy > 0) { // Scrolling Down
-            if (!isControlBarHidden) { // Only hide if not already hidden
+        if (dy > 0) {
+            if (!isControlBarHidden) {
                 hideBothBars();
                 Log.d(TAG, "onScrollChanged: Scrolled DOWN - Hiding both bars.");
             }
-        } else { // Scrolling Up (dy < 0)
-            if (isControlBarHidden || isControlBarExpanded) { // Show minimized if currently hidden OR if it was expanded (and now scrolled up)
+        } else {
+            if (isControlBarHidden || isControlBarExpanded) {
                 showMinimizedBar();
                 Log.d(TAG, "onScrollChanged: Scrolled UP - Showing minimized bar.");
             }
         }
 
-        lastScrollY = scrollY; // Update scroll position
+        lastScrollY = scrollY;
     }
 
     // Method to apply runtime settings based on SharedPreferences
@@ -2472,7 +2506,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     // --- Settings Panel Logic ---
     private void setupSettingsPanelListeners() {
         panelApplyButton.setOnClickListener(v -> applySettingsFromPanel());
-        panelCancelButton.setOnClickListener(v -> hideSettingsPanel(false));
+        panelCancelButton.setOnClickListener(v -> hideSettingsPanel());
 
         // Optional: Hide panel if touch occurs outside of it (on GeckoView)
         geckoView.setOnTouchListener((view, motionEvent) -> {
@@ -2481,7 +2515,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 Rect panelRect = new Rect();
                 settingsPanelLayout.getGlobalVisibleRect(panelRect);
                 if (!panelRect.contains((int) motionEvent.getRawX(), (int) motionEvent.getRawY())) {
-                    hideSettingsPanel(false); // Hide without applying if touched outside
+                    hideSettingsPanel(); // Hide without applying if touched outside
                 }
             } 
             
@@ -2510,66 +2544,24 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         if (settingsPanelLayout.getVisibility() == View.GONE) {
             showSettingsPanel();
         } else {
-            hideSettingsPanel(false); // Hide without applying changes if toggled off
+            hideSettingsPanel(); // Hide without applying changes if toggled off
         }
     }
 
+    // Method to show the settings panel
     private void showSettingsPanel() {
-        // Load current settings into switches before showing
-        panelCookieSwitch.setChecked(prefs.getBoolean(PREF_COOKIES_ENABLED, true)); // Changed default to true
-        panelAdBlockerSwitch.setChecked(prefs.getBoolean(PREF_AD_BLOCKER_ENABLED, true));
-        if (panelUBlockSwitch != null) { // Add null check for safety
-            panelUBlockSwitch.setChecked(prefs.getBoolean(PREF_UBLOCK_ENABLED, false));
+        settingsPanelLayout.setVisibility(View.VISIBLE);
+        settingsPanelLayout.bringToFront();
+        // Optionally, focus the first element for D-pad navigation
+        if (!settingsPanelElements.isEmpty()) {
+            settingsPanelElements.get(0).requestFocus();
         }
-        
-        // Load current desktop mode selection
-        String currentUserAgentMode = prefs.getString(PREF_USER_AGENT_MODE, DEFAULT_USER_AGENT_MODE);
-        boolean isDesktopMode = currentUserAgentMode.equals("desktop");
-        panelDesktopModeSwitch.setChecked(isDesktopMode);
-
-        // Load current full desktop model selection
-        if (panelFullDesktopModelSwitch != null) {
-            panelFullDesktopModelSwitch.setChecked(prefs.getBoolean(PREF_FULL_DESKTOP_MODEL_ENABLED, false)); // Default to false
-        }
-
-        settingsPanelLayout.setVisibility(View.VISIBLE); // Make it visible first
-
-        settingsPanelLayout.post(() -> {
-            // Simple slide-up animation
-            TranslateAnimation animate = new TranslateAnimation(
-                    0,
-                    0,
-                    settingsPanelLayout.getHeight(), // fromYDelta (start below)
-                    0);                        // toYDelta (end at original position)
-            animate.setDuration(300);
-            animate.setFillAfter(true); // Keep the view at its new position after animation
-            settingsPanelLayout.startAnimation(animate);
-            Log.d(TAG, "Showing settings panel animation started");
-        });
-        Log.d(TAG, "Showing settings panel requested");
     }
 
-    private void hideSettingsPanel(boolean applyChanges) {
-        if (settingsPanelLayout.getVisibility() == View.GONE) return;
-
-        // Simple slide-down animation
-        TranslateAnimation animate = new TranslateAnimation(
-                0,
-                0,
-                0,
-                settingsPanelLayout.getHeight()); // toYDelta (end below)
-        animate.setDuration(300);
-        animate.setFillAfter(true);
-        animate.setAnimationListener(new Animation.AnimationListener() {
-            @Override public void onAnimationStart(Animation animation) { }
-            @Override public void onAnimationEnd(Animation animation) {
-                settingsPanelLayout.setVisibility(View.GONE);
-                settingsPanelLayout.clearAnimation(); // Important to clear after GONE
-                Log.d(TAG, "Settings panel hidden." + (applyChanges ? " Applied changes." : " Cancelled."));
-            }
-            @Override public void onAnimationRepeat(Animation animation) { }
-        });
-        settingsPanelLayout.startAnimation(animate);
+    // Method to hide the settings panel
+    private void hideSettingsPanel() {
+        settingsPanelLayout.setVisibility(View.GONE);
+        geckoView.requestFocus(); // Return focus to GeckoView
     }
 
     private void applySettingsFromPanel() {
@@ -2616,103 +2608,17 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             applyUserAgentToSession(existingSession, sessionUrlMap.get(existingSession)); // Pass URL for context
         }
 
-        // Reload/Load URI for the active tab to reflect UA and potential URL changes immediately
+        // Reload the active session to apply changes.
         GeckoSession activeSession = getActiveSession();
         if (activeSession != null) {
-            String activeUrl = sessionUrlMap.getOrDefault(activeSession, null); // Get current URL from map
-            Log.d(TAG, "Settings Panel: Active session URL for potential cleaning: " + activeUrl);
-
-            // Check if UA mode was just switched FROM desktop TO mobile
-            // oldDesktopModeState is true if PREF_USER_AGENT_MODE was "desktop" BEFORE this change
-            // newDesktopModeStateFromSwitch is true if the switch is NOW set to desktop mode
-            if (oldDesktopModeState && !newDesktopModeStateFromSwitch) { // Switched FROM desktop TO mobile
-                Log.d(TAG, "UA mode switched from desktop to mobile. Attempting to clean URL.");
-                if (activeUrl != null && !activeUrl.isEmpty() && !activeUrl.equals("about:blank")) {
-                    try {
-                        Uri originalUri = Uri.parse(activeUrl);
-                        Uri.Builder newUriBuilder = originalUri.buildUpon().clearQuery(); // Start fresh with query params
-                        boolean urlWasModified = false;
-                        Set<String> paramNames = originalUri.getQueryParameterNames();
-
-                        for (String paramName : paramNames) {
-                            List<String> values = originalUri.getQueryParameters(paramName); 
-                            boolean keepParam = true;
-
-                            // Pattern 1: paramName is "desktop" and value is "true", "1", or "on" (case-insensitive for name and value)
-                            if (paramName.equalsIgnoreCase("desktop") &&
-                                values.stream().anyMatch(val -> val.equalsIgnoreCase("true") || val.equals("1") || val.equalsIgnoreCase("on"))) {
-                                keepParam = false;
-                                Log.d(TAG, "URL Clean: Removing 'desktop' param: " + paramName + "=" + values);
-                            }
-
-                            // Pattern 2: paramValue is "desktop" or "full" (case-insensitive) for common param names
-                            if (keepParam &&
-                                (paramName.equalsIgnoreCase("app") ||
-                                 paramName.equalsIgnoreCase("view") ||
-                                 paramName.equalsIgnoreCase("mode") ||
-                                 paramName.equalsIgnoreCase("device") ||
-                                 paramName.equalsIgnoreCase("version") ||
-                                 paramName.equalsIgnoreCase("variant") ||
-                                 paramName.equalsIgnoreCase("layout") ||
-                                 paramName.equalsIgnoreCase("site")) &&
-                                values.stream().anyMatch(val -> val.equalsIgnoreCase("desktop") || val.equalsIgnoreCase("full"))) {
-                                keepParam = false;
-                                Log.d(TAG, "URL Clean: Removing desktop-indicating value for param: " + paramName + "=" + values);
-                            }
-
-                            // Pattern 3: paramName implies mobile/desktop toggle, value indicates desktop (e.g., m=0, mobile=false)
-                            if (keepParam && paramName.equalsIgnoreCase("m") && values.stream().anyMatch(val -> val.equals("0") || val.equalsIgnoreCase("false"))) {
-                                keepParam = false;
-                                Log.d(TAG, "URL Clean: Removing 'm=0' or 'm=false' style param: " + paramName + "=" + values);
-                            }
-                             if (keepParam && paramName.equalsIgnoreCase("mobile") && values.stream().anyMatch(val -> val.equalsIgnoreCase("false") || val.equals("0"))) {
-                                keepParam = false;
-                                Log.d(TAG, "URL Clean: Removing 'mobile=false' or 'mobile=0' style param: " + paramName + "=" + values);
-                            }
-
-
-                            if (keepParam) {
-                                for (String value : values) { 
-                                    newUriBuilder.appendQueryParameter(paramName, value);
-                                }
-                            } else {
-                                urlWasModified = true; 
-                            }
-                        }
-
-                        if (urlWasModified) {
-                            String cleanedUrl = newUriBuilder.build().toString();
-                            // If all query parameters were removed and the original URL had a query,
-                            // the cleaned URL might end with just "?". Remove it.
-                            if (cleanedUrl.endsWith("?") && 
-                                originalUri.getQuery() != null && !originalUri.getQuery().isEmpty() &&
-                                (newUriBuilder.build().getQuery() == null || newUriBuilder.build().getQuery().isEmpty())) {
-                                cleanedUrl = cleanedUrl.substring(0, cleanedUrl.length() - 1);
-                            }
-                            Log.d(TAG, "Settings Panel: Loading cleaned URL for mobile mode: " + cleanedUrl);
-                            activeSession.loadUri(cleanedUrl);
-                        } else {
-                            Log.d(TAG, "Settings Panel: URL not identified as needing cleaning for mobile mode. Reloading normally.");
-                            activeSession.reload();
-                        }
-                    } catch (Exception e) {
-                        Log.e(TAG, "Error parsing or cleaning URL: " + activeUrl, e);
-                        activeSession.reload(); // Fallback to reload on error
-                    }
-                } else {
-                    Log.d(TAG, "Settings Panel: Active URL is null, empty, or about:blank. Reloading normally.");
-                    activeSession.reload(); 
-                }
-            } else { 
-                Log.d(TAG, "Settings Panel: UA mode not switched from desktop to mobile, or no active URL. Reloading active session.");
-                activeSession.reload();
-            }
+            Log.d(TAG, "Settings Panel: Reloading active session to apply settings.");
+            activeSession.reload();
         } else {
-            Log.w(TAG, "Settings Panel: No active session to reload/load for UA/URL changes.");
+            Log.w(TAG, "Settings Panel: No active session to reload after applying settings.");
         }
-        hideSettingsPanel(true); // Re-add this line to close panel after applying
+
+        hideSettingsPanel();
     }
-    // --- End Settings Panel Logic ---
 
     // --- uBlock Origin WebExtension Logic ---
 
@@ -2877,8 +2783,8 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         isInGeckoViewFullscreen = true; // GeckoView has requested fullscreen
 
         if (isTvDevice()) {
-            if (expandedControlBar != null) {
-                expandedControlBar.setVisibility(View.GONE);
+            if (controlBarContainer != null) {
+                controlBarContainer.setVisibility(View.GONE);
             }
         } else {
             // Mobile-specific fullscreen logic
@@ -2892,7 +2798,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
             int uiOptions = View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                             | View.SYSTEM_UI_FLAG_FULLSCREEN
-                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+                                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
             decorView.setSystemUiVisibility(uiOptions);
 
             setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
@@ -2908,8 +2814,8 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         isInGeckoViewFullscreen = false; // GeckoView no longer desires fullscreen
 
         if (isTvDevice()) {
-            if (expandedControlBar != null) {
-                expandedControlBar.setVisibility(View.VISIBLE);
+            if (controlBarContainer != null) {
+                controlBarContainer.setVisibility(View.VISIBLE);
             }
         } else {
             // Mobile-specific fullscreen exit logic
@@ -4250,27 +4156,44 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     @Override
     public void onPause(@NonNull GeckoSession session, @NonNull MediaSession mediaSession) {
         Log.d(TAG, "MediaSession.Delegate: onPause for session: " + sessionUrlMap.getOrDefault(session, "N/A"));
-        if (session == mediaPlayingSession) { // Check if it's the session we were tracking
+        if (session == mediaPlayingSession) { // Check if it\'s the session we were tracking
             isMediaActuallyPlaying = false;
             mediaPlayingSession = null; // Clear the playing session
             Log.d(TAG, "MediaSession.Delegate: Media playback paused for previously playing session.");
         }
     }
 
-    @Override
+        @Override
     public void onStop(@NonNull GeckoSession session, @NonNull MediaSession mediaSession) {
-        Log.d(TAG, "MediaSession.Delegate: onStop for session: " + sessionUrlMap.getOrDefault(session, "N/A"));
-        if (session == mediaPlayingSession) { // Check if it's the session we were tracking
+        Log.d(TAG, "MediaSession.Delegate: onStop for session: " + (session != null ? "current session" : "null"));
+        if (mediaPlayingSession == session) {
             isMediaActuallyPlaying = false;
-            mediaPlayingSession = null; // Clear the playing session
-            Log.d(TAG, "MediaSession.Delegate: Media playback stopped for previously playing session.");
+            // Don't null out mediaPlayingSession here, we might get a "play" event for it again.
         }
     }
 
-    // Optional: Implement other MediaSession.Delegate methods if needed (onMetadata, onFeatures, etc.)
-    // For PiP, onPlay/onPause/onStop are the most critical.
-
-    // --- End MediaSession.Delegate Implementation ---
+    private void setUiFocus(boolean enable) {
+        isUiFocused = enable;
+        if (enable) {
+            if (tvCursorView != null) {
+                tvCursorView.setVisibility(View.GONE);
+            }
+            // Focus the first element of the settings panel if visible, otherwise control bar
+            if (settingsPanelLayout.getVisibility() == View.VISIBLE && !settingsPanelElements.isEmpty()) {
+                settingsPanelElements.get(0).requestFocus();
+            } else if (!controlBarElements.isEmpty()) {
+                controlBarElements.get(0).requestFocus();
+            }
+        } else {
+            if (tvCursorView != null) {
+                tvCursorView.setVisibility(View.VISIBLE);
+                centerCursor(); // Recenter cursor when returning to geckoView
+            }
+            if (geckoView != null) {
+                geckoView.requestFocus();
+            }
+        }
+    }
 
     private void centerCursor() {
         if (tvCursorView != null) {
@@ -4281,127 +4204,248 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         }
     }
 
+   
     @Override
-    public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (!isTvDevice() || tvCursorView == null || tvCursorView.getVisibility() != View.VISIBLE) {
-            return super.onKeyDown(keyCode, event);
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (!isTvDevice()) {
+            return super.dispatchKeyEvent(event);
         }
 
-        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) tvCursorView.getLayoutParams();
-        int currentX = params.leftMargin;
-        int currentY = params.topMargin;
-
-        switch (keyCode) {
-            case KeyEvent.KEYCODE_DPAD_LEFT:
-                params.leftMargin = Math.max(0, currentX - CURSOR_STEP_SIZE);
-                break;
-            case KeyEvent.KEYCODE_DPAD_RIGHT:
-                params.leftMargin = Math.min(getWindowManager().getDefaultDisplay().getWidth() - tvCursorView.getWidth(),
-                        currentX + CURSOR_STEP_SIZE);
-                break;
-            case KeyEvent.KEYCODE_DPAD_UP:
-                params.topMargin = Math.max(0, currentY - CURSOR_STEP_SIZE);
-                break;
-            case KeyEvent.KEYCODE_DPAD_DOWN:
-                params.topMargin = Math.min(getWindowManager().getDefaultDisplay().getHeight() - tvCursorView.getHeight(),
-                        currentY + CURSOR_STEP_SIZE);
-                break;
-            case KeyEvent.KEYCODE_DPAD_CENTER:
-                // Simulate a tap at the cursor's position
-                simulateTapAtCursor();
-                return true;
-            default:
-                return super.onKeyDown(keyCode, event);
+        if (getCurrentFocus() instanceof EditText) {
+            // Allow normal text input when URL bar or other EditText is focused
+            return super.dispatchKeyEvent(event);
         }
 
-        tvCursorView.setLayoutParams(params);
-        checkScrollZone();
-        return true;
-    }
-
-    private void simulateTapAtCursor() {
-        if (geckoView != null && tvCursorView != null) {
-            FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) tvCursorView.getLayoutParams();
-            int x = params.leftMargin + tvCursorView.getWidth() / 2;
-            int y = params.topMargin + tvCursorView.getHeight() / 2;
-            
-            // Convert screen coordinates to GeckoView coordinates
-            int[] geckoViewLocation = new int[2];
-            geckoView.getLocationOnScreen(geckoViewLocation);
-            x -= geckoViewLocation[0];
-            y -= geckoViewLocation[1];
-
-            // Create and dispatch a tap event
-            MotionEvent tapEvent = MotionEvent.obtain(
-                System.currentTimeMillis(),
-                System.currentTimeMillis(),
-                MotionEvent.ACTION_DOWN,
-                x,
-                y,
-                0
-            );
-            geckoView.dispatchTouchEvent(tapEvent);
-            tapEvent.recycle();
-
-            tapEvent = MotionEvent.obtain(
-                System.currentTimeMillis(),
-                System.currentTimeMillis(),
-                MotionEvent.ACTION_UP,
-                x,
-                y,
-                0
-            );
-            geckoView.dispatchTouchEvent(tapEvent);
-            tapEvent.recycle();
-        }
-    }
-
-    private void checkScrollZone() {
-        if (geckoView == null || tvCursorView == null) return;
-
-        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) tvCursorView.getLayoutParams();
-        int screenHeight = getWindowManager().getDefaultDisplay().getHeight();
-        int cursorY = params.topMargin;
-        int threshold = (screenHeight * SCROLL_THRESHOLD_PERCENT) / 100;
-
-        if (cursorY < threshold) {
-            // Cursor is in top scroll zone
-            startScrolling(-1); // Scroll up
-        } else if (cursorY > screenHeight - threshold - tvCursorView.getHeight()) {
-            // Cursor is in bottom scroll zone
-            startScrolling(1); // Scroll down
-        } else {
-            stopScrolling();
-        }
-    }
-
-    private void startScrolling(final int direction) {
-        if (!isScrolling) {
-            isScrolling = true;
-            currentScrollStepSize = SCROLL_STEP_SIZE;
-            scrollHandler.post(new Runnable() {
-                @Override
-                public void run() {
-                    if (isScrolling && geckoView != null) {
-                        GeckoSession session = getActiveSession();
-                        if (session != null) {
-                            session.getPanZoomController().scrollBy(
-                                org.mozilla.geckoview.ScreenLength.fromPixels(0),
-                                org.mozilla.geckoview.ScreenLength.fromPixels(direction * currentScrollStepSize)
-                            );
-                            // Increase scroll speed
-                            currentScrollStepSize = Math.min(currentScrollStepSize + 1, MAX_SCROLL_STEP_SIZE);
-                            scrollHandler.postDelayed(this, 50); // Adjust scroll frequency as needed
-                        }
+        // Handle UI-focused events first
+        if (isUiFocused) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                 View focusedView = getCurrentFocus();
+                if (focusedView != null) {
+                    switch (event.getKeyCode()) {
+                        case KeyEvent.KEYCODE_DPAD_LEFT:
+                            View nextFocusLeft = focusedView.focusSearch(View.FOCUS_LEFT);
+                            if (nextFocusLeft != null) {
+                                nextFocusLeft.requestFocus();
+                            }
+                            return true;
+                        case KeyEvent.KEYCODE_DPAD_RIGHT:
+                            View nextFocusRight = focusedView.focusSearch(View.FOCUS_RIGHT);
+                            if (nextFocusRight != null) {
+                                nextFocusRight.requestFocus();
+                            }
+                            return true;
+                        case KeyEvent.KEYCODE_DPAD_UP:
+                            View nextFocusUp = focusedView.focusSearch(View.FOCUS_UP);
+                            if (nextFocusUp != null) {
+                                nextFocusUp.requestFocus();
+                            }
+                            return true;
+                        case KeyEvent.KEYCODE_DPAD_DOWN:
+                            View nextFocusDown = focusedView.focusSearch(View.FOCUS_DOWN);
+                            if (nextFocusDown != null) {
+                                nextFocusDown.requestFocus();
+                            } else {
+                                // No more UI elements down, switch back to GeckoView
+                                setUiFocus(false);
+                            }
+                            return true;
+                        case KeyEvent.KEYCODE_DPAD_CENTER:
+                        case KeyEvent.KEYCODE_ENTER:
+                            if (focusedView == urlBar) {
+                                showKeyboard(urlBar);
+                            }
+                            focusedView.performClick();
+                            return true;
                     }
                 }
-            });
+            }
+             // Let the system handle ACTION_UP for UI elements (e.g., button release state)
+            return super.dispatchKeyEvent(event);
+        }
+
+
+        // --- Logic for when GeckoView is focused ---
+
+        // Handle Center/Enter for both DOWN and UP to detect long press
+        if (event.getKeyCode() == KeyEvent.KEYCODE_DPAD_CENTER || event.getKeyCode() == KeyEvent.KEYCODE_ENTER) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                if (event.getRepeatCount() == 0) { // Only on the first down event
+                    mGestureDownTime = System.currentTimeMillis();
+                    simulateTouchEvent(MotionEvent.ACTION_DOWN);
+                }
+                return true; // Consume all down events (initial and repeats)
+            }
+            if (event.getAction() == KeyEvent.ACTION_UP) {
+                simulateTouchEvent(MotionEvent.ACTION_UP);
+                return true;
+            }
+        }
+
+        // Handle other D-pad actions (movement, exit) only on ACTION_DOWN
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+             // Make cursor visible on first D-pad press if it's not
+            if (tvCursorView.getVisibility() != View.VISIBLE) {
+                switch (event.getKeyCode()) {
+                    case KeyEvent.KEYCODE_DPAD_UP:
+                    case KeyEvent.KEYCODE_DPAD_DOWN:
+                    case KeyEvent.KEYCODE_DPAD_LEFT:
+                    case KeyEvent.KEYCODE_DPAD_RIGHT:
+                        centerCursor();
+                        tvCursorView.setVisibility(View.VISIBLE);
+                        return true;
+                }
+            }
+
+            // If cursor is still not visible, or some other view has focus, pass through.
+            if (tvCursorView.getVisibility() != View.VISIBLE || (getCurrentFocus() != null && getCurrentFocus() != geckoView)) {
+                return super.dispatchKeyEvent(event);
+            }
+
+            // --- Cursor Movement and Action within GeckoView ---
+            FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) tvCursorView.getLayoutParams();
+            int currentX = params.leftMargin;
+            int currentY = params.topMargin;
+
+            switch (event.getKeyCode()) {
+                case KeyEvent.KEYCODE_ESCAPE:
+                    finish(); // Close the activity
+                    return true;
+                case KeyEvent.KEYCODE_DPAD_LEFT:
+                    params.leftMargin = Math.max(0, currentX - CURSOR_STEP_SIZE);
+                    tvCursorView.setLayoutParams(params);
+                    return true;
+                case KeyEvent.KEYCODE_DPAD_RIGHT:
+                    params.leftMargin = Math.min(getWindowManager().getDefaultDisplay().getWidth() - tvCursorView.getWidth(), currentX + CURSOR_STEP_SIZE);
+                    tvCursorView.setLayoutParams(params);
+                    return true;
+                case KeyEvent.KEYCODE_DPAD_UP:
+                    if (currentY > 0) {
+                        // If cursor is not at top edge, move it up
+                        params.topMargin = Math.max(0, currentY - CURSOR_STEP_SIZE);
+                        tvCursorView.setLayoutParams(params);
+                        mIsScrollingUp = false;
+                        mWaitingForScrollComplete = false;
+                    } else {
+                        // Cursor is at top edge
+                        if (!mWaitingForScrollComplete) {
+                            // First press at top edge - start scrolling
+                            geckoView.getPanZoomController().scrollBy(
+                                org.mozilla.geckoview.ScreenLength.fromPixels(0),
+                                org.mozilla.geckoview.ScreenLength.fromPixels(-SCROLL_AMOUNT_PER_PRESS)
+                            );
+                            mWaitingForScrollComplete = true;
+                        } else {
+                            // We're waiting for the previous scroll to complete
+                            if (!mCanScrollUp) {
+                                // We can't scroll up anymore, shift focus to control bar
+                                setUiFocus(true);
+                                mWaitingForScrollComplete = false;
+                            } else {
+                                // We can still scroll up
+                                geckoView.getPanZoomController().scrollBy(
+                                    org.mozilla.geckoview.ScreenLength.fromPixels(0),
+                                    org.mozilla.geckoview.ScreenLength.fromPixels(-SCROLL_AMOUNT_PER_PRESS)
+                                );
+                            }
+                        }
+                    }
+                    return true;
+                case KeyEvent.KEYCODE_DPAD_DOWN:
+                    int geckoViewBottomEdge = getWindowManager().getDefaultDisplay().getHeight() - tvCursorView.getHeight();
+                    if (currentY < geckoViewBottomEdge) {
+                        params.topMargin = Math.min(geckoViewBottomEdge, currentY + CURSOR_STEP_SIZE);
+                        tvCursorView.setLayoutParams(params);
+                    } else { // Cursor is at the bottom edge
+                        geckoView.getPanZoomController().scrollBy(
+                            org.mozilla.geckoview.ScreenLength.fromPixels(0),
+                            org.mozilla.geckoview.ScreenLength.fromPixels(SCROLL_AMOUNT_PER_PRESS)
+                        );
+                    }
+                    return true;
+                // NOTE: DPAD_CENTER and ENTER are handled above
+            }
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    private void simulateTouchEvent(int motionEventAction) {
+        if (geckoView != null && tvCursorView != null) {
+            // Get absolute screen coordinates for the center of the cursor
+            int[] cursorLocation = new int[2];
+            tvCursorView.getLocationOnScreen(cursorLocation);
+            int cursorScreenX = cursorLocation[0] + tvCursorView.getWidth() / 2;
+            int cursorScreenY = cursorLocation[1] + tvCursorView.getHeight() / 2;
+
+            // Get absolute screen coordinates for the top-left of GeckoView
+            int[] geckoViewLocation = new int[2];
+            geckoView.getLocationOnScreen(geckoViewLocation);
+            int geckoScreenX = geckoViewLocation[0];
+            int geckoScreenY = geckoViewLocation[1];
+
+            // Calculate tap coordinates relative to GeckoView's top-left corner
+            float tapX = cursorScreenX - geckoScreenX;
+            float tapY = cursorScreenY - geckoScreenY;
+
+            // Ensure tap coordinates are within GeckoView bounds
+            if (tapX < 0 || tapX > geckoView.getWidth() || tapY < 0 || tapY > geckoView.getHeight()) {
+                Log.w(TAG, "Simulated touch event is outside of GeckoView bounds. Ignoring.");
+                return;
+            }
+
+            Log.d(TAG, "Simulating touch event: " + motionEventAction + " at (" + tapX + ", " + tapY + ")");
+
+            final long eventTime = System.currentTimeMillis();
+
+            MotionEvent event = MotionEvent.obtain(
+                mGestureDownTime, // Use the stored downTime for a consistent gesture
+                eventTime,
+                motionEventAction,
+                tapX,
+                tapY,
+                0
+            );
+            geckoView.dispatchTouchEvent(event);
+            event.recycle();
         }
     }
 
-    private void stopScrolling() {
-        isScrolling = false;
-        currentScrollStepSize = SCROLL_STEP_SIZE;
+    private void showKeyboard(View view) {
+        if (view != null) {
+            InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null) {
+                imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT);
+                Log.d(TAG, "showKeyboard() called for view: " + view.getClass().getSimpleName());
+            }
+        } else {
+            Log.w(TAG, "showKeyboard: view is null.");
+        }
     }
 
+    private void setupGlobalLayoutListener() {
+        final View rootView = findViewById(android.R.id.content);
+        rootView.getViewTreeObserver().addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
+            private final Rect r = new Rect();
+            private boolean wasOpened;
+
+            @Override
+            public void onGlobalLayout() {
+                rootView.getWindowVisibleDisplayFrame(r);
+                int screenHeight = rootView.getRootView().getHeight();
+                int keypadHeight = screenHeight - r.bottom;
+
+                boolean isKeyboardVisible = keypadHeight > screenHeight * 0.15;
+
+                if (isKeyboardVisible != wasOpened) {
+                    wasOpened = isKeyboardVisible;
+                    if (!isKeyboardVisible && isTvDevice()) {
+                        // Keyboard was just closed on a TV device
+                        Log.d(TAG, "Keyboard hidden on TV. Returning focus to URL bar.");
+                        // It's possible the focus is already on the URL bar,
+                        // but requesting it ensures the state is correct.
+                        urlBar.requestFocus();
+                    }
+                }
+            }
+        });
+    }
 }
