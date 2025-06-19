@@ -13,6 +13,15 @@
     android:paddingEnd="16dp"
     android:visibility="gone">
 
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
@@ -43,26 +52,27 @@
 
     <!-- Advanced Ad Blocker (uBlock Origin) Settings -->
     <LinearLayout
+        android:id="@+id/panelUBlockLayout"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:paddingTop="8dp"
-        android:paddingBottom="16dp"> 
+        android:paddingBottom="16dp"
+        android:focusable="true"
+        android:background="?attr/selectableItemBackground">
         <TextView
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:text="Advanced Ad Block (uBlock)"
-            android:textColor="@color/settings_panel_text"
-            android:layout_gravity="center_vertical"/>
+            android:textColor="@color/settings_panel_text"/>
         <androidx.appcompat.widget.SwitchCompat
             android:id="@+id/panelUBlockSwitch"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginStart="8dp"
             app:thumbTint="@color/switch_thumb_tint"
-            app:trackTint="@color/switch_track_tint"
-            android:layout_gravity="center_vertical"/>
+            app:trackTint="@color/switch_track_tint"/>
     </LinearLayout>
 
     <!-- Immersive Mode Toggle -->
@@ -87,16 +97,16 @@
         app:trackTint="@color/switch_track_tint"
         android:paddingBottom="16dp"/>
 
-    <!-- Full Desktop Model Toggle -->
-    <androidx.appcompat.widget.SwitchCompat
-        android:id="@+id/panelFullDesktopModelSwitch"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Enable Full Desktop Mode"
-        android:textColor="@color/settings_panel_text"
-        app:thumbTint="@color/switch_thumb_tint"
-        app:trackTint="@color/switch_track_tint"
-        android:paddingBottom="16dp"/>
+            <!-- Full Desktop Model Toggle -->
+            <androidx.appcompat.widget.SwitchCompat
+                android:id="@+id/panelFullDesktopModelSwitch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Enable Full Desktop Mode"
+                android:textColor="@color/settings_panel_text"
+                app:thumbTint="@color/switch_thumb_tint"
+                app:trackTint="@color/switch_track_tint"
+                android:paddingBottom="16dp"/>
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -122,5 +132,9 @@
             android:textColor="@color/settings_panel_text" 
             android:layout_marginStart="8dp"/>
     </LinearLayout>
+
+        </LinearLayout>
+
+    </ScrollView>
 
 </LinearLayout> 

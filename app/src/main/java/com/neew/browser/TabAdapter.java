@@ -14,6 +14,8 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.util.Base64;
 import android.util.Log; // For logging errors
+import android.view.KeyEvent; // For KeyEvent handling
+import androidx.recyclerview.widget.GridLayoutManager; // For LayoutManager access
 
 public class TabAdapter extends RecyclerView.Adapter<TabAdapter.TabViewHolder> {
 
@@ -22,6 +24,7 @@ public class TabAdapter extends RecyclerView.Adapter<TabAdapter.TabViewHolder> {
     private final int activeTabIndex;
     private final OnTabClickListener tabClickListener;
     private final OnTabCloseListener tabCloseListener;
+    private final RecyclerView parentRecyclerView; // Reference to the RecyclerView
 
     // Interfaces for click handling
     public interface OnTabClickListener {
@@ -32,12 +35,14 @@ public class TabAdapter extends RecyclerView.Adapter<TabAdapter.TabViewHolder> {
     }
 
     public TabAdapter(List<String> tabUrls, List<String> snapshotStrings, int activeTabIndex, 
-                      OnTabClickListener clickListener, OnTabCloseListener closeListener) {
+                      OnTabClickListener clickListener, OnTabCloseListener closeListener,
+                      RecyclerView recyclerView) { // Add RecyclerView parameter
         this.tabUrls = tabUrls;
         this.tabSnapshotStrings = snapshotStrings;
         this.activeTabIndex = activeTabIndex;
         this.tabClickListener = clickListener;
         this.tabCloseListener = closeListener;
+        this.parentRecyclerView = recyclerView; // Initialize RecyclerView reference
     }
 
     @NonNull
@@ -54,15 +59,112 @@ public class TabAdapter extends RecyclerView.Adapter<TabAdapter.TabViewHolder> {
         String snapshotString = (position < tabSnapshotStrings.size()) ? tabSnapshotStrings.get(position) : null;
         holder.bind(url, snapshotString, position == activeTabIndex);
 
-        holder.itemView.setOnClickListener(v -> {
+        // Set RecyclerView reference in ViewHolder
+        holder.setParentRecyclerView(parentRecyclerView);
+
+        // Remove direct OnClickListener for itemView, handle via OnKeyListener
+        holder.itemView.setOnClickListener(null);
+
+        holder.itemView.setOnKeyListener((v, keyCode, event) -> {
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                Log.d("TabAdapter", "ItemView KeyDown: " + keyCode + " Pos: " + holder.getAdapterPosition());
+
+                if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+                    // Select the tab
+                    Log.d("TabAdapter", "DPAD_CENTER/ENTER on tab: " + holder.getAdapterPosition());
              if (holder.getAdapterPosition() != RecyclerView.NO_POSITION) { 
                  tabClickListener.onTabClick(holder.getAdapterPosition());
              }
+                    return true; // Consume the event
+                } else if (keyCode == holder.lastDpadDirection && holder.lastFocusedDirectionalView == holder.itemView) {
+                    // Second consecutive directional press on the same tab
+                    Log.d("TabAdapter", "Second consecutive DPAD press on tab, moving focus to close button.");
+                    holder.closeButton.requestFocus();
+                    holder.lastDpadDirection = 0; // Reset for next interaction
+                    holder.lastFocusedDirectionalView = null;
+                    return true; // Consume the event
+                } else if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
+                           keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                    // First directional press, or a new direction/tab - let RecyclerView handle focus movement
+                    Log.d("TabAdapter", "First/new directional DPAD press on tab, letting RecyclerView handle.");
+                    holder.lastDpadDirection = keyCode;
+                    holder.lastFocusedDirectionalView = holder.itemView;
+                    return false; // Do not consume, allow RecyclerView to move focus
+                }
+            }
+            return false; // Don't consume other events
         });
-        holder.closeButton.setOnClickListener(v -> {
+
+        // Remove direct OnClickListener for closeButton, handle via OnKeyListener
+        holder.closeButton.setOnClickListener(null);
+
+        holder.closeButton.setOnKeyListener((v, keyCode, event) -> {
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                Log.d("TabAdapter", "CloseButton KeyDown: " + keyCode + " Pos: " + holder.getAdapterPosition());
+
+                if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+                    // Close the tab
+                    Log.d("TabAdapter", "DPAD_CENTER/ENTER on close button: " + holder.getAdapterPosition());
             if (holder.getAdapterPosition() != RecyclerView.NO_POSITION) { 
                  tabCloseListener.onTabClose(holder.getAdapterPosition());
             }
+                    return true; // Consume the event
+                } else if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
+                           keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                    // Navigate out of the close button to the next tab
+                    Log.d("TabAdapter", "Directional DPAD on close button, moving focus to next tab.");
+                    holder.lastDpadDirection = 0; // Reset acceleration state
+                    holder.lastFocusedDirectionalView = null;
+
+                    if (holder.parentRecyclerView != null) {
+                        RecyclerView.LayoutManager layoutManager = holder.parentRecyclerView.getLayoutManager();
+                        if (layoutManager instanceof GridLayoutManager) {
+                            GridLayoutManager gridLayoutManager = (GridLayoutManager) layoutManager;
+                            int spanCount = gridLayoutManager.getSpanCount();
+                            int currentPosition = holder.getAdapterPosition();
+                            int nextPosition = -1;
+
+                            switch (keyCode) {
+                                case KeyEvent.KEYCODE_DPAD_LEFT:
+                                    nextPosition = currentPosition - 1;
+                                    break;
+                                case KeyEvent.KEYCODE_DPAD_RIGHT:
+                                    nextPosition = currentPosition + 1;
+                                    break;
+                                case KeyEvent.KEYCODE_DPAD_UP:
+                                    nextPosition = currentPosition - spanCount;
+                                    break;
+                                case KeyEvent.KEYCODE_DPAD_DOWN:
+                                    nextPosition = currentPosition + spanCount;
+                                    break;
+                            }
+
+                            if (nextPosition >= 0 && nextPosition < getItemCount()) {
+                                // Find the ViewHolder for the next position and request focus on its itemView
+                                RecyclerView.ViewHolder nextViewHolder = holder.parentRecyclerView.findViewHolderForAdapterPosition(nextPosition);
+                                if (nextViewHolder != null) {
+                                    nextViewHolder.itemView.requestFocus();
+                                    return true; // Consume if focus moved successfully
+                                } else {
+                                    // If ViewHolder is null (not visible), scroll to it and then request focus
+                                    holder.parentRecyclerView.scrollToPosition(nextPosition);
+                                    // Request focus after scroll is complete (post is a simple way, might need ViewTreeObserver for reliability)
+                                    final int finalNextPosition = nextPosition;
+                                    holder.parentRecyclerView.post(() -> {
+                                        RecyclerView.ViewHolder vh = holder.parentRecyclerView.findViewHolderForAdapterPosition(finalNextPosition);
+                                        if (vh != null) {
+                                            vh.itemView.requestFocus();
+                                        }
+                                    });
+                                    return true; // Consume, as we're handling the navigation
+                                }
+                            }
+                        }
+                    }
+                    return false; // If no custom handling, let system try (e.g. for Add/Clear buttons)
+                }
+            }
+            return false; // Don't consume other events
         });
     }
 
@@ -76,12 +178,19 @@ public class TabAdapter extends RecyclerView.Adapter<TabAdapter.TabViewHolder> {
         ImageView previewImageView;
         TextView urlTextView;
         ImageButton closeButton;
+        int lastDpadDirection = 0; // Track last directional D-pad key pressed
+        View lastFocusedDirectionalView = null; // Track last view focused by directional D-pad
+        RecyclerView parentRecyclerView; // Reference to the parent RecyclerView
 
         TabViewHolder(@NonNull View itemView) {
             super(itemView);
             previewImageView = itemView.findViewById(R.id.tabPreviewImageView);
             urlTextView = itemView.findViewById(R.id.tabUrlTextView);
             closeButton = itemView.findViewById(R.id.closeTabButton);
+        }
+
+        void setParentRecyclerView(RecyclerView recyclerView) {
+            this.parentRecyclerView = recyclerView;
         }
 
         void bind(String url, String snapshotString, boolean isActive) {

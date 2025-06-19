@@ -225,6 +225,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private SwitchCompat panelCookieSwitch;
     private SwitchCompat panelAdBlockerSwitch;
     private SwitchCompat panelUBlockSwitch;
+    private LinearLayout panelUBlockLayout; // New field for the layout
     private Button panelApplyButton;
     private Button panelCancelButton;
 
@@ -301,6 +302,15 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private boolean mWaitingForScrollComplete = false; // Track if we're waiting for a scroll to complete
     private int mLastScrollY = 0; // Track last scroll position
     private boolean mCanScrollUp = true; // Track if we can scroll up
+    private String mLastValidUrl = ""; // Store the last valid URL
+
+    // Declare acceleration variables at the class level
+    private int currentStepSize = 20; // Base step size
+    private final int MAX_STEP_SIZE = 60;
+    private final int STEP_INCREMENT = 10;
+    private final long ACCELERATION_INTERVAL = 100; // 100ms
+    private long accelerationStartTime;
+    private boolean isKeyPressed = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -373,6 +383,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         panelCookieSwitch = findViewById(R.id.panelCookieSwitch);
         panelAdBlockerSwitch = findViewById(R.id.panelAdBlockerSwitch);
         panelUBlockSwitch = findViewById(R.id.panelUBlockSwitch);
+        panelUBlockLayout = findViewById(R.id.panelUBlockLayout); // Initialize the layout
         panelImmersiveSwitch = findViewById(R.id.panelImmersiveSwitch);
         panelDesktopModeSwitch = findViewById(R.id.panelDesktopModeSwitch);
         panelFullDesktopModelSwitch = findViewById(R.id.panelFullDesktopModelSwitch);
@@ -380,7 +391,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         panelCancelButton = findViewById(R.id.panelCancelButton);
 
         settingsPanelElements = Arrays.asList(
-                panelCookieSwitch, panelAdBlockerSwitch, panelUBlockSwitch, panelImmersiveSwitch,
+                panelCookieSwitch, panelAdBlockerSwitch, panelUBlockLayout, panelImmersiveSwitch,
                 panelDesktopModeSwitch, panelFullDesktopModelSwitch, panelApplyButton, panelCancelButton
         );
 
@@ -427,6 +438,15 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
         // Initialize context menu
         initializeContextMenu();
+
+        // Setup listener for the new layout
+        if (panelUBlockLayout != null) {
+            panelUBlockLayout.setOnClickListener(v -> {
+                if (panelUBlockSwitch != null) {
+                    panelUBlockSwitch.toggle();
+                }
+            });
+        }
 
         // Initialize Gecko Runtime (only once)
         if (runtime == null) {
@@ -945,28 +965,25 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
      // Refactored method to set up URL bar listener
     private void setupUrlBarListener() {
-        // On TV, the click listener is not needed for the main URL bar,
-        // as focus change handles selection and keyboard.
-        // On mobile, the click listener selects all text.
-        urlBar.setOnClickListener(v -> {
-            if (!isTvDevice()) {
-                urlBar.post(() -> urlBar.selectAll());
-            }
-        });
-
         urlBar.setOnFocusChangeListener((v, hasFocus) -> {
-            if (isTvDevice()) {
-                if (hasFocus) {
-                    // When the URL bar gains focus on TV, select all text and show the keyboard.
-                    urlBar.post(() -> {
-                        urlBar.selectAll();
-                        showKeyboard(urlBar);
-                    });
-                }
+            if (hasFocus) {
+                // When focus is gained, store current URL and clear the text
+                mLastValidUrl = urlBar.getText().toString();
+                urlBar.setText("");
+                showKeyboard(urlBar);
             } else {
-                // On mobile, preserve the original select-on-focus behavior.
-                if (hasFocus) {
-                    urlBar.post(() -> urlBar.selectAll());
+                // When focus is lost, check if we need to restore the URL
+                String currentText = urlBar.getText().toString().trim();
+                if (currentText.isEmpty()) {
+                    // If text is empty, restore the last valid URL
+                    urlBar.setText(mLastValidUrl);
+                } else {
+                    // If text was entered but URL wasn't loaded, restore the last valid URL
+                    GeckoSession activeSession = getActiveSession();
+                    if (activeSession != null) {
+                        String currentUrl = sessionUrlMap.getOrDefault(activeSession, mLastValidUrl);
+                        urlBar.setText(currentUrl);
+                    }
                 }
             }
         });
@@ -986,6 +1003,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
                 if (urlToLoad != null && activeSession != null) {
                     activeSession.loadUri(urlToLoad);
+                    mLastValidUrl = urlToLoad; // Update last valid URL
                     Log.d(TAG, "Called loadUri with: " + urlToLoad);
                     hideKeyboard();
                 } else if (activeSession == null) {
@@ -1171,6 +1189,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                            " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
                 if (newUri != null) {
                     sessionUrlMap.put(session, newUri);
+                    mLastValidUrl = newUri; // Update last valid URL
                     if (session == getActiveSession()) {
                             runOnUiThread(() -> {
                             urlBar.setText(newUri);
@@ -1282,6 +1301,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                                    " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
                         if (newUri != null) {
                             sessionUrlMap.put(session, newUri);
+                            mLastValidUrl = newUri; // Update last valid URL
                             if (session == getActiveSession()) {
                         runOnUiThread(() -> {
                                     urlBar.setText(newUri);
@@ -1389,6 +1409,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                                    " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
                         if (newUri != null) {
                             sessionUrlMap.put(session, newUri);
+                            mLastValidUrl = newUri; // Update last valid URL
                             if (session == getActiveSession()) {
                         runOnUiThread(() -> {
                                     urlBar.setText(newUri);
@@ -2200,12 +2221,12 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         // Update our scroll tracking
         mLastScrollY = scrollY;
         mCanScrollUp = scrollY > 0;
-        
+
         // Existing scroll handling code
         int dy = scrollY - lastScrollY;
         if (Math.abs(dy) < SCROLL_THRESHOLD) {
             if (Math.abs(dy) > 5) {
-                lastScrollY = scrollY;
+                 lastScrollY = scrollY;
             }
             return;
         }
@@ -2560,7 +2581,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
     // Method to hide the settings panel
     private void hideSettingsPanel() {
-        settingsPanelLayout.setVisibility(View.GONE);
+                settingsPanelLayout.setVisibility(View.GONE);
         geckoView.requestFocus(); // Return focus to GeckoView
     }
 
@@ -2788,23 +2809,23 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             }
         } else {
             // Mobile-specific fullscreen logic
-            if (isInPictureInPictureMode) {
-                Log.d(TAG, "Already in PiP mode or transitioning, not changing system UI from enterFullScreen.");
-                if (controlBarContainer != null) {
-                    controlBarContainer.setVisibility(View.GONE); // Keep controls hidden in PiP
-                }
-                return;
-            }
-
-            int uiOptions = View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                            | View.SYSTEM_UI_FLAG_FULLSCREEN
-                                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
-            decorView.setSystemUiVisibility(uiOptions);
-
-            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
-
+        if (isInPictureInPictureMode) {
+            Log.d(TAG, "Already in PiP mode or transitioning, not changing system UI from enterFullScreen.");
             if (controlBarContainer != null) {
-                controlBarContainer.setVisibility(View.GONE);
+                controlBarContainer.setVisibility(View.GONE); // Keep controls hidden in PiP
+            }
+            return;
+        }
+
+        int uiOptions = View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_FULLSCREEN
+                                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+        decorView.setSystemUiVisibility(uiOptions);
+
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+
+        if (controlBarContainer != null) {
+            controlBarContainer.setVisibility(View.GONE);
             }
         }
     }
@@ -2819,20 +2840,20 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             }
         } else {
             // Mobile-specific fullscreen exit logic
-            if (isInPictureInPictureMode) {
-                Log.d(TAG, "Currently in PiP mode, system will handle UI changes on PiP exit.");
-                return;
-            }
+        if (isInPictureInPictureMode) {
+            Log.d(TAG, "Currently in PiP mode, system will handle UI changes on PiP exit.");
+            return;
+        }
 
-            decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
-            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
 
-            if (controlBarContainer != null) {
-                controlBarContainer.setVisibility(View.VISIBLE);
-                if (isControlBarExpanded) {
-                    showExpandedBar();
-                } else {
-                    showMinimizedBar();
+        if (controlBarContainer != null) {
+            controlBarContainer.setVisibility(View.VISIBLE);
+            if (isControlBarExpanded) {
+                showExpandedBar();
+            } else {
+                showMinimizedBar();
                 }
             }
         }
@@ -4207,6 +4228,45 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
    
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        // Check for key press
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            if (!isKeyPressed) {
+                // Start tracking acceleration
+                accelerationStartTime = System.currentTimeMillis();
+                isKeyPressed = true;
+            }
+        } else if (event.getAction() == KeyEvent.ACTION_UP) {
+            // Reset on key release
+            isKeyPressed = false;
+            currentStepSize = 20; // Reset to base value
+        }
+
+        // Update current step size based on how long the key has been pressed
+        if (isKeyPressed) {
+            long duration = System.currentTimeMillis() - accelerationStartTime;
+            if (duration >= ACCELERATION_INTERVAL) {
+                int increments = (int) (duration / ACCELERATION_INTERVAL);
+                currentStepSize = Math.min(20 + increments * STEP_INCREMENT, MAX_STEP_SIZE);
+            }
+        }
+
+        // Existing cursor movement logic
+        switch (event.getKeyCode()) {
+            case KeyEvent.KEYCODE_DPAD_LEFT:
+                // Move cursor left by currentStepSize
+                break;
+            case KeyEvent.KEYCODE_DPAD_RIGHT:
+                // Move cursor right by currentStepSize
+                break;
+            case KeyEvent.KEYCODE_DPAD_UP:
+                // Move cursor up by currentStepSize
+                break;
+            case KeyEvent.KEYCODE_DPAD_DOWN:
+                // Move cursor down by currentStepSize
+                break;
+            // Other cases...
+        }
+
         if (!isTvDevice()) {
             return super.dispatchKeyEvent(event);
         }
@@ -4311,17 +4371,17 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                     finish(); // Close the activity
                     return true;
                 case KeyEvent.KEYCODE_DPAD_LEFT:
-                    params.leftMargin = Math.max(0, currentX - CURSOR_STEP_SIZE);
+                    params.leftMargin = Math.max(0, currentX - currentStepSize);
                     tvCursorView.setLayoutParams(params);
                     return true;
                 case KeyEvent.KEYCODE_DPAD_RIGHT:
-                    params.leftMargin = Math.min(getWindowManager().getDefaultDisplay().getWidth() - tvCursorView.getWidth(), currentX + CURSOR_STEP_SIZE);
+                    params.leftMargin = Math.min(getWindowManager().getDefaultDisplay().getWidth() - tvCursorView.getWidth(), currentX + currentStepSize);
                     tvCursorView.setLayoutParams(params);
                     return true;
                 case KeyEvent.KEYCODE_DPAD_UP:
                     if (currentY > 0) {
                         // If cursor is not at top edge, move it up
-                        params.topMargin = Math.max(0, currentY - CURSOR_STEP_SIZE);
+                        params.topMargin = Math.max(0, currentY - currentStepSize);
                         tvCursorView.setLayoutParams(params);
                         mIsScrollingUp = false;
                         mWaitingForScrollComplete = false;
@@ -4353,7 +4413,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 case KeyEvent.KEYCODE_DPAD_DOWN:
                     int geckoViewBottomEdge = getWindowManager().getDefaultDisplay().getHeight() - tvCursorView.getHeight();
                     if (currentY < geckoViewBottomEdge) {
-                        params.topMargin = Math.min(geckoViewBottomEdge, currentY + CURSOR_STEP_SIZE);
+                        params.topMargin = Math.min(geckoViewBottomEdge, currentY + SCROLL_AMOUNT_PER_PRESS);
                         tvCursorView.setLayoutParams(params);
                     } else { // Cursor is at the bottom edge
                         geckoView.getPanZoomController().scrollBy(
@@ -4413,6 +4473,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         if (view != null) {
             InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
             if (imm != null) {
+                // Ensure text is selected before showing keyboard
+                if (view instanceof EditText) {
+                    EditText editText = (EditText) view;
+                    editText.selectAll();
+                }
                 imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT);
                 Log.d(TAG, "showKeyboard() called for view: " + view.getClass().getSimpleName());
             }

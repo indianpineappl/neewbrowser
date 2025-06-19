@@ -11,6 +11,7 @@ import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import android.widget.ImageButton;
 import androidx.appcompat.app.AlertDialog;
 import android.view.View;
+import android.view.ViewTreeObserver;
 
 public class TabSwitcherActivity extends AppCompatActivity {
 
@@ -79,44 +80,43 @@ public class TabSwitcherActivity extends AppCompatActivity {
                 Intent resultIntent = new Intent();
                 resultIntent.putExtra(RESULT_CLOSED_TAB_INDEX, position);
                 setResult(Activity.RESULT_OK, resultIntent); 
-                // Optionally update adapter here or let MainActivity handle it on result
-                 tabUrls.remove(position);
-                 // Adjust active index if necessary before returning
-                 if (position < activeTabIndex) {
-                      activeTabIndex--;
-                 } else if (position == activeTabIndex) {
-                     activeTabIndex = -1; // Indicate active tab was closed
-                     // MainActivity will need to handle switching to a new active tab
-                 }
-                 tabAdapter.notifyItemRemoved(position);
-                 tabAdapter.notifyItemRangeChanged(position, tabUrls.size()); 
-                 // Don't finish immediately, let MainActivity handle the close and potential switch
-                 // We send the result back so MainActivity knows which one *to* close.
-                 // Re-setting result allows sending multiple close events if needed, though
-                 // typically we might finish after the first close action is sent.
-                 // For now, let MainActivity handle closing the session based on this index.
-                 setResult(Activity.RESULT_OK, resultIntent); 
-                 // Consider if we should finish() here or allow multiple closes?
-                 // Finishing might be simpler for now.
                  finish(); 
-                 // Adjust snapshot list when removing item locally (optional, depends on exact flow)
-                 if (position < tabSnapshotStrings.size()) {
-                     tabSnapshotStrings.remove(position);
-                 }
-                 // After removing a tab, re-check visibility of clear all button
-                 updateClearAllTabsButtonVisibility(); 
-            }
+            },
+            tabsRecyclerView // Pass the RecyclerView instance here
         );
         tabsRecyclerView.setAdapter(tabAdapter);
 
-        // Automatically scroll to the last tab
+        // Set D-pad navigation order
+        addNewTabFab.setNextFocusUpId(R.id.tabsRecyclerView);
+        clearAllTabsButton.setNextFocusUpId(R.id.tabsRecyclerView);
+        addNewTabFab.setNextFocusLeftId(R.id.clearAllTabsButton);
+        clearAllTabsButton.setNextFocusRightId(R.id.addNewTabFab);
+
+        // Automatically scroll to the last tab and set initial focus
         if (tabAdapter.getItemCount() > 0) {
-            tabsRecyclerView.post(new Runnable() {
+            tabsRecyclerView.post(() -> {
+                int lastPosition = tabAdapter.getItemCount() - 1;
+                tabsRecyclerView.scrollToPosition(lastPosition);
+                RecyclerView.ViewHolder lastViewHolder = tabsRecyclerView.findViewHolderForAdapterPosition(lastPosition);
+                if (lastViewHolder != null) {
+                    lastViewHolder.itemView.requestFocus();
+                } else {
+                    // Fallback if view holder is not immediately available
+                    tabsRecyclerView.getViewTreeObserver().addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
                 @Override
-                public void run() {
-                    tabsRecyclerView.scrollToPosition(tabAdapter.getItemCount() - 1);
+                        public void onGlobalLayout() {
+                            RecyclerView.ViewHolder vh = tabsRecyclerView.findViewHolderForAdapterPosition(lastPosition);
+                            if (vh != null) {
+                                vh.itemView.requestFocus();
+                                tabsRecyclerView.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                            }
+                        }
+                    });
                 }
             });
+        } else {
+            // If there are no tabs, focus the 'Add New Tab' button
+            addNewTabFab.requestFocus();
         }
     }
 
@@ -148,10 +148,8 @@ public class TabSwitcherActivity extends AppCompatActivity {
     }
 
     private void updateClearAllTabsButtonVisibility() {
-        if (tabUrls != null && tabUrls.size() >= 2) {
-            clearAllTabsButton.setVisibility(View.VISIBLE);
-        } else {
-            clearAllTabsButton.setVisibility(View.GONE);
-        }
+        boolean isVisible = tabUrls != null && tabUrls.size() >= 2;
+        clearAllTabsButton.setVisibility(isVisible ? View.VISIBLE : View.GONE);
+        clearAllTabsButton.setFocusable(isVisible);
     }
 } 

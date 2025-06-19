@@ -14,7 +14,12 @@
         android:orientation="vertical">
 
         <!-- Persistent Address Bar for TV -->
-        <include layout="@layout/control_bar_expanded" />
+        <FrameLayout
+            android:id="@+id/controlBarContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+            <include layout="@layout/control_bar_tv" />
+        </FrameLayout>
 
         <!-- ProgressBar -->
         <ProgressBar
@@ -42,7 +47,7 @@
                 android:id="@+id/tvCursorView"
                 android:layout_width="40dp"
                 android:layout_height="40dp"
-                android:visibility="gone"/>
+                android:visibility="visible"/>
 
         </FrameLayout>
 

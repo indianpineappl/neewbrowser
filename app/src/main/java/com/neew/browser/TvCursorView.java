@@ -7,11 +7,12 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.util.AttributeSet;
 import android.view.View;
+import android.content.res.Configuration;
 
 public class TvCursorView extends View {
-    private Paint paint;
+    private Paint fillPaint;
+    private Paint borderPaint;
     private Path arrowPath;
-    private int cursorColor = Color.WHITE;
     private int cursorSize = 40; // Size of the cursor in pixels
 
     public TvCursorView(Context context) {
@@ -25,10 +26,24 @@ public class TvCursorView extends View {
     }
 
     private void init() {
-        paint = new Paint();
-        paint.setColor(cursorColor);
-        paint.setStyle(Paint.Style.FILL);
-        paint.setAntiAlias(true);
+        fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        fillPaint.setStyle(Paint.Style.FILL);
+
+        borderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        borderPaint.setStyle(Paint.Style.STROKE);
+        borderPaint.setStrokeWidth(3f); // Border width
+
+        // Detect current theme and set colors
+        int nightModeFlags = getContext().getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+        if (nightModeFlags == Configuration.UI_MODE_NIGHT_YES) {
+            // Dark mode
+            fillPaint.setColor(Color.WHITE);
+            borderPaint.setColor(Color.BLACK);
+        } else {
+            // Light mode
+            fillPaint.setColor(Color.BLACK);
+            borderPaint.setColor(Color.WHITE);
+        }
 
         // Create arrow path
         arrowPath = new Path();
@@ -47,17 +62,15 @@ public class TvCursorView extends View {
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        // Draw the arrow centered in the view
         canvas.save();
         canvas.translate(getWidth() / 2f, getHeight() / 2f);
-        canvas.drawPath(arrowPath, paint);
+        
+        // Draw border first
+        canvas.drawPath(arrowPath, borderPaint);
+        // Draw fill on top
+        canvas.drawPath(arrowPath, fillPaint);
+        
         canvas.restore();
-    }
-
-    public void setCursorColor(int color) {
-        cursorColor = color;
-        paint.setColor(color);
-        invalidate();
     }
 
     public void setCursorSize(int size) {

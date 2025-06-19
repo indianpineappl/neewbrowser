@@ -35,13 +35,13 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:windowSoftInputMode="stateUnspecified|adjustPan"
+            android:windowSoftInputMode="stateUnspecified|adjustResize"
             android:supportsPictureInPicture="true"
             android:launchMode="singleTask"
-            android:screenOrientation="landscape"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|uiMode">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
             
@@ -78,13 +78,11 @@
         <activity
             android:name=".TabSwitcherActivity"
             android:label="Tabs"
-            android:screenOrientation="landscape"
             android:theme="@style/Theme.AppCompat.NoActionBar" />
 
         <activity
             android:name=".DownloadsActivity"
             android:label="Downloads"
-            android:screenOrientation="landscape"
             android:parentActivityName=".MainActivity"
             android:theme="@style/Theme.NeewBrowser"> 
             <meta-data
