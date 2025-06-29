@@ -149,6 +149,9 @@ import android.webkit.MimeTypeMap; // Added for MimeTypeMap
 import android.webkit.URLUtil; // Added for URLUtil
 import org.mozilla.geckoview.MediaSession; // Added this import
 import org.mozilla.geckoview.GeckoSessionSettings; // Added this import
+import org.mozilla.geckoview.PanZoomController;
+import org.mozilla.geckoview.ScreenLength;
+import org.mozilla.geckoview.WebResponse;
 
 public class MainActivity extends AppCompatActivity implements ScrollDelegate, GeckoSession.PromptDelegate, MediaSession.Delegate {
     private static final String TAG = "MainActivity";
@@ -963,39 +966,23 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         }
     }
 
-     // Refactored method to set up URL bar listener
+      // Refactored method to set up URL bar listener
     private void setupUrlBarListener() {
-        urlBar.setOnFocusChangeListener((v, hasFocus) -> {
-            if (hasFocus) {
-                // When focus is gained, store current URL and clear the text
-                mLastValidUrl = urlBar.getText().toString();
-                urlBar.setText("");
-                showKeyboard(urlBar);
-            } else {
-                // When focus is lost, check if we need to restore the URL
-                String currentText = urlBar.getText().toString().trim();
-                if (currentText.isEmpty()) {
-                    // If text is empty, restore the last valid URL
-                    urlBar.setText(mLastValidUrl);
-                } else {
-                    // If text was entered but URL wasn't loaded, restore the last valid URL
-                    GeckoSession activeSession = getActiveSession();
-                    if (activeSession != null) {
-                        String currentUrl = sessionUrlMap.getOrDefault(activeSession, mLastValidUrl);
-                        urlBar.setText(currentUrl);
-                    }
-                }
-            }
-        });
-
+        // Common action listener for both platforms
         urlBar.setOnEditorActionListener((v, actionId, event) -> {
-            if (actionId == EditorInfo.IME_ACTION_GO || actionId == EditorInfo.IME_ACTION_NEXT) { 
+            if (actionId == EditorInfo.IME_ACTION_GO || actionId == EditorInfo.IME_ACTION_NEXT ||
+                (event != null && event.getAction() == KeyEvent.ACTION_DOWN && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
+                
                 String rawInput = urlBar.getText().toString();
                 String input = rawInput.trim(); 
                 Log.d(TAG, "Input received: '" + input + "'"); 
 
                 if (input.isEmpty()) {
-                    return true; // Consume the action
+                    // On TV, if input is empty when submitting, restore the last valid URL
+                    if (isTvDevice()) {
+                        urlBar.setText(mLastValidUrl);
+                    }
+                    return true; // Consume the action regardless
                 }
 
                 String urlToLoad = processUrlInput(input);
@@ -1006,6 +993,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                     mLastValidUrl = urlToLoad; // Update last valid URL
                     Log.d(TAG, "Called loadUri with: " + urlToLoad);
                     hideKeyboard();
+                    urlBar.clearFocus(); // Clear focus after submitting
                 } else if (activeSession == null) {
                      Log.e(TAG, "activeSession is null, cannot load URI.");
                 } else {
@@ -1015,6 +1003,42 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             }
             return false;
         });
+
+        if (isTvDevice()) {
+            // TV-specific focus logic
+            urlBar.setOnFocusChangeListener((v, hasFocus) -> {
+                if (hasFocus) {
+                    // When focus is gained on TV, store current URL and clear the text
+                    mLastValidUrl = urlBar.getText().toString();
+                    urlBar.setText("");
+                    showKeyboard(urlBar);
+                } else {
+                    // When focus is lost on TV, check if we need to restore the URL
+                    String currentText = urlBar.getText().toString().trim();
+                    if (currentText.isEmpty() && mLastValidUrl != null && !mLastValidUrl.isEmpty()) {
+                        // If text is empty, restore the last valid URL
+                        urlBar.setText(mLastValidUrl);
+                    }
+                }
+            });
+        } else {
+            // Mobile-specific logic for robust text selection
+            urlBar.setOnClickListener(v -> {
+                urlBar.selectAll();
+                Log.d(TAG, "urlBar OnClickListener: selected all text.");
+            });
+    
+            urlBar.setOnFocusChangeListener((v, hasFocus) -> {
+                if (hasFocus) {
+                    // A small delay helps ensure the selection happens after the UI has settled
+                    new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                         urlBar.selectAll();
+                        Log.d(TAG, "urlBar OnFocusChangeListener: selected all text after delay.");
+                    }, 100); // 100ms delay
+                     showKeyboard(urlBar);
+                }
+            });
+        }
     }
 
     // Helper method to process URL input (search or direct URL)
@@ -3016,7 +3040,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     @Override
     protected void onStop() {
         super.onStop();
-        saveSessionState();
+        if (!isFinishing()) {
+            saveSessionState();
+        }
     }
 
     private void saveSessionState() {
@@ -4226,205 +4252,121 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     }
 
    
-    @Override
+      @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        // Check for key press
+        if (!isTvDevice()) {
+            return super.dispatchKeyEvent(event);
+        }
+
+        // Acceleration logic for cursor movement
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
             if (!isKeyPressed) {
-                // Start tracking acceleration
                 accelerationStartTime = System.currentTimeMillis();
                 isKeyPressed = true;
             }
         } else if (event.getAction() == KeyEvent.ACTION_UP) {
-            // Reset on key release
             isKeyPressed = false;
-            currentStepSize = 20; // Reset to base value
+            currentStepSize = 20; // Reset to base
         }
 
-        // Update current step size based on how long the key has been pressed
         if (isKeyPressed) {
             long duration = System.currentTimeMillis() - accelerationStartTime;
-            if (duration >= ACCELERATION_INTERVAL) {
+            if (duration > ACCELERATION_INTERVAL) {
                 int increments = (int) (duration / ACCELERATION_INTERVAL);
                 currentStepSize = Math.min(20 + increments * STEP_INCREMENT, MAX_STEP_SIZE);
             }
         }
 
-        // Existing cursor movement logic
-        switch (event.getKeyCode()) {
-            case KeyEvent.KEYCODE_DPAD_LEFT:
-                // Move cursor left by currentStepSize
-                break;
-            case KeyEvent.KEYCODE_DPAD_RIGHT:
-                // Move cursor right by currentStepSize
-                break;
-            case KeyEvent.KEYCODE_DPAD_UP:
-                // Move cursor up by currentStepSize
-                break;
-            case KeyEvent.KEYCODE_DPAD_DOWN:
-                // Move cursor down by currentStepSize
-                break;
-            // Other cases...
-        }
-
-        if (!isTvDevice()) {
-            return super.dispatchKeyEvent(event);
-        }
-
+        // If an EditText (like the URL bar) has focus, let the system handle it normally.
         if (getCurrentFocus() instanceof EditText) {
-            // Allow normal text input when URL bar or other EditText is focused
             return super.dispatchKeyEvent(event);
         }
 
-        // Handle UI-focused events first
+        // If the UI (control bar, settings panel) has focus, let the system handle D-Pad navigation.
         if (isUiFocused) {
-            if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                 View focusedView = getCurrentFocus();
-                if (focusedView != null) {
-                    switch (event.getKeyCode()) {
-                        case KeyEvent.KEYCODE_DPAD_LEFT:
-                            View nextFocusLeft = focusedView.focusSearch(View.FOCUS_LEFT);
-                            if (nextFocusLeft != null) {
-                                nextFocusLeft.requestFocus();
-                            }
-                            return true;
-                        case KeyEvent.KEYCODE_DPAD_RIGHT:
-                            View nextFocusRight = focusedView.focusSearch(View.FOCUS_RIGHT);
-                            if (nextFocusRight != null) {
-                                nextFocusRight.requestFocus();
-                            }
-                            return true;
-                        case KeyEvent.KEYCODE_DPAD_UP:
-                            View nextFocusUp = focusedView.focusSearch(View.FOCUS_UP);
-                            if (nextFocusUp != null) {
-                                nextFocusUp.requestFocus();
-                            }
-                            return true;
-                        case KeyEvent.KEYCODE_DPAD_DOWN:
-                            View nextFocusDown = focusedView.focusSearch(View.FOCUS_DOWN);
-                            if (nextFocusDown != null) {
-                                nextFocusDown.requestFocus();
-                            } else {
-                                // No more UI elements down, switch back to GeckoView
-                                setUiFocus(false);
-                            }
-                            return true;
-                        case KeyEvent.KEYCODE_DPAD_CENTER:
-                        case KeyEvent.KEYCODE_ENTER:
-                            if (focusedView == urlBar) {
-                                showKeyboard(urlBar);
-                            }
-                            focusedView.performClick();
-                            return true;
-                    }
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getKeyCode() == KeyEvent.KEYCODE_DPAD_DOWN) {
+                // Special case: If we're on the bottom-most UI element, pressing down exits UI focus mode.
+                if (getCurrentFocus() != null && getCurrentFocus().focusSearch(View.FOCUS_DOWN) == null) {
+                    setUiFocus(false);
+                    return true; // Consume this event.
                 }
             }
-             // Let the system handle ACTION_UP for UI elements (e.g., button release state)
+            // Allow the system to handle all other navigation between UI elements.
             return super.dispatchKeyEvent(event);
         }
 
+        // --- From this point on, we are in GeckoView navigation mode. ---
+        // We will handle all D-PAD events and consume them by returning true.
 
-        // --- Logic for when GeckoView is focused ---
+        final int keyCode = event.getKeyCode();
 
-        // Handle Center/Enter for both DOWN and UP to detect long press
-        if (event.getKeyCode() == KeyEvent.KEYCODE_DPAD_CENTER || event.getKeyCode() == KeyEvent.KEYCODE_ENTER) {
+        // Handle clicks (Center/Enter)
+        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
             if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                if (event.getRepeatCount() == 0) { // Only on the first down event
+                if (event.getRepeatCount() == 0) {
                     mGestureDownTime = System.currentTimeMillis();
                     simulateTouchEvent(MotionEvent.ACTION_DOWN);
                 }
-                return true; // Consume all down events (initial and repeats)
-            }
-            if (event.getAction() == KeyEvent.ACTION_UP) {
+            } else if (event.getAction() == KeyEvent.ACTION_UP) {
                 simulateTouchEvent(MotionEvent.ACTION_UP);
-                return true;
             }
+            return true; // Consume all parts of the click event.
         }
 
-        // Handle other D-pad actions (movement, exit) only on ACTION_DOWN
+        // Handle arrow keys for cursor movement and scrolling.
+        // We only act on ACTION_DOWN to avoid double actions.
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
-             // Make cursor visible on first D-pad press if it's not
-            if (tvCursorView.getVisibility() != View.VISIBLE) {
-                switch (event.getKeyCode()) {
-                    case KeyEvent.KEYCODE_DPAD_UP:
-                    case KeyEvent.KEYCODE_DPAD_DOWN:
-                    case KeyEvent.KEYCODE_DPAD_LEFT:
-                    case KeyEvent.KEYCODE_DPAD_RIGHT:
-                        centerCursor();
-                        tvCursorView.setVisibility(View.VISIBLE);
-                        return true;
-                }
-            }
-
-            // If cursor is still not visible, or some other view has focus, pass through.
-            if (tvCursorView.getVisibility() != View.VISIBLE || (getCurrentFocus() != null && getCurrentFocus() != geckoView)) {
-                return super.dispatchKeyEvent(event);
-            }
-
-            // --- Cursor Movement and Action within GeckoView ---
             FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) tvCursorView.getLayoutParams();
             int currentX = params.leftMargin;
             int currentY = params.topMargin;
+            int geckoViewBottomEdge = getWindowManager().getDefaultDisplay().getHeight() - tvCursorView.getHeight();
 
-            switch (event.getKeyCode()) {
-                case KeyEvent.KEYCODE_ESCAPE:
-                    finish(); // Close the activity
-                    return true;
+            switch (keyCode) {
                 case KeyEvent.KEYCODE_DPAD_LEFT:
                     params.leftMargin = Math.max(0, currentX - currentStepSize);
                     tvCursorView.setLayoutParams(params);
-                    return true;
+                    break;
+
                 case KeyEvent.KEYCODE_DPAD_RIGHT:
                     params.leftMargin = Math.min(getWindowManager().getDefaultDisplay().getWidth() - tvCursorView.getWidth(), currentX + currentStepSize);
                     tvCursorView.setLayoutParams(params);
-                    return true;
+                    break;
+
                 case KeyEvent.KEYCODE_DPAD_UP:
+                    // If the cursor is not at the top edge, move the cursor.
                     if (currentY > 0) {
-                        // If cursor is not at top edge, move it up
                         params.topMargin = Math.max(0, currentY - currentStepSize);
                         tvCursorView.setLayoutParams(params);
-                        mIsScrollingUp = false;
-                        mWaitingForScrollComplete = false;
                     } else {
-                        // Cursor is at top edge
-                        if (!mWaitingForScrollComplete) {
-                            // First press at top edge - start scrolling
-                            geckoView.getPanZoomController().scrollBy(
-                                org.mozilla.geckoview.ScreenLength.fromPixels(0),
-                                org.mozilla.geckoview.ScreenLength.fromPixels(-SCROLL_AMOUNT_PER_PRESS)
-                            );
-                            mWaitingForScrollComplete = true;
+                        // If at the top edge, check if we can scroll up further.
+                        if (mCanScrollUp) {
+                            simulateScroll(true); // true = scroll content up
                         } else {
-                            // We're waiting for the previous scroll to complete
-                            if (!mCanScrollUp) {
-                                // We can't scroll up anymore, shift focus to control bar
-                                setUiFocus(true);
-                                mWaitingForScrollComplete = false;
-                            } else {
-                                // We can still scroll up
-                                geckoView.getPanZoomController().scrollBy(
-                                    org.mozilla.geckoview.ScreenLength.fromPixels(0),
-                                    org.mozilla.geckoview.ScreenLength.fromPixels(-SCROLL_AMOUNT_PER_PRESS)
-                                );
-                            }
+                            // Cannot scroll further up, so transition focus to the UI controls.
+                            setUiFocus(true);
                         }
                     }
-                    return true;
+                    break;
+
                 case KeyEvent.KEYCODE_DPAD_DOWN:
-                    int geckoViewBottomEdge = getWindowManager().getDefaultDisplay().getHeight() - tvCursorView.getHeight();
+                    // If the cursor is not at the bottom edge, move the cursor.
                     if (currentY < geckoViewBottomEdge) {
-                        params.topMargin = Math.min(geckoViewBottomEdge, currentY + SCROLL_AMOUNT_PER_PRESS);
+                        params.topMargin = Math.min(geckoViewBottomEdge, currentY + currentStepSize);
                         tvCursorView.setLayoutParams(params);
-                    } else { // Cursor is at the bottom edge
-                        geckoView.getPanZoomController().scrollBy(
-                            org.mozilla.geckoview.ScreenLength.fromPixels(0),
-                            org.mozilla.geckoview.ScreenLength.fromPixels(SCROLL_AMOUNT_PER_PRESS)
-                        );
+                    } else {
+                        // If at the bottom edge, scroll the content down.
+                        simulateScroll(false); // false = scroll content down
                     }
-                    return true;
-                // NOTE: DPAD_CENTER and ENTER are handled above
+                    break;
             }
         }
+        
+        // If the key was a D-PAD key, we consume the event (both down and up) to prevent it from reaching the webpage.
+        if (keyCode >= KeyEvent.KEYCODE_DPAD_UP && keyCode <= KeyEvent.KEYCODE_DPAD_CENTER) {
+            return true;
+        }
+
+        // For any other key (e.g., BACK, VOLUME), let the system handle it.
         return super.dispatchKeyEvent(event);
     }
 
@@ -4446,13 +4388,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             float tapX = cursorScreenX - geckoScreenX;
             float tapY = cursorScreenY - geckoScreenY;
 
-            // Ensure tap coordinates are within GeckoView bounds
-            if (tapX < 0 || tapX > geckoView.getWidth() || tapY < 0 || tapY > geckoView.getHeight()) {
-                Log.w(TAG, "Simulated touch event is outside of GeckoView bounds. Ignoring.");
-                return;
+            if (mGestureDownTime == 0 && motionEventAction == MotionEvent.ACTION_DOWN) {
+                mGestureDownTime = System.currentTimeMillis();
             }
-
-            Log.d(TAG, "Simulating touch event: " + motionEventAction + " at (" + tapX + ", " + tapY + ")");
 
             final long eventTime = System.currentTimeMillis();
 
@@ -4464,7 +4402,17 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 tapY,
                 0
             );
-            geckoView.dispatchTouchEvent(event);
+
+            GeckoSession activeSession = getActiveSession();
+            if (activeSession != null) {
+                // CORRECT METHOD: Use the PanZoomController to process the touch event.
+                // This correctly interacts with the page at a low level.
+                activeSession.getPanZoomController().onTouchEvent(event);
+                Log.d(TAG, "Sent touch event via PanZoomController.onTouchEvent.");
+            } else {
+                Log.w(TAG, "Could not send touch event because active session was null.");
+            }
+            
             event.recycle();
         }
     }
@@ -4512,5 +4460,28 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 }
             }
         });
+    }
+
+    private void simulateScroll(boolean scrollUp) {
+        GeckoSession activeSession = getActiveSession();
+        if (activeSession == null) {
+            Log.w(TAG, "Cannot scroll, no active session.");
+            return;
+        }
+
+        final PanZoomController pzc = activeSession.getPanZoomController();
+        // A reasonable distance to scroll with one D-pad press
+        final int scrollDistance = 100;
+        final float direction = scrollUp ? -1.0f : 1.0f;
+
+        // Use PanZoomController's built-in scrollBy method for a reliable scroll.
+        // SCROLL_BEHAVIOR_AUTO provides an instantaneous jump, which feels better for D-pad navigation.
+        pzc.scrollBy(
+            ScreenLength.fromPixels(0),
+            ScreenLength.fromPixels(scrollDistance * direction),
+            PanZoomController.SCROLL_BEHAVIOR_AUTO
+        );
+
+        Log.d(TAG, "Simulated scroll via PanZoomController.scrollBy.");
     }
 }

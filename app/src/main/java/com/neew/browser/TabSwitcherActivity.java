@@ -12,6 +12,7 @@ import android.widget.ImageButton;
 import androidx.appcompat.app.AlertDialog;
 import android.view.View;
 import android.view.ViewTreeObserver;
+import android.content.pm.PackageManager;
 
 public class TabSwitcherActivity extends AppCompatActivity {
 
@@ -61,6 +62,11 @@ public class TabSwitcherActivity extends AppCompatActivity {
         setupClearAllTabsButtonListener();
     }
 
+    private boolean isTvDevice() {
+        PackageManager pm = getPackageManager();
+        return pm.hasSystemFeature(PackageManager.FEATURE_LEANBACK);
+    }
+
     private void setupRecyclerView() {
         // Using a GridLayoutManager to show tabs in a grid like the image
         // Adjust spanCount based on screen size/orientation if needed
@@ -80,43 +86,45 @@ public class TabSwitcherActivity extends AppCompatActivity {
                 Intent resultIntent = new Intent();
                 resultIntent.putExtra(RESULT_CLOSED_TAB_INDEX, position);
                 setResult(Activity.RESULT_OK, resultIntent); 
-                 finish(); 
+                finish(); 
             },
             tabsRecyclerView // Pass the RecyclerView instance here
         );
         tabsRecyclerView.setAdapter(tabAdapter);
 
-        // Set D-pad navigation order
-        addNewTabFab.setNextFocusUpId(R.id.tabsRecyclerView);
-        clearAllTabsButton.setNextFocusUpId(R.id.tabsRecyclerView);
-        addNewTabFab.setNextFocusLeftId(R.id.clearAllTabsButton);
-        clearAllTabsButton.setNextFocusRightId(R.id.addNewTabFab);
+        if (isTvDevice()) {
+            // Set D-pad navigation order
+            addNewTabFab.setNextFocusUpId(R.id.tabsRecyclerView);
+            clearAllTabsButton.setNextFocusUpId(R.id.tabsRecyclerView);
+            addNewTabFab.setNextFocusLeftId(R.id.clearAllTabsButton);
+            clearAllTabsButton.setNextFocusRightId(R.id.addNewTabFab);
 
-        // Automatically scroll to the last tab and set initial focus
-        if (tabAdapter.getItemCount() > 0) {
-            tabsRecyclerView.post(() -> {
-                int lastPosition = tabAdapter.getItemCount() - 1;
-                tabsRecyclerView.scrollToPosition(lastPosition);
-                RecyclerView.ViewHolder lastViewHolder = tabsRecyclerView.findViewHolderForAdapterPosition(lastPosition);
-                if (lastViewHolder != null) {
-                    lastViewHolder.itemView.requestFocus();
-                } else {
-                    // Fallback if view holder is not immediately available
-                    tabsRecyclerView.getViewTreeObserver().addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
-                @Override
-                        public void onGlobalLayout() {
-                            RecyclerView.ViewHolder vh = tabsRecyclerView.findViewHolderForAdapterPosition(lastPosition);
-                            if (vh != null) {
-                                vh.itemView.requestFocus();
-                                tabsRecyclerView.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+            // Automatically scroll to the last tab and set initial focus
+            if (tabAdapter.getItemCount() > 0) {
+                tabsRecyclerView.post(() -> {
+                    int lastPosition = tabAdapter.getItemCount() - 1;
+                    tabsRecyclerView.scrollToPosition(lastPosition);
+                    RecyclerView.ViewHolder lastViewHolder = tabsRecyclerView.findViewHolderForAdapterPosition(lastPosition);
+                    if (lastViewHolder != null) {
+                        lastViewHolder.itemView.requestFocus();
+                    } else {
+                        // Fallback if view holder is not immediately available
+                        tabsRecyclerView.getViewTreeObserver().addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
+                    @Override
+                            public void onGlobalLayout() {
+                                RecyclerView.ViewHolder vh = tabsRecyclerView.findViewHolderForAdapterPosition(lastPosition);
+                                if (vh != null) {
+                                    vh.itemView.requestFocus();
+                                    tabsRecyclerView.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                                }
                             }
-                        }
-                    });
-                }
-            });
-        } else {
-            // If there are no tabs, focus the 'Add New Tab' button
-            addNewTabFab.requestFocus();
+                        });
+                    }
+                });
+            } else {
+                // If there are no tabs, focus the 'Add New Tab' button
+                addNewTabFab.requestFocus();
+            }
         }
     }
 
