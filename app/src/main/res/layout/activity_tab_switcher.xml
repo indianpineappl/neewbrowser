@@ -1,52 +1,68 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout 
+<FrameLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:background="@android:color/black" 
-    tools:context=".TabSwitcherActivity">
+    android:layout_height="match_parent">
 
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/tabsRecyclerView"
-        android:layout_width="0dp"
-        android:layout_height="0dp"
-        android:padding="8dp"
-        android:paddingBottom="80dp" 
-        android:clipToPadding="false"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:nextFocusDown="@id/addNewTabFab" />
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@android:color/black"
+        tools:context=".TabSwitcherActivity">
 
-    <ImageButton
-        android:id="@+id/clearAllTabsButton"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginEnd="16dp"
-        android:layout_marginBottom="10dp"
-        android:src="@drawable/ic_delete_all_tabs" 
-        android:background="?attr/selectableItemBackgroundBorderless"
-        android:padding="12dp" 
-        app:tint="?android:attr/textColorSecondary" 
-        app:layout_constraintBottom_toTopOf="@id/addNewTabFab"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:contentDescription="Clear All Tabs"
-        android:visibility="gone"/> 
+        <!-- RecyclerView and buttons first -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/tabsRecyclerView"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:padding="8dp"
+            android:paddingBottom="80dp"
+            android:clipToPadding="false"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            android:nextFocusDown="@id/addNewTabFab" />
 
-    <com.google.android.material.floatingactionbutton.FloatingActionButton
-        android:id="@+id/addNewTabFab"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_margin="16dp"
-        android:src="@android:drawable/ic_input_add" 
-        app:tint="@android:color/white"
-        app:backgroundTint="#555555" 
-        app:fabSize="normal" 
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:contentDescription="Add New Tab" />
+        <ImageButton
+            android:id="@+id/clearAllTabsButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="16dp"
+            android:layout_marginBottom="10dp"
+            android:src="@drawable/ic_delete_all_tabs"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:padding="12dp"
+            app:tint="?android:attr/textColorSecondary"
+            app:layout_constraintBottom_toTopOf="@id/addNewTabFab"
+            app:layout_constraintEnd_toEndOf="parent"
+            android:contentDescription="Clear All Tabs"
+            android:visibility="gone"/>
 
-</androidx.constraintlayout.widget.ConstraintLayout> 
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/addNewTabFab"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_margin="16dp"
+            android:src="@android:drawable/ic_input_add"
+            app:tint="@android:color/white"
+            app:backgroundTint="#555555"
+            app:fabSize="normal"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            android:contentDescription="Add New Tab" />
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+    <!-- Cursor view LAST for overlay, outside ConstraintLayout -->
+    <com.neew.browser.TvCursorView
+        android:id="@+id/tabSwitcherCursorView"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:visibility="gone"
+        android:layout_gravity="top|start"
+        android:layout_margin="0dp"/>
+
+</FrameLayout> 

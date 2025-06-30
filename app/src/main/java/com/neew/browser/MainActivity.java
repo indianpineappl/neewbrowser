@@ -964,6 +964,37 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         if (minimizedUrlBar != null) {
         minimizedUrlBar.setOnClickListener(v -> showExpandedBar());
         }
+
+        if (isTvDevice()) {
+            // Create a single, reusable hover listener for our buttons.
+            View.OnHoverListener buttonHoverListener = (v, event) -> {
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_HOVER_ENTER:
+                        // Make the button slightly transparent to indicate hover
+                        v.setAlpha(0.7f);
+                        break;
+                    case MotionEvent.ACTION_HOVER_EXIT:
+                        // Restore original appearance
+                        v.setAlpha(1.0f);
+                        break;
+                }
+                return false; // Allow other listeners to process the event
+            };
+
+            // Apply the hover listener to all main control bar buttons
+            if (backButton != null) backButton.setOnHoverListener(buttonHoverListener);
+            if (forwardButton != null) forwardButton.setOnHoverListener(buttonHoverListener);
+            if (refreshButton != null) refreshButton.setOnHoverListener(buttonHoverListener);
+            if (settingsButton != null) settingsButton.setOnHoverListener(buttonHoverListener);
+            if (downloadsButton != null) downloadsButton.setOnHoverListener(buttonHoverListener);
+            if (newTabButton != null) newTabButton.setOnHoverListener(buttonHoverListener);
+            if (tabsButton != null) tabsButton.setOnHoverListener(buttonHoverListener);
+            // Also apply to minimized bar buttons
+            if (minimizedBackButton != null) minimizedBackButton.setOnHoverListener(buttonHoverListener);
+            if (minimizedForwardButton != null) minimizedForwardButton.setOnHoverListener(buttonHoverListener);
+            if (minimizedRefreshButton != null) minimizedRefreshButton.setOnHoverListener(buttonHoverListener);
+            if (minimizedNewTabButton != null) minimizedNewTabButton.setOnHoverListener(buttonHoverListener);
+        }
     }
 
       // Refactored method to set up URL bar listener
@@ -2583,6 +2614,31 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
              }
             return false; // Allow event propagation
         });
+
+        if (isTvDevice()) {
+            // Create a single, reusable hover listener for our buttons.
+            View.OnHoverListener hoverListener = (v, event) -> {
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_HOVER_ENTER:
+                        v.setAlpha(0.7f);
+                        break;
+                    case MotionEvent.ACTION_HOVER_EXIT:
+                        v.setAlpha(1.0f);
+                        break;
+                }
+                return false;
+            };
+
+            // Apply the hover listener to all settings panel elements
+            if (panelCookieSwitch != null) panelCookieSwitch.setOnHoverListener(hoverListener);
+            if (panelAdBlockerSwitch != null) panelAdBlockerSwitch.setOnHoverListener(hoverListener);
+            if (panelUBlockLayout != null) panelUBlockLayout.setOnHoverListener(hoverListener);
+            if (panelImmersiveSwitch != null) panelImmersiveSwitch.setOnHoverListener(hoverListener);
+            if (panelDesktopModeSwitch != null) panelDesktopModeSwitch.setOnHoverListener(hoverListener);
+            if (panelFullDesktopModelSwitch != null) panelFullDesktopModelSwitch.setOnHoverListener(hoverListener);
+            if (panelApplyButton != null) panelApplyButton.setOnHoverListener(hoverListener);
+            if (panelCancelButton != null) panelCancelButton.setOnHoverListener(hoverListener);
+        }
     }
 
     private void toggleSettingsPanel() {
@@ -4254,6 +4310,15 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
    
       @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        // Only handle Exit button on TV devices
+        if (isTvDevice() && event.getAction() == KeyEvent.ACTION_DOWN) {
+            android.util.Log.d("KeyTest", "Key pressed: " + event.getKeyCode());
+            if (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE) {
+                finishAffinity();
+                return true;
+            }
+        }
+        // ... rest of your existing dispatchKeyEvent logic ...
         if (!isTvDevice()) {
             return super.dispatchKeyEvent(event);
         }
