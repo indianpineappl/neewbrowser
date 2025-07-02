@@ -4331,14 +4331,14 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             }
         } else if (event.getAction() == KeyEvent.ACTION_UP) {
             isKeyPressed = false;
-            currentStepSize = 20; // Reset to base
+            currentStepSize = 30; // Reset to base
         }
 
         if (isKeyPressed) {
             long duration = System.currentTimeMillis() - accelerationStartTime;
             if (duration > ACCELERATION_INTERVAL) {
                 int increments = (int) (duration / ACCELERATION_INTERVAL);
-                currentStepSize = Math.min(20 + increments * STEP_INCREMENT, MAX_STEP_SIZE);
+                currentStepSize = Math.min(30 + increments * STEP_INCREMENT, MAX_STEP_SIZE);
             }
         }
 
@@ -4548,5 +4548,45 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         );
 
         Log.d(TAG, "Simulated scroll via PanZoomController.scrollBy.");
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        Log.d(TAG, "onResume: Checking GeckoRuntime and GeckoSession state");
+        boolean needsRecovery = false;
+        // Check if runtime or session is null or closed
+        if (runtime == null) {
+            Log.w(TAG, "onResume: GeckoRuntime is null. Needs recovery.");
+            needsRecovery = true;
+        } else if (getActiveSession() == null) {
+            Log.w(TAG, "onResume: Active GeckoSession is null. Needs recovery.");
+            needsRecovery = true;
+        } else if (!getActiveSession().isOpen()) {
+            Log.w(TAG, "onResume: Active GeckoSession is not open. Needs recovery.");
+            needsRecovery = true;
+        }
+        if (needsRecovery) {
+            // Attempt to recover: re-initialize runtime and session, reload last URL
+            Log.i(TAG, "onResume: Recovering GeckoRuntime and GeckoSession");
+            if (runtime == null) {
+                GeckoRuntimeSettings.Builder runtimeSettingsBuilder = new GeckoRuntimeSettings.Builder();
+                runtimeSettingsBuilder.consoleOutput(true);
+                runtime = GeckoRuntime.create(this, runtimeSettingsBuilder.build());
+                applyRuntimeSettings();
+                initializeUBlockOrigin();
+            }
+            // Clear old sessions and create a new one with last known URL
+            geckoSessionList.clear();
+            sessionUrlMap.clear();
+            sessionSnapshotMap.clear();
+            activeSessionIndex = -1;
+            String lastUrl = mLastValidUrl;
+            if (lastUrl == null || lastUrl.isEmpty()) {
+                lastUrl = "https://www.google.com";
+            }
+            createNewTab(lastUrl, true);
+            Log.i(TAG, "onResume: Recovery complete. New tab loaded: " + lastUrl);
+        }
     }
 }
