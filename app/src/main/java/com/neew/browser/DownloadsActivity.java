@@ -26,6 +26,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 
@@ -187,7 +188,13 @@ public class DownloadsActivity extends AppCompatActivity {
         private void deleteDownload(DownloadItem item, int position) {
             // 1. Remove from SharedPreferences
             List<DownloadItem> currentDownloads = getDownloads(context);
-            currentDownloads.removeIf(d -> d.filePath != null && d.filePath.equals(item.filePath)); // Java 8+
+            Iterator<DownloadItem> iterator = currentDownloads.iterator();
+            while (iterator.hasNext()) {
+                DownloadItem d = iterator.next();
+                if (d.filePath != null && d.filePath.equals(item.filePath)) {
+                    iterator.remove();
+                }
+            }
             
             JSONArray arr = new JSONArray();
             for (DownloadItem d : currentDownloads) {

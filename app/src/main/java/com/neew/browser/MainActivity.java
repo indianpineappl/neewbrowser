@@ -427,11 +427,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         panelFullDesktopModelSwitch.setChecked(false); // Revert the switch to OFF
                     } else {
                         // Desktop Mode is ON (or switch is null, though unlikely here), allow Full Desktop Model to be ON
-                        Log.d(TAG, "Full Desktop Model switch in panel set to: " + isChecked);
+                        Log.d(TAG, "Full Desktop Model switch in panel set to: " + (isChecked));
                     }
                 } else {
                     // User is turning OFF the Full Desktop Model switch, always allow this
-                    Log.d(TAG, "Full Desktop Model switch in panel set to: " + isChecked);
+                    Log.d(TAG, "Full Desktop Model switch in panel set to: " + (isChecked));
                 }
                 // Actual saving and application of this state will happen in applySettingsFromPanel()
             });
@@ -1162,7 +1162,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             @Override
              public GeckoResult<AllowOrDeny> onLoadRequest(GeckoSession session, NavigationDelegate.LoadRequest request) {
                 String uriString = request.uri;
-                Log.d(TAG, "MainTab NavDelegate onLoadRequest: URI="+uriString + " (Session: " + sessionUrlMap.getOrDefault(session, "N/A") + ")");
+                Log.d(TAG, "MainTab NavDelegate onLoadRequest: URI="+uriString + " (Session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A") + ")");
 
                 if (uriString != null && uriString.startsWith("intent://")) {
                     Log.i(TAG, "MainTab NavDelegate: Intercepted intent:// URI: " + uriString);
@@ -1240,7 +1240,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
             @Override
             public void onLocationChange(GeckoSession session, @Nullable String newUri, @NonNull List<GeckoSession.PermissionDelegate.ContentPermission> perms, @NonNull Boolean hasUserGesture) {
-                Log.d(TAG, "NavDelegate: onLocationChange for session: " + sessionUrlMap.getOrDefault(session, "N/A") + " to URI: " + newUri +
+                Log.d(TAG, "NavDelegate: onLocationChange for session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A") + " to URI: " + newUri +
                            " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
                 if (newUri != null) {
                     sessionUrlMap.put(session, newUri);
@@ -1259,7 +1259,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             // This onNewSession is called when the main tab (newSession) tries to open a popup/new window
                     @Override
             public GeckoResult<GeckoSession> onNewSession(GeckoSession originatingSession, String uri) {
-                Log.d(TAG, "createNewTab NavDelegate: onNewSession called for URI: " + uri + " from session: " + sessionUrlMap.getOrDefault(originatingSession, "N/A"));
+                Log.d(TAG, "createNewTab NavDelegate: onNewSession called for URI: " + uri + " from session: " + (sessionUrlMap.containsKey(originatingSession) ? sessionUrlMap.get(originatingSession) : "N/A"));
 
                 // 1. Create the GeckoSession object for the new tab/popup.
                 //    DO NOT CALL .open(runtime) on it here. GeckoView will do that.
@@ -1278,7 +1278,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                             progressBar.setProgress(progress);
                             progressBar.setVisibility(progress == 100 ? View.GONE : View.VISIBLE);
                         }
-                        Log.v(TAG, "NewTab/Popup Progress: " + progress + "% for " + sessionUrlMap.getOrDefault(session, "Unknown URI"));
+                        Log.v(TAG, "NewTab/Popup Progress: " + progress + "% for " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "Unknown URI"));
                     }
                     @Override
                     public void onPageStop(GeckoSession session, boolean success) {
@@ -1293,7 +1293,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                     @Override
                     public GeckoResult<AllowOrDeny> onLoadRequest(GeckoSession session, NavigationDelegate.LoadRequest request) {
                         String uriString = request.uri;
-                        Log.d(TAG, "Popup NavDelegate onLoadRequest: URI="+uriString + " (Session: " + sessionUrlMap.getOrDefault(session, "N/A") + ")");
+                        Log.d(TAG, "Popup NavDelegate onLoadRequest: URI="+uriString + " (Session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A") + ")");
 
                         if (uriString != null && uriString.startsWith("intent://")) {
                             Log.i(TAG, "Popup NavDelegate: Intercepted intent:// URI: " + uriString);
@@ -1352,7 +1352,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
                     @Override
                     public void onLocationChange(GeckoSession session, @Nullable String newUri, @NonNull List<GeckoSession.PermissionDelegate.ContentPermission> perms, @NonNull Boolean hasUserGesture) {
-                        Log.d(TAG, "Popup NavDelegate: onLocationChange for session: " + sessionUrlMap.getOrDefault(session, "N/A") + " to URI: " + newUri +
+                        Log.d(TAG, "Popup NavDelegate: onLocationChange for session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A") + " to URI: " + newUri +
                                    " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
                         if (newUri != null) {
                             sessionUrlMap.put(session, newUri);
@@ -1371,7 +1371,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
                     @Override
                     public GeckoResult<GeckoSession> onNewSession(GeckoSession currentPopupSession, String newUriFromPopup) {
-                        Log.i(TAG, "Grandchild Popup NavDelegate: onNewSession for URI: " + newUriFromPopup + " from popup session: " + sessionUrlMap.getOrDefault(currentPopupSession, "N/A"));
+                        Log.i(TAG, "Grandchild Popup NavDelegate: onNewSession for URI: " + newUriFromPopup + " from popup session: " + (sessionUrlMap.containsKey(currentPopupSession) ? sessionUrlMap.get(currentPopupSession) : "N/A"));
                         final GeckoSession grandChildSession = new GeckoSession();
                         
                         // Apply user agent settings to the grandchild popup session
@@ -1386,7 +1386,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                                     progressBar.setProgress(progress);
                                     progressBar.setVisibility(progress == 100 ? View.GONE : View.VISIBLE);
                                 }
-                                Log.v(TAG, "GrandChildPopup Progress: " + progress + "% for " + sessionUrlMap.getOrDefault(session, "Unknown URI"));
+                                Log.v(TAG, "GrandChildPopup Progress: " + progress + "% for " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "Unknown URI"));
                             }
                     @Override
                             public void onPageStop(GeckoSession session, boolean success) {
@@ -1401,7 +1401,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                     @Override
                             public GeckoResult<AllowOrDeny> onLoadRequest(GeckoSession session, NavigationDelegate.LoadRequest request) {
                                 String uriString = request.uri;
-                                Log.d(TAG, "GrandChild NavDelegate onLoadRequest: URI="+uriString + " (Session: " + sessionUrlMap.getOrDefault(session, "N/A") + ")");
+                                Log.d(TAG, "GrandChild NavDelegate onLoadRequest: URI="+uriString + " (Session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A") + ")");
 
                                 if (uriString != null && uriString.startsWith("intent://")) {
                                     Log.i(TAG, "GrandChild NavDelegate: Intercepted intent:// URI: " + uriString);
@@ -1460,7 +1460,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
                     @Override
                     public void onLocationChange(GeckoSession session, @Nullable String newUri, @NonNull List<GeckoSession.PermissionDelegate.ContentPermission> perms, @NonNull Boolean hasUserGesture) {
-                        Log.d(TAG, "GrandChild NavDelegate: onLocationChange for session: " + sessionUrlMap.getOrDefault(session, "N/A") + " to URI: " + newUri +
+                        Log.d(TAG, "GrandChild NavDelegate: onLocationChange for session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A") + " to URI: " + newUri +
                                    " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
                         if (newUri != null) {
                             sessionUrlMap.put(session, newUri);
@@ -1597,7 +1597,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                             }
                     @Override
                             public void onCloseRequest(GeckoSession session) {
-                                Log.d(TAG, "GrandChildPopup's ContentDelegate: onCloseRequest for " + sessionUrlMap.getOrDefault(session, "N/A"));
+                                Log.d(TAG, "GrandChildPopup's ContentDelegate: onCloseRequest for " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A"));
                                 int indexToClose = geckoSessionList.indexOf(session);
                                 if (indexToClose != -1) { closeTab(indexToClose); } else { session.close(); }
                             }
@@ -1733,7 +1733,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                     }
                     @Override
                     public void onCloseRequest(GeckoSession session) { // window.close() in the new tab
-                        Log.d(TAG, "Popup's ContentDelegate: onCloseRequest for session " + sessionUrlMap.getOrDefault(session, "N/A"));
+                        Log.d(TAG, "Popup's ContentDelegate: onCloseRequest for session " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A"));
                         int indexToClose = geckoSessionList.indexOf(session);
                         if (indexToClose != -1) {
                             closeTab(indexToClose);
@@ -1903,7 +1903,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             // Add onCloseRequest to the main session's ContentDelegate as well
             @Override
             public void onCloseRequest(GeckoSession session) {
-                Log.d(TAG, "ContentDelegate: onCloseRequest received for session: " + sessionUrlMap.getOrDefault(session, "Unknown URI"));
+                Log.d(TAG, "ContentDelegate: onCloseRequest received for session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "Unknown URI"));
                 // This is typically called by window.close() from JavaScript.
                 // We should close the tab associated with this session.
                 int indexToClose = geckoSessionList.indexOf(session);
@@ -2015,19 +2015,19 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                      captureSnapshot(logicalOldActiveSession);
                 } else {
                      // If the session in view is not the logical old active one, but it's being released.
-                     Log.d(TAG, "Capturing snapshot of non-logical-active/unexpected session being released: " + sessionUrlMap.getOrDefault(sessionCurrentlyInView, "N/A"));
+                     Log.d(TAG, "Capturing snapshot of non-logical-active/unexpected session being released: " + (sessionUrlMap.containsKey(sessionCurrentlyInView) ? sessionUrlMap.get(sessionCurrentlyInView) : "N/A"));
                      captureSnapshot(sessionCurrentlyInView);
                 }
             }
             geckoView.releaseSession();
-            Log.d(TAG, "Released session from GeckoView: " + sessionUrlMap.getOrDefault(sessionCurrentlyInView, "N/A"));
+            Log.d(TAG, "Released session from GeckoView: " + (sessionUrlMap.containsKey(sessionCurrentlyInView) ? sessionUrlMap.get(sessionCurrentlyInView) : "N/A"));
         }
 
         this.activeSessionIndex = targetIndex;
         this.geckoSession = targetSession; // Update the global 'geckoSession' convenience field
         
         geckoView.setSession(targetSession);
-        Log.d(TAG, "Attached session to GeckoView: " + sessionUrlMap.getOrDefault(targetSession, "N/A"));
+        Log.d(TAG, "Attached session to GeckoView: " + (sessionUrlMap.containsKey(targetSession) ? sessionUrlMap.get(targetSession) : "N/A"));
         // captureSnapshot(targetSession); // CAPTURE SNAPSHOT OF THE NEWLY ACTIVE TAB -> REMOVED, handled by onPageStop
 
         updateUIForActiveSession();
@@ -2086,7 +2086,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         sessionSnapshotMap.put(session, resizedBitmap); // Store the resized bitmap
 
                         // --- Save snapshot to disk ---
-                        String url = sessionUrlMap.getOrDefault(session, null);
+                        String url = sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : null;
                         if (url != null) {
                             saveSnapshotToDisk(resizedBitmap, url);
                         }
@@ -2107,7 +2107,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private void updateUIForActiveSession() {
         GeckoSession activeSession = getActiveSession();
         if (activeSession != null && urlBar != null && minimizedUrlBar != null) {
-            String currentUrl = sessionUrlMap.getOrDefault(activeSession, ""); 
+            String currentUrl = sessionUrlMap.containsKey(activeSession) ? sessionUrlMap.get(activeSession) : ""; 
 
             Log.d(TAG, "Updating UI for Active Session: URL=" + currentUrl);
             
@@ -2251,7 +2251,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             isControlBarExpanded = false;
             isControlBarHidden = false;
             // Update the text of the minimized URL bar
-            String currentUrl = sessionUrlMap.getOrDefault(getActiveSession(), "");
+            String currentUrl = sessionUrlMap.containsKey(getActiveSession()) ? sessionUrlMap.get(getActiveSession()) : "";
             minimizedUrlBar.setText(currentUrl);
             Log.d(TAG, "showMinimizedBar: Minimized bar visible. URL: " + currentUrl);
         } else if (getActiveSession() == null) {
@@ -2706,7 +2706,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         // Apply User Agent to all existing sessions
         Log.d(TAG, "Settings Panel: Applying UA based on new mode: " + newUserAgentMode + " to all sessions.");
         for (GeckoSession existingSession : geckoSessionList) {
-            applyUserAgentToSession(existingSession, sessionUrlMap.get(existingSession)); // Pass URL for context
+            applyUserAgentToSession(existingSession, sessionUrlMap.containsKey(existingSession) ? sessionUrlMap.get(existingSession) : "N/A"); // Pass URL for context
         }
 
         // Reload the active session to apply changes.
@@ -3044,7 +3044,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         ArrayList<String> snapshotBase64Strings = new ArrayList<>(); // Send as Base64 strings (still potentially large!)
         
         for (GeckoSession session : geckoSessionList) {
-            urls.add(sessionUrlMap.getOrDefault(session, "Loading...")); 
+            urls.add(sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "Loading..."); 
             Bitmap snapshot = sessionSnapshotMap.get(session);
             if (snapshot != null) {
                  // Convert Bitmap to Base64 String (Example - adjust quality/size)
@@ -3108,7 +3108,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         // Save URLs as a JSON array string
         JSONArray urlsJsonArray = new JSONArray();
         for (GeckoSession session : geckoSessionList) {
-            urlsJsonArray.put(sessionUrlMap.getOrDefault(session, "about:blank"));
+            urlsJsonArray.put(sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "about:blank");
         }
         String urlsJsonString = urlsJsonArray.toString();
         Log.d(TAG, "[StorageDebug] Saving URLs JSON: " + urlsJsonString);
@@ -4221,7 +4221,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     public void onActivated(@NonNull GeckoSession session, @NonNull MediaSession mediaSession) {
         // A media session has become active.
         // This might be a good place to reset isMediaActuallyPlaying if the active media session changes.
-        Log.d(TAG, "MediaSession.Delegate: onActivated for session: " + sessionUrlMap.getOrDefault(session, "N/A"));
+        Log.d(TAG, "MediaSession.Delegate: onActivated for session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A"));
         // If this newly activated session is not the one we thought was playing, reset.
         if (mediaPlayingSession != null && mediaPlayingSession != session && session == getActiveSession()) {
             isMediaActuallyPlaying = false;
@@ -4234,7 +4234,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     @Override
     public void onDeactivated(@NonNull GeckoSession session, @NonNull MediaSession mediaSession) {
         // A media session has become inactive.
-        Log.d(TAG, "MediaSession.Delegate: onDeactivated for session: " + sessionUrlMap.getOrDefault(session, "N/A"));
+        Log.d(TAG, "MediaSession.Delegate: onDeactivated for session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A"));
         if (session == mediaPlayingSession) {
             isMediaActuallyPlaying = false;
             mediaPlayingSession = null;
@@ -4244,7 +4244,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
     @Override
     public void onPlay(@NonNull GeckoSession session, @NonNull MediaSession mediaSession) {
-        Log.d(TAG, "MediaSession.Delegate: onPlay for session: " + sessionUrlMap.getOrDefault(session, "N/A"));
+        Log.d(TAG, "MediaSession.Delegate: onPlay for session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A"));
         if (session == getActiveSession()) {
             isMediaActuallyPlaying = true;
             mediaPlayingSession = session;
@@ -4258,7 +4258,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
     @Override
     public void onPause(@NonNull GeckoSession session, @NonNull MediaSession mediaSession) {
-        Log.d(TAG, "MediaSession.Delegate: onPause for session: " + sessionUrlMap.getOrDefault(session, "N/A"));
+        Log.d(TAG, "MediaSession.Delegate: onPause for session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A"));
         if (session == mediaPlayingSession) { // Check if it\'s the session we were tracking
             isMediaActuallyPlaying = false;
             mediaPlayingSession = null; // Clear the playing session
