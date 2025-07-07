@@ -1140,21 +1140,45 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         // Add delegates AFTER opening
         newSession.setProgressDelegate(new ProgressDelegate() {
             @Override
-            public void onProgressChange(GeckoSession session, int progress) {
-                // Only update progress bar if this session is active
+            public void onPageStart(@NonNull GeckoSession session, @NonNull String url) {
+                Log.d(TAG, "ProgressDelegate: onPageStart called for session: " + session.hashCode() + ", URL: " + url);
                 if (session == getActiveSession()) {
-                progressBar.setProgress(progress);
-                    progressBar.setVisibility(progress == 100 ? View.GONE : View.VISIBLE);
+                    Log.d(TAG, "ProgressDelegate: onPageStart on ACTIVE session. Showing progress.");
+                    progressBar.setVisibility(View.VISIBLE);
+                    if (isTvDevice() && tvCursorView != null) {
+                        tvCursorView.showProgress();
+                    }
                 }
             }
+
+            @Override
+            public void onProgressChange(GeckoSession session, int progress) {
+                // Log only for the active session to avoid spam
+                if (session == getActiveSession()) {
+                    Log.d(TAG, "ProgressDelegate: onProgressChange on ACTIVE session: " + progress);
+                    progressBar.setProgress(progress);
+                    if (isTvDevice() && tvCursorView != null) {
+                        tvCursorView.setProgress(progress);
+                    }
+                }
+            }
+
             @Override
             public void onPageStop(GeckoSession session, boolean success) {
-                if (success && session == getActiveSession() && geckoView.getSession() == session) {
-                    Log.d(TAG, "MainTab ProgressDelegate: onPageStop for active session. Capturing snapshot.");
-                    captureSnapshot(session);
+                Log.d(TAG, "ProgressDelegate: onPageStop called for session: " + session.hashCode() + ", Success: " + success);
+                if (session == getActiveSession()) {
+                    Log.d(TAG, "ProgressDelegate: onPageStop on ACTIVE session. Hiding progress.");
+                    progressBar.setVisibility(View.GONE);
+                    if (isTvDevice() && tvCursorView != null) {
+                        tvCursorView.hideProgress();
+                    }
+
+                    if (success && geckoView.getSession() == session) {
+                        Log.d(TAG, "MainTab ProgressDelegate: onPageStop for active session. Capturing snapshot.");
+                        captureSnapshot(session);
+                    }
                 }
             }
-             // Implement other ProgressDelegate methods like onPageStart/Stop if needed for this session
         });
 
         // This is the NavigationDelegate for the tab created by createNewTab()
@@ -1272,19 +1296,39 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
                 // 2. Configure its delegates:
                 newTabSession.setProgressDelegate(new ProgressDelegate() {
-                     @Override
+                    @Override
+                    public void onPageStart(@NonNull GeckoSession session, @NonNull String url) {
+                        if (session == getActiveSession()) {
+                            progressBar.setVisibility(View.VISIBLE);
+                            if (isTvDevice() && tvCursorView != null) {
+                                tvCursorView.showProgress();
+                            }
+                        }
+                    }
+
+                    @Override
                     public void onProgressChange(GeckoSession session, int progress) {
                         if (session == getActiveSession()) {
                             progressBar.setProgress(progress);
-                            progressBar.setVisibility(progress == 100 ? View.GONE : View.VISIBLE);
+                            if (isTvDevice() && tvCursorView != null) {
+                                tvCursorView.setProgress(progress);
+                            }
                         }
                         Log.v(TAG, "NewTab/Popup Progress: " + progress + "% for " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "Unknown URI"));
                     }
+
                     @Override
                     public void onPageStop(GeckoSession session, boolean success) {
-                        if (success && session == getActiveSession() && geckoView.getSession() == session) {
-                            Log.d(TAG, "Popup ProgressDelegate: onPageStop for active session. Capturing snapshot.");
-                            captureSnapshot(session);
+                        if (session == getActiveSession()) {
+                            progressBar.setVisibility(View.GONE);
+                            if (isTvDevice() && tvCursorView != null) {
+                                tvCursorView.hideProgress();
+                            }
+
+                            if (success && geckoView.getSession() == session) {
+                                Log.d(TAG, "Popup ProgressDelegate: onPageStop for active session. Capturing snapshot.");
+                                captureSnapshot(session);
+                            }
                         }
                     }
                 });
@@ -1380,19 +1424,39 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         grandChildSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.this
 
                         grandChildSession.setProgressDelegate(new ProgressDelegate() {
-                    @Override
+                            @Override
+                            public void onPageStart(@NonNull GeckoSession session, @NonNull String url) {
+                                if (session == getActiveSession()) {
+                                    progressBar.setVisibility(View.VISIBLE);
+                                    if (isTvDevice() && tvCursorView != null) {
+                                        tvCursorView.showProgress();
+                                    }
+                                }
+                            }
+
+                            @Override
                             public void onProgressChange(GeckoSession session, int progress) {
                                 if (session == getActiveSession()) {
                                     progressBar.setProgress(progress);
-                                    progressBar.setVisibility(progress == 100 ? View.GONE : View.VISIBLE);
+                                    if (isTvDevice() && tvCursorView != null) {
+                                        tvCursorView.setProgress(progress);
+                                    }
                                 }
                                 Log.v(TAG, "GrandChildPopup Progress: " + progress + "% for " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "Unknown URI"));
                             }
-                    @Override
+
+                            @Override
                             public void onPageStop(GeckoSession session, boolean success) {
-                                if (success && session == getActiveSession() && geckoView.getSession() == session) {
-                                    Log.d(TAG, "GrandChild ProgressDelegate: onPageStop for active session. Capturing snapshot.");
-                                    captureSnapshot(session);
+                                if (session == getActiveSession()) {
+                                    progressBar.setVisibility(View.GONE);
+                                    if (isTvDevice() && tvCursorView != null) {
+                                        tvCursorView.hideProgress();
+                                    }
+
+                                    if (success && geckoView.getSession() == session) {
+                                        Log.d(TAG, "GrandChild ProgressDelegate: onPageStop for active session. Capturing snapshot.");
+                                        captureSnapshot(session);
+                                    }
                                 }
                             }
                         });
