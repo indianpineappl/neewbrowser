@@ -187,6 +187,8 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
     // Scroll detection state
     private boolean isControlBarExpanded = true; // Default to true as per existing logic for initial state
+    private boolean isUiFocused = false;
+    private volatile boolean isUiReady = false; // New flag to prevent UI updates before initialization
     private boolean isControlBarHidden = false; // New: true if both bars are GONE
     private int lastScrollY = 0;
     private static final int SCROLL_THRESHOLD = 50; // Pixels to scroll before triggering hide/show
@@ -296,7 +298,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     }
 
     private TvCursorView tvCursorView;
-    private boolean isUiFocused = false; // New field to track if UI (control bar/settings) has focus
+
     private List<View> controlBarElements;
     private List<View> settingsPanelElements;
     private static final int CURSOR_STEP_SIZE = 20; // Pixels to move cursor per key press
@@ -704,6 +706,13 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         checkAndShowStorageWarning();
 
         mFirebaseAnalytics = FirebaseAnalytics.getInstance(this);
+
+        // Signal that all UI components are initialized and ready for updates.
+        // This prevents race conditions where navigation events try to update the UI before it's ready.
+        isUiReady = true;
+
+        // After UI is ready, it's safe to do an initial UI update if needed.
+        updateUIForActiveSession();
     }
 
     private void checkAndShowStorageWarning() {
@@ -1291,16 +1300,21 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 Log.d(TAG, "NavDelegate: onLocationChange for session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A") + " to URI: " + newUri +
                            " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
                 if (newUri != null) {
+                    // Always update the map with the new URI for the session.
                     sessionUrlMap.put(session, newUri);
-                    mLastValidUrl = newUri; // Update last valid URL
+
+                    // Only update the UI if the change is for the currently active session.
                     if (session == getActiveSession()) {
+                        // CRITICAL: Update mLastValidUrl with the latest URL from the navigation event.
+                        // This ensures that if the user focuses the URL bar on TV, it shows the correct, current URL.
+                        mLastValidUrl = newUri;
+
                         runOnUiThread(() -> {
+                            // This call is safe because it checks for null UI components.
                             MainActivity.this.updateUIForActiveSession();
-                            mLastValidUrl = newUri; // Update last valid URL on successful navigation
 
                             // A new page has loaded, so we must update our state for the TV cursor.
                             if (isTvDevice()) {
-                                // Ensure geckoView is not null before using it
                                 if (geckoView != null) {
                                     mCanScrollUp = geckoView.canScrollVertically(-1);
                                 }
@@ -2090,6 +2104,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         if (this.activeSessionIndex == targetIndex && geckoView.getSession() == targetSession) {
             Log.d(TAG, "switchToTab: Tab " + targetIndex + " is already active and displayed. Updating UI only.");
             updateUIForActiveSession(); // Ensure UI is fresh (e.g. URL bar)
+            // Also update mLastValidUrl in this edge case
+            String currentUrl = sessionUrlMap.get(targetSession);
+            if (currentUrl != null) {
+                mLastValidUrl = currentUrl;
+            }
             return;
         }
 
@@ -2121,7 +2140,13 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
         this.activeSessionIndex = targetIndex;
         this.geckoSession = targetSession; // Update the global 'geckoSession' convenience field
-        
+
+        // CRITICAL: Keep mLastValidUrl in sync with the active tab's URL.
+        String currentUrl = sessionUrlMap.get(getActiveSession());
+        if (currentUrl != null) {
+            mLastValidUrl = currentUrl;
+        }
+
         geckoView.setSession(targetSession);
         Log.d(TAG, "Attached session to GeckoView: " + (sessionUrlMap.containsKey(targetSession) ? sessionUrlMap.get(targetSession) : "N/A"));
         // captureSnapshot(targetSession); // CAPTURE SNAPSHOT OF THE NEWLY ACTIVE TAB -> REMOVED, handled by onPageStop
@@ -2201,23 +2226,35 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
     // Updates URL bar and navigation buttons based on the active session state
     private void updateUIForActiveSession() {
-        GeckoSession activeSession = getActiveSession();
-        if (activeSession != null && urlBar != null && minimizedUrlBar != null) {
-            String currentUrl = sessionUrlMap.containsKey(activeSession) ? sessionUrlMap.get(activeSession) : ""; 
+        if (!isUiReady) {
+            Log.w(TAG, "updateUIForActiveSession: UI not ready, skipping update.");
+            return;
+        }
 
-            Log.d(TAG, "Updating UI for Active Session: URL=" + currentUrl);
-            
-            runOnUiThread(() -> {
-                urlBar.setText(currentUrl);
-                if (!isControlBarExpanded) {
-                    minimizedUrlBar.setText(currentUrl);
-                }
+        GeckoSession activeSession = getActiveSession();
+        if (activeSession == null) {
+            Log.w(TAG, "updateUIForActiveSession: Active session is null, skipping update.");
+            return;
+        }
+
+        String url = sessionUrlMap.get(activeSession);
+        if (url == null) {
+            url = "";
+        }
+
+        final String finalUrl = url;
+        runOnUiThread(() -> {
+            if (urlBar != null) {
+                urlBar.setText(finalUrl);
+            }
+            if (minimizedUrlBar != null && !isControlBarExpanded) {
+                minimizedUrlBar.setText(finalUrl);
+            }
+            if (progressBar != null) {
                 progressBar.setProgress(0);
                 progressBar.setVisibility(View.GONE);
-            });
-        } else {
-             Log.w(TAG, "updateUIForActiveSession: Active session or URL bar is null");
-        }
+            }
+        });
     }
 
     @Override
