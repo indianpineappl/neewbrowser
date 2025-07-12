@@ -41,6 +41,10 @@ import android.preference.PreferenceManager;
 import androidx.appcompat.app.AlertDialog;
 import android.widget.Switch;
 import org.mozilla.geckoview.GeckoRuntimeSettings;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import org.mozilla.geckoview.ContentBlocking;
 import org.mozilla.geckoview.GeckoSession.PermissionDelegate;
 import java.util.List;
@@ -477,17 +481,26 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
         // Initialize Gecko Runtime (only once)
         if (runtime == null) {
-            Log.d(TAG, "Creating GeckoRuntime with console output enabled");
+            Log.d(TAG, "Creating new GeckoRuntime.");
 
-            // Create runtime with console output enabled
+            // Copy GeckoView config from assets to a file that GeckoView can read
+            File configFile = copyGeckoConfigFromAssets();
+
             GeckoRuntimeSettings.Builder runtimeSettingsBuilder = new GeckoRuntimeSettings.Builder();
-            runtimeSettingsBuilder.consoleOutput(true);
+            runtimeSettingsBuilder.consoleOutput(true); // Keep console output enabled
+
+            if (configFile != null) {
+                Log.d(TAG, "Using GeckoView config from: " + configFile.getAbsolutePath());
+                runtimeSettingsBuilder.configFilePath(configFile.getAbsolutePath());
+            } else {
+                Log.w(TAG, "GeckoView config file not found or could not be copied.");
+            }
+
             runtime = GeckoRuntime.create(this, runtimeSettingsBuilder.build());
-            Log.i(TAG, "GeckoRuntime created with console output enabled.");
+            Log.i(TAG, "GeckoRuntime created.");
 
             applyRuntimeSettings(); // Apply other dynamic settings
             initializeUBlockOrigin(); // Initialize uBlock Origin after runtime is ready
-
         } else {
             Log.d(TAG, "Reusing existing GeckoRuntime");
             // If reusing, maybe re-apply dynamic settings?
@@ -3019,30 +3032,24 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         Log.d(TAG, "Entering fullscreen (enterFullScreen called)");
         isInGeckoViewFullscreen = true; // GeckoView has requested fullscreen
 
-        if (isTvDevice()) {
-            if (controlBarContainer != null) {
-                controlBarContainer.setVisibility(View.GONE);
-            }
-        } else {
-            // Mobile-specific fullscreen logic
-        if (isInPictureInPictureMode) {
-            Log.d(TAG, "Already in PiP mode or transitioning, not changing system UI from enterFullScreen.");
-            if (controlBarContainer != null) {
-                controlBarContainer.setVisibility(View.GONE); // Keep controls hidden in PiP
-            }
-            return;
-        }
+        // Keep the screen on to prevent video from pausing
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
+        View decorView = getWindow().getDecorView();
+        // Hide navigation and status bars
         int uiOptions = View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                        | View.SYSTEM_UI_FLAG_FULLSCREEN
-                                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+                | View.SYSTEM_UI_FLAG_FULLSCREEN
+                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
         decorView.setSystemUiVisibility(uiOptions);
 
-        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
-
+        // Hide app-specific UI
         if (controlBarContainer != null) {
             controlBarContainer.setVisibility(View.GONE);
-            }
+        }
+
+        // On mobile, lock orientation
+        if (!isTvDevice()) {
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
         }
     }
 
@@ -3050,28 +3057,43 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         Log.d(TAG, "Exiting fullscreen (exitFullScreen called)");
         isInGeckoViewFullscreen = false; // GeckoView no longer desires fullscreen
 
-        if (isTvDevice()) {
-            if (controlBarContainer != null) {
-                controlBarContainer.setVisibility(View.VISIBLE);
-            }
-        } else {
-            // Mobile-specific fullscreen exit logic
-        if (isInPictureInPictureMode) {
-            Log.d(TAG, "Currently in PiP mode, system will handle UI changes on PiP exit.");
-            return;
-        }
+        // Allow the screen to turn off again
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
+        View decorView = getWindow().getDecorView();
+        // Show navigation and status bars
         decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
-        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
 
+        // Show app-specific UI
         if (controlBarContainer != null) {
             controlBarContainer.setVisibility(View.VISIBLE);
+        }
+
+        // On mobile, unlock orientation
+        if (!isTvDevice()) {
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
             if (isControlBarExpanded) {
                 showExpandedBar();
             } else {
                 showMinimizedBar();
-                }
             }
+        }
+    }
+
+    private File copyGeckoConfigFromAssets() {
+        File configFile = new File(getCacheDir(), "geckoview-config.yaml");
+        try (InputStream inputStream = getAssets().open("geckoview-config.yaml");
+             OutputStream outputStream = new FileOutputStream(configFile)) {
+            byte[] buffer = new byte[1024];
+            int length;
+            while ((length = inputStream.read(buffer)) > 0) {
+                outputStream.write(buffer, 0, length);
+            }
+            Log.i(TAG, "Successfully copied geckoview-config.yaml to cache.");
+            return configFile;
+        } catch (Exception e) {
+            Log.e(TAG, "Error copying geckoview-config.yaml from assets", e);
+            return null;
         }
     }
     // --- End Fullscreen Helper Methods ---

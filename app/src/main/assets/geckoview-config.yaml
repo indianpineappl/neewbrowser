@@ -1,0 +1,49 @@
+# Recommended GeckoView Configuration for NeewBrowser
+#
+# This configuration enables features required for modern web compatibility,
+# especially for video streaming, interactive applications, and performance.
+
+prefs:
+  # --- Media & Playback ---
+  # Enables Media Source Extensions (MSE), critical for adaptive streaming (DASH/HLS).
+  media.mediasource.enabled: true
+  # Enables Encrypted Media Extensions (EME), required for DRM-protected content (e.g., Netflix, Hulu).
+  media.eme.enabled: true
+  # Enables hardware-accelerated video decoding for better performance and battery life.
+  media.hardware-video-decoding.enabled: true
+  # Enables the FFmpeg-based media backend for broader codec support.
+  media.ffvpx.enabled: true
+  # Enables the navigator.mediaDevices API, used for accessing cameras and microphones.
+  media.navigator.enabled: true
+  # Enables WebRTC peer-to-peer connections.
+  media.peerconnection.enabled: true
+  # Allows media to autoplay. 0=allow, 1=block, 5=allow for same-origin.
+  media.autoplay.default: 0
+  # Allows videos to play even if they are not visible on screen.
+  media.play-stand-alone: true
+  # Enables the Picture-in-Picture toggle on video controls.
+  media.videocontrols.picture-in-picture.video-toggle.enabled: true
+
+  # --- JavaScript & Performance ---
+  # Enables WebAssembly, used by high-performance web applications and some video players.
+  javascript.options.wasm: true
+  # Sets the maximum time a script can run without yielding.
+  # 0 means indefinite (disables timeout). Use with caution.
+  # This is to prevent the "script terminated" errors seen with some players.
+  dom.max_script_run_time: 60
+
+  # --- Power Management ---
+  # Allow scripts to use the Wake Lock API to keep the screen on.
+  dom.wakelock.enabled: true
+  # Disable browser-level power saving features, which can interfere with video.
+  power.saving.enabled: false
+  # Allow video to continue playing even if the app is considered in the background.
+  media.suspend-bkgnd-video.enabled: false
+
+  # --- Graphics ---
+  # Ensures WebGL is enabled for hardware-accelerated 2D/3D graphics.
+  webgl.disabled: false
+
+  # --- Other ---
+  # Disables the "resist fingerprinting" feature, which can sometimes break sites.
+  privacy.resistFingerprinting: false
