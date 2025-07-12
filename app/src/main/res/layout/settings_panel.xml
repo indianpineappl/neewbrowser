@@ -38,6 +38,7 @@
         android:textColor="@color/settings_panel_text"
         app:thumbTint="@color/switch_thumb_tint"
         app:trackTint="@color/switch_track_tint"
+        android:checked="true"
         android:paddingBottom="8dp"/>
 
     <androidx.appcompat.widget.SwitchCompat

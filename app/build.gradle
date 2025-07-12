@@ -39,6 +39,10 @@ android {
     }
     namespace 'com.neew.browser'
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     def getVersionNameFromGit = { ->
         try {
             def stdout = new ByteArrayOutputStream()

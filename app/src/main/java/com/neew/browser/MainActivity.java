@@ -121,6 +121,8 @@ import java.text.DecimalFormat;
 import android.view.ViewTreeObserver;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import java.net.URISyntaxException; // <-- Add this import
 import android.app.PictureInPictureParams;
 import android.os.Build;
@@ -306,6 +308,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private int mLastScrollY = 0; // Track last scroll position
     private boolean mCanScrollUp = true; // Track if we can scroll up
     private String mLastValidUrl = ""; // Store the last valid URL
+    private List<Rect> focusableRects = new ArrayList<>(); // For TV cursor focus
 
     // Declare acceleration variables at the class level
     private int currentStepSize = 20; // Base step size
@@ -318,6 +321,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Enable edge-to-edge display. This is required for modern Android versions
+        // and is the default for apps targeting SDK 35.
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
 
         // Set screen orientation to landscape for TV devices
         if (isTvDevice()) {
@@ -332,6 +338,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             tvCursorView.setVisibility(View.VISIBLE);
             // Center the cursor initially
             centerCursor();
+
         }
 
         tapThresholdBottomEdgePx = (int) TypedValue.applyDimension(
@@ -356,6 +363,21 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
         // Initialize UI components
         geckoView = findViewById(R.id.geckoView);
+
+        // Wait for the initial layout to complete before calculating focusable areas.
+        // This is crucial for the cursor to find the control bar on first load.
+        if (isTvDevice()) {
+            geckoView.getViewTreeObserver().addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
+                @Override
+                public void onGlobalLayout() {
+                    updateFocusableRects();
+                    // Remove the listener to prevent it from being called repeatedly.
+                    if (geckoView.getViewTreeObserver().isAlive()) {
+                        geckoView.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                    }
+                }
+            });
+        }
         urlBar = findViewById(R.id.urlBar);
         progressBar = findViewById(R.id.progressBar);
         backButton = findViewById(R.id.backButton);
@@ -675,11 +697,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 }
             }
         };
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) { // UPSIDE_DOWN_CAKE is Android 14 (API 34)
-            registerReceiver(downloadCompleteReceiver, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            registerReceiver(downloadCompleteReceiver, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
-        }
+        // Register the receiver using ContextCompat to ensure compatibility and security.
+        // RECEIVER_NOT_EXPORTED ensures the receiver only handles system broadcasts, not from other apps.
+        ContextCompat.registerReceiver(this, downloadCompleteReceiver, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_NOT_EXPORTED);
 
         checkAndShowStorageWarning();
 
@@ -1196,8 +1216,12 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                             Log.d(TAG, "MainTab NavDelegate: Parsed intent: " + intent.toString() + " Extras: " + (intent.getExtras() != null ? intent.getExtras().toString() : "null"));
 
+                            // For security, ensure that the intent has a component before starting it.
+                            // This is a best practice for safer intents on Android 15.
                             if (intent.resolveActivity(getPackageManager()) != null) {
                                 Log.i(TAG, "MainTab NavDelegate: Activity found for intent. Attempting to start...");
+                                // Ensure the intent is not targeting a non-exported component of another app.
+                                intent.addFlags(Intent.FLAG_ACTIVITY_FORWARD_RESULT);
                                 startActivity(intent);
                                 Log.i(TAG, "MainTab NavDelegate: startActivity called for main intent.");
                             } else {
@@ -1270,15 +1294,23 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                     sessionUrlMap.put(session, newUri);
                     mLastValidUrl = newUri; // Update last valid URL
                     if (session == getActiveSession()) {
-                            runOnUiThread(() -> {
-                            urlBar.setText(newUri);
-                                if (!isControlBarExpanded) {
-                                minimizedUrlBar.setText(newUri);
+                        runOnUiThread(() -> {
+                            MainActivity.this.updateUIForActiveSession();
+                            mLastValidUrl = newUri; // Update last valid URL on successful navigation
+
+                            // A new page has loaded, so we must update our state for the TV cursor.
+                            if (isTvDevice()) {
+                                // Ensure geckoView is not null before using it
+                                if (geckoView != null) {
+                                    mCanScrollUp = geckoView.canScrollVertically(-1);
                                 }
-                            });
-                        }
+                                updateFocusableRects();
+                            }
+                        });
                     }
-                    }
+                    saveSessionState();
+                }
+            }
 
             // This onNewSession is called when the main tab (newSession) tries to open a popup/new window
                     @Override
@@ -2363,6 +2395,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         }
 
         lastScrollY = scrollY;
+
+        // Update focusable rectangles for the TV cursor
+        updateFocusableRects();
     }
 
     // Method to apply runtime settings based on SharedPreferences
@@ -3997,53 +4032,17 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     }
 
     private void applyImmersiveMode(boolean immersive) {
-        if (android.os.Build.VERSION.SDK_INT >= 21) {
-            View decorView = getWindow().getDecorView();
-            int uiOptions = decorView.getSystemUiVisibility();
-
-            if (immersive) {
-                // Flags to make content extend into status/nav bar areas
-                uiOptions |= View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
-                uiOptions |= View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
-                // uiOptions |= View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION; // Optional: if you want content behind nav bar too
-
-                // Flags to actually hide the status bar and nav bar (optional for nav bar)
-                uiOptions |= View.SYSTEM_UI_FLAG_FULLSCREEN; // Hides status bar
-                // uiOptions |= View.SYSTEM_UI_FLAG_HIDE_NAVIGATION; // Optional: Hides navigation bar
-
-                // Flag for sticky immersive mode
-                uiOptions |= View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
-
-                // Make status bar transparent so if it temporarily appears (sticky mode), content is behind it
-                getWindow().setStatusBarColor(android.graphics.Color.TRANSPARENT);
-                // Optional: Make navigation bar transparent if LAYOUT_HIDE_NAVIGATION is used
-                // getWindow().setNavigationBarColor(android.graphics.Color.TRANSPARENT);
-
-            } else {
-                // Clear fullscreen flags
-                uiOptions &= ~View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
-                uiOptions &= ~View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
-                // uiOptions &= ~View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
-                uiOptions &= ~View.SYSTEM_UI_FLAG_FULLSCREEN;
-                // uiOptions &= ~View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
-                uiOptions &= ~View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
-
-                // Restore default status bar color (you might need to define one)
-                // For now, setting to a common default (e.g., black or your theme's primaryDark)
-                // If your theme handles this, you might not need to set it explicitly.
-                // Consider a theme attribute for this color.
-                TypedValue typedValue = new TypedValue();
-                getTheme().resolveAttribute(android.R.attr.statusBarColor, typedValue, true);
-                int statusBarColorDefault = typedValue.resourceId != 0 ? ContextCompat.getColor(this, typedValue.resourceId) : android.graphics.Color.BLACK;
-                getWindow().setStatusBarColor(statusBarColorDefault);
-
-
-                // Restore default navigation bar color if it was changed
-                // getTheme().resolveAttribute(android.R.attr.navigationBarColor, typedValue, true);
-                // int navigationBarColorDefault = typedValue.resourceId != 0 ? ContextCompat.getColor(this, typedValue.resourceId) : android.graphics.Color.BLACK;
-                // getWindow().setNavigationBarColor(navigationBarColorDefault);
-            }
-            decorView.setSystemUiVisibility(uiOptions);
+        WindowInsetsControllerCompat insetsController = WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+        if (immersive) {
+            // Hide system bars for immersive mode
+            insetsController.hide(WindowInsetsCompat.Type.systemBars());
+            // Make the behavior sticky
+            insetsController.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        } else {
+            // Show system bars
+            insetsController.show(WindowInsetsCompat.Type.systemBars());
+            // Reset the behavior to default
+            insetsController.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_DEFAULT);
         }
     }
 
@@ -4362,6 +4361,21 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         }
     }
 
+    private void updateFocusableRects() {
+        if (isTvDevice()) {
+            focusableRects.clear();
+            if (controlBarElements != null) {
+                for (View view : controlBarElements) {
+                    if (view.getVisibility() == View.VISIBLE && view.isShown()) {
+                        Rect rect = new Rect();
+                        view.getGlobalVisibleRect(rect);
+                        focusableRects.add(rect);
+                    }
+                }
+            }
+        }
+    }
+
     private void centerCursor() {
         if (tvCursorView != null) {
             FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) tvCursorView.getLayoutParams();
@@ -4497,6 +4511,47 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
         // For any other key (e.g., BACK, VOLUME), let the system handle it.
         return super.dispatchKeyEvent(event);
+    }
+
+    private Rect findNearestFocusableArea(int direction) {
+        if (tvCursorView == null) return null;
+
+        float cursorX = tvCursorView.getX() + tvCursorView.getWidth() / 2f;
+        float cursorY = tvCursorView.getY() + tvCursorView.getHeight() / 2f;
+
+        Rect bestCandidate = null;
+        double minDistance = Double.MAX_VALUE;
+
+        // Use the pre-calculated focusableRects list for efficiency and reliability
+        for (Rect rect : focusableRects) {
+            float centerX = rect.centerX();
+            float centerY = rect.centerY();
+
+            boolean isCandidate = false;
+            switch (direction) {
+                case KeyEvent.KEYCODE_DPAD_UP:
+                    if (centerY < cursorY) isCandidate = true;
+                    break;
+                case KeyEvent.KEYCODE_DPAD_DOWN:
+                    if (centerY > cursorY) isCandidate = true;
+                    break;
+                case KeyEvent.KEYCODE_DPAD_LEFT:
+                    if (centerX < cursorX) isCandidate = true;
+                    break;
+                case KeyEvent.KEYCODE_DPAD_RIGHT:
+                    if (centerX > cursorX) isCandidate = true;
+                    break;
+            }
+
+            if (isCandidate) {
+                double distance = Math.sqrt(Math.pow(cursorX - centerX, 2) + Math.pow(cursorY - centerY, 2));
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    bestCandidate = rect;
+                }
+            }
+        }
+        return bestCandidate;
     }
 
     private void simulateTouchEvent(int motionEventAction) {
