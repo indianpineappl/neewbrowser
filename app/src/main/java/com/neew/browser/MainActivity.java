@@ -282,6 +282,8 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private static final String PREF_FULL_DESKTOP_MODEL_ENABLED = "full_desktop_model_enabled"; // New preference key
 
     private boolean isInGeckoViewFullscreen = false; // To track if GeckoView requested fullscreen
+    private Handler inputHandler = new Handler(Looper.getMainLooper());
+    private static final long CURSOR_HIDE_DELAY = 3000; // 3 seconds
     private boolean isInPictureInPictureMode = false; // To track PiP state
     private boolean firstWindowFocus = true; // Add this new field
 
@@ -2270,18 +2272,35 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         });
     }
 
+    /**
+     * Handle back button press with special handling for fullscreen video.
+     * - If in fullscreen video, exit fullscreen and show cursor
+     * - If settings panel is visible, hide it
+     * - Otherwise, perform default back navigation
+     */
     @Override
     public void onBackPressed() {
+        // Check if we're in fullscreen video mode
+        if (isInGeckoViewFullscreen && isFullscreenVideo()) {
+            Log.d(TAG, "onBackPressed: Exiting fullscreen video mode");
+            // This will trigger exitFullScreen() which will show the cursor
+            getActiveSession().exitFullScreen();
+            return;
+        }
+        
+        // Check if settings panel is visible
         if (settingsPanelLayout.getVisibility() == View.VISIBLE) {
             hideSettingsPanel();
             return;
         }
+        
+        // Default back navigation
         GeckoSession activeSession = getActiveSession();
         if (activeSession != null) {
-             Log.d(TAG, "onBackPressed: Calling goBack() on active GeckoSession.");
-             activeSession.goBack();
+            Log.d(TAG, "onBackPressed: Calling goBack() on active GeckoSession.");
+            activeSession.goBack();
         } else {
-             super.onBackPressed();
+            super.onBackPressed();
         }
     }
 
@@ -3027,6 +3046,36 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
     // --- End uBlock Origin WebExtension Logic ---
 
+    // --- Video Detection ---
+    /**
+     * Checks if the current fullscreen content is a video.
+     * This is a basic implementation - may need refinement based on actual content.
+     */
+    private boolean isFullscreenVideo() {
+        // Check if we're in fullscreen and have an active media session
+        boolean isVideo = isInGeckoViewFullscreen && mediaPlayingSession != null;
+        Log.d(TAG, "isFullscreenVideo: " + isVideo);
+        return isVideo;
+    }
+
+    // --- Cursor Auto-hide Integration ---
+    private void updateCursorAutoHide() {
+        if (tvCursorView == null) {
+            Log.w(TAG, "updateCursorAutoHide: tvCursorView is null");
+            return;
+        }
+        
+        boolean shouldAutoHide = isFullscreenVideo();
+        tvCursorView.setAutoHideEnabled(shouldAutoHide);
+        
+        if (shouldAutoHide) {
+            tvCursorView.showCursor(); // Show cursor when entering video mode
+        } else {
+            tvCursorView.showCursor(); // Ensure cursor is visible when not in video mode
+        }
+        Log.d(TAG, "Cursor auto-hide " + (shouldAutoHide ? "enabled" : "disabled"));
+    }
+
     // --- Fullscreen Helper Methods ---
     private void enterFullScreen() {
         Log.d(TAG, "Entering fullscreen (enterFullScreen called)");
@@ -3046,6 +3095,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         if (controlBarContainer != null) {
             controlBarContainer.setVisibility(View.GONE);
         }
+        
+        // Update cursor auto-hide state
+        updateCursorAutoHide();
 
         // On mobile, lock orientation
         if (!isTvDevice()) {
@@ -3068,6 +3120,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         if (controlBarContainer != null) {
             controlBarContainer.setVisibility(View.VISIBLE);
         }
+        
+        // Update cursor auto-hide state
+        updateCursorAutoHide();
 
         // On mobile, unlock orientation
         if (!isTvDevice()) {
@@ -4445,11 +4500,24 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     }
 
    
-      @Override
+      /**
+     * Shows the cursor and resets the auto-hide timer if in video fullscreen mode.
+     */
+    private void handleCursorInput() {
+        if (isFullscreenVideo() && tvCursorView != null) {
+            tvCursorView.showCursor();
+            Log.d(TAG, "Cursor shown due to input");
+        }
+    }
+
+    @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        // Only handle Exit button on TV devices
+        // Handle cursor visibility for any key event
         if (isTvDevice() && event.getAction() == KeyEvent.ACTION_DOWN) {
-            android.util.Log.d("KeyTest", "Key pressed: " + event.getKeyCode());
+            // Show cursor on any key press in TV mode
+            handleCursorInput();
+            
+            // Handle Exit button on TV devices
             if (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE) {
                 finishAffinity();
                 return true;
@@ -4565,6 +4633,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         
         // If the key was a D-PAD key, we consume the event (both down and up) to prevent it from reaching the webpage.
         if (keyCode >= KeyEvent.KEYCODE_DPAD_UP && keyCode <= KeyEvent.KEYCODE_DPAD_CENTER) {
+            // For D-PAD keys, we've already handled cursor visibility in the ACTION_DOWN case
             return true;
         }
 
