@@ -30,7 +30,9 @@ prefs:
   # Sets the maximum time a script can run without yielding.
   # 0 means indefinite (disables timeout). Use with caution.
   # This is to prevent the "script terminated" errors seen with some players.
-  dom.max_script_run_time: 60
+  dom.max_script_run_time: 0
+  dom.max_chrome_script_run_time: 0
+  browser.contentblocking.features.strict: false
 
   # --- Power Management ---
   # Allow scripts to use the Wake Lock API to keep the screen on.
