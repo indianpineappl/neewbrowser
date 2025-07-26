@@ -260,7 +260,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private GeckoView geckoView; // This line acts as a sentinel for where the replacement should roughly end before other major fields.
 
     private GeckoSession geckoSession;
-    private GeckoRuntime runtime;
+    private static GeckoRuntime runtime; // Make GeckoRuntime a singleton
     private EditText urlBar;
     private ProgressBar progressBar;
     private ImageButton backButton;
@@ -436,6 +436,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             prefs.edit().putBoolean(PREF_IMMERSIVE_MODE_ENABLED, isChecked).apply();
             applyImmersiveMode(isChecked);
         });
+
+        // --- GeckoRuntime Singleton Fix ---
+        if (runtime == null) {
+            runtime = GeckoRuntime.create(getApplicationContext());
+        }
         // Apply immersive mode on startup - This will be re-asserted in onWindowFocusChanged too
         applyImmersiveMode(panelImmersiveSwitch.isChecked());
 
@@ -498,7 +503,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 Log.w(TAG, "GeckoView config file not found or could not be copied.");
             }
 
-            runtime = GeckoRuntime.create(this, runtimeSettingsBuilder.build());
+            runtime = GeckoRuntime.create(getApplicationContext(), runtimeSettingsBuilder.build());
             Log.i(TAG, "GeckoRuntime created.");
 
             applyRuntimeSettings(); // Apply other dynamic settings
@@ -4819,7 +4824,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             if (runtime == null) {
                 GeckoRuntimeSettings.Builder runtimeSettingsBuilder = new GeckoRuntimeSettings.Builder();
                 runtimeSettingsBuilder.consoleOutput(true);
-                runtime = GeckoRuntime.create(this, runtimeSettingsBuilder.build());
+                runtime = GeckoRuntime.create(getApplicationContext(), runtimeSettingsBuilder.build());
                 applyRuntimeSettings();
                 initializeUBlockOrigin();
             }
