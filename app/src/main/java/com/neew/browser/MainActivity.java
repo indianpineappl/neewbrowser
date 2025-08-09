@@ -73,6 +73,7 @@ import androidx.recyclerview.widget.DividerItemDecoration;
 import androidx.recyclerview.widget.ItemTouchHelper;
 import org.json.JSONArray;
 import org.json.JSONException;
+import org.json.JSONObject;
 import java.util.HashSet;
 import java.util.Set;
 import android.view.MotionEvent;
@@ -238,6 +239,13 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private SwitchCompat panelUBlockSwitch;
     private LinearLayout panelUBlockLayout; // New field for the layout
     private Button panelApplyButton;
+
+    // --- TV Element-Targeted Scrolling (WebExtension-assisted) ---
+    private WebExtension tvScrollExtension = null; // content.js under assets/webext
+    private boolean tvElementScrollEnabled = true; // developer toggle can wire later
+    private float tvDevicePixelRatio = 1.0f; // CSS px conversion cache
+    private static final int TV_EXT_SCROLL_CSS_PX = 100; // element scroll step in CSS px
+    private static final int TV_EXT_TIMEOUT_MS = 600; // timeout before fallback
     private Button panelCancelButton;
 
     private static final int REQUEST_CODE_WRITE_STORAGE = 1001;
@@ -508,11 +516,16 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
             applyRuntimeSettings(); // Apply other dynamic settings
             initializeUBlockOrigin(); // Initialize uBlock Origin after runtime is ready
+            // Ensure TV Scroll helper extension is available (loads content.js)
+            ensureTvScrollExtension();
         } else {
             Log.d(TAG, "Reusing existing GeckoRuntime");
             // If reusing, maybe re-apply dynamic settings?
             applyRuntimeSettings(); // Consider if needed on reuse
             initializeUBlockOrigin(); // Initialize uBlock Origin if runtime is being reused
+            ensureTvScrollExtension();
+            // Retry a few times in case controller wasn't ready yet
+            scheduleEnsureTvScrollExtensionRetries(3, 500);
         }
 
         // --- Restore Session State --- 
@@ -744,6 +757,241 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         } else {
             Log.d(TAG, "[StorageDebug] Threshold not reached, no dialog.");
         }
+    }
+
+    // --- TV Scroll Extension Helpers ---
+    private org.mozilla.geckoview.WebExtension.Port tvPort = null;
+    private final Map<String, Runnable> tvPendingFail = new HashMap<>();
+    private int tvReqCounter = 1;
+    // Track requests initiated from top-edge UP so we can react to ok=false immediately
+    private final Map<String, Boolean> tvPendingTopEdgeUp = new HashMap<>();
+
+    // We now communicate with the background page's native port instead of content directly.
+    // No session message delegate required.
+    private void ensureTvScrollExtension() {
+        if (runtime == null) return;
+        try {
+            org.mozilla.geckoview.WebExtensionController controller = runtime.getWebExtensionController();
+            if (controller == null) {
+                Log.w(TAG, "[TV][EXT] ensureTvScrollExtension: controller is null (will rely on retry if scheduled)");
+                return;
+            }
+            // Use folder path with trailing slash; no explicit ID for simple asset extension
+            controller.ensureBuiltIn("resource://android/assets/webext/", "tv-scroll-helper@neew.browser")
+                .accept(ext -> {
+                    tvScrollExtension = ext;
+                    Log.i(TAG, "[TV][EXT] ensured built-in extension: " + (ext != null ? ext.id : "null"));
+                    if (ext != null) {
+                        // Background messaging delegate (owns native port via background.js)
+                        org.mozilla.geckoview.WebExtension.MessageDelegate bgDelegate = new org.mozilla.geckoview.WebExtension.MessageDelegate() {
+                            @Override
+                            public void onConnect(@NonNull org.mozilla.geckoview.WebExtension.Port port) {
+                                Log.d(TAG, "[TV][EXT] onConnect (BG) port=" + port);
+                                org.mozilla.geckoview.WebExtension.PortDelegate portDelegate = new org.mozilla.geckoview.WebExtension.PortDelegate() {
+                                    @Override
+                                    public void onPortMessage(@NonNull Object message, @NonNull org.mozilla.geckoview.WebExtension.Port p) {
+                                        Log.d(TAG, "[TV][EXT] onPortMessage BG msg=" + String.valueOf(message));
+                                        try {
+                                            String id = null;
+                                            String type = null;
+                                            Boolean ok = null;
+                                            if (message instanceof JSONObject) {
+                                                JSONObject jo = (JSONObject) message;
+                                                id = jo.optString("id", null);
+                                                type = jo.optString("type", null);
+                                                if (jo.has("ok")) ok = jo.optBoolean("ok", false);
+                                            } else if (message instanceof String) {
+                                                try {
+                                                    JSONObject jo = new JSONObject((String) message);
+                                                    id = jo.optString("id", null);
+                                                    type = jo.optString("type", null);
+                                                    if (jo.has("ok")) ok = jo.optBoolean("ok", false);
+                                                } catch (Exception ignored) {
+                                                }
+                                            } else if (message instanceof Map) {
+                                                Map<?, ?> map = (Map<?, ?>) message;
+                                                Object idObj = map.get("id");
+                                                if (idObj != null) id = String.valueOf(idObj);
+                                                Object typeObj = map.get("type");
+                                                if (typeObj != null) type = String.valueOf(typeObj);
+                                                Object okObj = map.get("ok");
+                                                if (okObj instanceof Boolean) ok = (Boolean) okObj;
+                                            }
+                                            if (id != null && "scrollAtPoint:done".equals(type)) {
+                                                Runnable failCb;
+                                                synchronized (tvPendingFail) {
+                                                    failCb = tvPendingFail.remove(id);
+                                                }
+                                                if (failCb != null) {
+                                                    Log.d(TAG, "[TV][EXT] cleared timeout for id=" + id);
+                                                }
+                                                boolean wasTopEdgeUp;
+                                                synchronized (tvPendingTopEdgeUp) {
+                                                    wasTopEdgeUp = tvPendingTopEdgeUp.remove(id) == Boolean.TRUE;
+                                                }
+                                                if (wasTopEdgeUp) {
+                                                    final boolean moved = Boolean.TRUE.equals(ok);
+                                                    Log.d(TAG, "[TV][EXT] topEdgeUp result ok=" + moved + " id=" + id);
+                                                    if (!moved) {
+                                                        // No element or root movement -> decide app behavior now
+                                                        // If root can scroll up, do it; otherwise enter UI focus
+                                                        runOnUiThread(() -> {
+                                                            if (mCanScrollUp) {
+                                                                Log.d(TAG, "[TV][SCROLL] topEdgeUp ok=false but root can scroll -> rootScrollUp");
+                                                                simulateScroll(true);
+                                                            } else {
+                                                                Log.d(TAG, "[TV][FOCUS] topEdgeUp ok=false and root cannot scroll -> enterUiFocus");
+                                                                setUiFocus(true);
+                                                            }
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                        } catch (Throwable t) {
+                                            Log.w(TAG, "[TV][EXT] BG onPortMessage parse", t);
+                                        }
+                                    }
+
+                                    @Override
+                                    public void onDisconnect(@NonNull org.mozilla.geckoview.WebExtension.Port p) {
+                                        Log.d(TAG, "[TV][EXT] BG port disconnected");
+                                        if (p == tvPort) tvPort = null;
+                                    }
+                                };
+                                port.setDelegate(portDelegate);
+                                tvPort = port;
+                            }
+                        };
+                        // Namespace must match background.js connectNative('neewbrowser')
+                        ext.setMessageDelegate(bgDelegate, "neewbrowser");
+                        // No session delegate; background relays to content.
+                    }
+                });
+        } catch (Exception e) {
+            Log.e(TAG, "[TV][EXT] ensureTvScrollExtension exception", e);
+        }
+    }
+
+    private void scheduleEnsureTvScrollExtensionRetries(int attempts, long delayMs) {
+        if (attempts <= 0) return;
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            Log.d(TAG, "[TV][EXT] retry ensureTvScrollExtension attemptsLeft=" + attempts);
+            ensureTvScrollExtension();
+            if (attempts - 1 > 0 && tvPort == null) {
+                scheduleEnsureTvScrollExtensionRetries(attempts - 1, delayMs);
+            }
+        }, delayMs);
+    }
+
+    private void ensureTvScrollExtension(GeckoSession session) {
+        // No per-session attach needed for content scripts, but we ensure once globally
+        ensureTvScrollExtension();
+        // Optionally refresh DPR for this session
+        if (isTvDevice() && tvElementScrollEnabled) {
+            queryTvDpr(session);
+        }
+    }
+
+    private void queryTvDpr(GeckoSession session) {
+        // Fallback: use Android display density as DPR approximation
+        try {
+            float density = getResources().getDisplayMetrics().density;
+            tvDevicePixelRatio = density > 0 ? density : 1.0f;
+            Log.d(TAG, "[TV][EXT] DPR (approx) from Android density: " + tvDevicePixelRatio);
+        } catch (Exception e) {
+            tvDevicePixelRatio = 1.0f;
+            Log.w(TAG, "[TV][EXT] DPR fallback to 1.0 due to exception", e);
+        }
+    }
+
+    private void tryElementScrollAtCursor(GeckoSession session, int dyCss, @Nullable Runnable onFail) {
+        tryElementScrollAtCursorWithRetryFlag(session, dyCss, onFail, true, false);
+    }
+
+    private void tryElementScrollAtCursorWithRetryFlag(GeckoSession session, int dyCss, @Nullable Runnable onFail, boolean allowRetry) {
+        tryElementScrollAtCursorWithRetryFlag(session, dyCss, onFail, allowRetry, false);
+    }
+
+    // Internal: tagTopEdgeUp indicates this request originated from DPAD_UP at top edge
+    private void tryElementScrollAtCursorWithRetryFlag(GeckoSession session, int dyCss, @Nullable Runnable onFail, boolean allowRetry, boolean tagTopEdgeUp) {
+        if (session == null || geckoView == null || tvCursorView == null) {
+            if (onFail != null) onFail.run();
+            return;
+        }
+
+        // Compute cursor center relative to GeckoView (device pixels). Send device coords to content;
+        // let content convert using its window.devicePixelRatio. This avoids mismatches.
+        int[] cursorLoc = new int[2];
+        int[] viewLoc = new int[2];
+        tvCursorView.getLocationOnScreen(cursorLoc);
+        geckoView.getLocationOnScreen(viewLoc);
+        float xDevice = (cursorLoc[0] - viewLoc[0]) + (tvCursorView.getWidth() / 2f);
+        float yDevice = (cursorLoc[1] - viewLoc[1]) + (tvCursorView.getHeight() / 2f);
+
+        // Send message over native messaging Port; if missing, allow a one-shot delayed retry
+        org.mozilla.geckoview.WebExtension.Port port = tvPort;
+        if (port == null) {
+            Log.w(TAG, "[TV][EXT] no Port for session");
+            ensureTvScrollExtension();
+            if (allowRetry) {
+                new Handler(Looper.getMainLooper()).postDelayed(() ->
+                    tryElementScrollAtCursorWithRetryFlag(session, dyCss, onFail, false), 250);
+            } else {
+                if (onFail != null) onFail.run();
+            }
+            return;
+        }
+        String reqId = "r" + (tvReqCounter++);
+        org.json.JSONObject msg = new org.json.JSONObject();
+        try {
+            final float dpr = getResources().getDisplayMetrics().density;
+            msg.put("id", reqId);
+            msg.put("cmd", "scrollAtPoint");
+            msg.put("x", xDevice);
+            msg.put("y", yDevice);
+            msg.put("dy", dyCss);
+            msg.put("dpr", dpr);
+        } catch (org.json.JSONException je) {
+            Log.e(TAG, "[TV][EXT] JSON build error", je);
+            if (onFail != null) onFail.run();
+            return;
+        }
+
+        if (tagTopEdgeUp) {
+            synchronized (tvPendingTopEdgeUp) { tvPendingTopEdgeUp.put(reqId, Boolean.TRUE); }
+        }
+
+        final Handler handler = new Handler(Looper.getMainLooper());
+        final Runnable timeout = () -> {
+            Runnable failCb;
+            synchronized (tvPendingFail) {
+                failCb = tvPendingFail.remove(reqId);
+            }
+            synchronized (tvPendingTopEdgeUp) { tvPendingTopEdgeUp.remove(reqId); }
+            if (failCb != null) {
+                Log.w(TAG, "[TV][EXT] scrollAtPoint timeout -> fallback");
+                failCb.run();
+            }
+        };
+        synchronized (tvPendingFail) {
+            tvPendingFail.put(reqId, onFail != null ? onFail : () -> {});
+        }
+        handler.postDelayed(timeout, TV_EXT_TIMEOUT_MS);
+        try {
+            port.postMessage(msg);
+            Log.d(TAG, "[TV][EXT] sent scrollAtPoint reqId=" + reqId + " dyCss=" + dyCss + " dev=(" + xDevice + "," + yDevice + ")");
+        } catch (Exception e) {
+            synchronized (tvPendingFail) { tvPendingFail.remove(reqId); }
+            synchronized (tvPendingTopEdgeUp) { tvPendingTopEdgeUp.remove(reqId); }
+            handler.removeCallbacks(timeout);
+            Log.e(TAG, "[TV][EXT] port.postMessage failed -> fallback", e);
+            if (onFail != null) onFail.run();
+        }
+    }
+
+    // Convenience overload to use default dy based on direction; currently unused outside DPAD paths
+    private void tryElementScrollAtCursor(GeckoSession session) {
+        tryElementScrollAtCursor(session, TV_EXT_SCROLL_CSS_PX, null);
     }
 
     private long getAppUsedStorageBytes() {
@@ -1339,8 +1587,17 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                                     mCanScrollUp = geckoView.canScrollVertically(-1);
                                 }
                                 updateFocusableRects();
+                                Log.d(TAG, "[TV][NAV] onLocationChange url=" + newUri + " mCanScrollUp=" + mCanScrollUp + " focusableRects=" + (focusableRects != null ? focusableRects.size() : -1));
+
+                                // Refresh DPR for CSS/device px conversion used by content.js
+                                if (isTvDevice() && tvElementScrollEnabled) {
+                                    queryTvDpr(session);
+                                }
                             }
                         });
+
+                        // Ensure TV scroll extension is enabled for this session
+                        ensureTvScrollExtension(session);
                     }
                     saveSessionState();
                 }
@@ -2446,6 +2703,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         // Update our scroll tracking
         mLastScrollY = scrollY;
         mCanScrollUp = scrollY > 0;
+        Log.d(TAG, "[TV][SCROLL] onScrollChanged x=" + scrollX + " y=" + scrollY + " mCanScrollUp=" + mCanScrollUp);
 
         // Existing scroll handling code
         int dy = scrollY - lastScrollY;
@@ -4521,6 +4779,15 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         if (isTvDevice() && event.getAction() == KeyEvent.ACTION_DOWN) {
             // Show cursor on any key press in TV mode
             handleCursorInput();
+            // Diagnostics: DPAD input state on ACTION_DOWN
+            int _cx = -1, _cy = -1;
+            if (tvCursorView != null && tvCursorView.getLayoutParams() instanceof FrameLayout.LayoutParams) {
+                FrameLayout.LayoutParams _lp = (FrameLayout.LayoutParams) tvCursorView.getLayoutParams();
+                _cx = _lp.leftMargin;
+                _cy = _lp.topMargin;
+            }
+            Log.d(TAG, "[TV][DPAD] key=" + event.getKeyCode() + " action=DOWN uiFocused=" + isUiFocused +
+                    " cursor=(" + _cx + "," + _cy + ") step=" + currentStepSize);
             
             // Handle Exit button on TV devices
             if (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE) {
@@ -4613,12 +4880,30 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         params.topMargin = Math.max(0, currentY - currentStepSize);
                         tvCursorView.setLayoutParams(params);
                     } else {
-                        // If at the top edge, check if we can scroll up further.
-                        if (mCanScrollUp) {
-                            simulateScroll(true); // true = scroll content up
+                        // At the top edge: try element-level scroll first; if not possible, fallback to root or UI focus.
+                        GeckoSession active = getActiveSession();
+                        if (tvElementScrollEnabled && active != null) {
+                            Log.d(TAG, "[TV][EXT] topEdge -> try elementScrollUp first");
+                            boolean willFallbackToRoot = mCanScrollUp; // else we'll enter UI focus
+                            Runnable onFail = () -> {
+                                if (willFallbackToRoot) {
+                                    Log.d(TAG, "[TV][SCROLL] extFailed -> rootScrollUp fallback");
+                                    simulateScroll(true);
+                                } else {
+                                    Log.d(TAG, "[TV][FOCUS] extFailed and cannot rootScrollUp -> enterUiFocus");
+                                    setUiFocus(true);
+                                }
+                            };
+                            // Tag this request as a top-edge UP so that ok=false leads to immediate focus/root decision
+                            tryElementScrollAtCursorWithRetryFlag(active, -TV_EXT_SCROLL_CSS_PX, onFail, true, true);
                         } else {
-                            // Cannot scroll further up, so transition focus to the UI controls.
-                            setUiFocus(true);
+                            if (mCanScrollUp) {
+                                Log.d(TAG, "[TV][SCROLL] topEdge mCanScrollUp=true -> rootScrollUp");
+                                simulateScroll(true); // true = scroll content up
+                            } else {
+                                Log.d(TAG, "[TV][FOCUS] topEdge mCanScrollUp=false -> enterUiFocus");
+                                setUiFocus(true);
+                            }
                         }
                     }
                     break;
@@ -4629,8 +4914,19 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         params.topMargin = Math.min(geckoViewBottomEdge, currentY + currentStepSize);
                         tvCursorView.setLayoutParams(params);
                     } else {
-                        // If at the bottom edge, scroll the content down.
-                        simulateScroll(false); // false = scroll content down
+                        // If at the bottom edge, try element-level scroll first, fallback to root scroll.
+                        GeckoSession active = getActiveSession();
+                        if (tvElementScrollEnabled && active != null) {
+                            Log.d(TAG, "[TV][EXT] bottomEdge -> try elementScrollDown first");
+                            Runnable onFail = () -> {
+                                Log.d(TAG, "[TV][SCROLL] extFailed -> rootScrollDown fallback");
+                                simulateScroll(false);
+                            };
+                            tryElementScrollAtCursor(active, TV_EXT_SCROLL_CSS_PX, onFail);
+                        } else {
+                            Log.d(TAG, "[TV][SCROLL] bottomEdge -> rootScrollDown");
+                            simulateScroll(false); // false = scroll content down
+                        }
                     }
                     break;
             }
@@ -4793,52 +5089,13 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
         // Use PanZoomController's built-in scrollBy method for a reliable scroll.
         // SCROLL_BEHAVIOR_AUTO provides an instantaneous jump, which feels better for D-pad navigation.
+        Log.d(TAG, "[TV][SCROLL] PZC.scrollBy dy=" + (scrollDistance * direction));
         pzc.scrollBy(
             ScreenLength.fromPixels(0),
             ScreenLength.fromPixels(scrollDistance * direction),
             PanZoomController.SCROLL_BEHAVIOR_AUTO
         );
 
-        Log.d(TAG, "Simulated scroll via PanZoomController.scrollBy.");
-    }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        Log.d(TAG, "onResume: Checking GeckoRuntime and GeckoSession state");
-        boolean needsRecovery = false;
-        // Check if runtime or session is null or closed
-        if (runtime == null) {
-            Log.w(TAG, "onResume: GeckoRuntime is null. Needs recovery.");
-            needsRecovery = true;
-        } else if (getActiveSession() == null) {
-            Log.w(TAG, "onResume: Active GeckoSession is null. Needs recovery.");
-            needsRecovery = true;
-        } else if (!getActiveSession().isOpen()) {
-            Log.w(TAG, "onResume: Active GeckoSession is not open. Needs recovery.");
-            needsRecovery = true;
-        }
-        if (needsRecovery) {
-            // Attempt to recover: re-initialize runtime and session, reload last URL
-            Log.i(TAG, "onResume: Recovering GeckoRuntime and GeckoSession");
-            if (runtime == null) {
-                GeckoRuntimeSettings.Builder runtimeSettingsBuilder = new GeckoRuntimeSettings.Builder();
-                runtimeSettingsBuilder.consoleOutput(true);
-                runtime = GeckoRuntime.create(getApplicationContext(), runtimeSettingsBuilder.build());
-                applyRuntimeSettings();
-                initializeUBlockOrigin();
-            }
-            // Clear old sessions and create a new one with last known URL
-            geckoSessionList.clear();
-            sessionUrlMap.clear();
-            sessionSnapshotMap.clear();
-            activeSessionIndex = -1;
-            String lastUrl = mLastValidUrl;
-            if (lastUrl == null || lastUrl.isEmpty()) {
-                lastUrl = "https://www.google.com";
-            }
-            createNewTab(lastUrl, true);
-            Log.i(TAG, "onResume: Recovery complete. New tab loaded: " + lastUrl);
-        }
+        Log.d(TAG, "[TV][SCROLL] PZC.scrollBy invoked");
     }
 }
