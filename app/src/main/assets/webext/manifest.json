@@ -1,0 +1,29 @@
+{
+  "manifest_version": 2,
+  "name": "TV Scroll Helper",
+  "version": "1.0.1",
+  "description": "Scroll the element under the cursor for TV mode.",
+  "permissions": [
+    "nativeMessaging",
+    "nativeMessagingFromContent",
+    "geckoViewAddons",
+    "tabs"
+  ],
+  "applications": {
+    "gecko": {
+      "id": "tv-scroll-helper@neew.browser"
+    }
+  },
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": true
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}
