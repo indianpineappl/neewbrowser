@@ -217,6 +217,14 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private List<GeckoSession> geckoSessionList = new ArrayList<>();
     private int activeSessionIndex = -1;
     private Map<GeckoSession, String> sessionUrlMap = new HashMap<>();
+    // Track nested popup depth per session: 0 = main tab, 1 = popup, 2 = grandchild, ...
+    private final Map<GeckoSession, Integer> sessionPopupDepth = new HashMap<>();
+    // Track last user gesture time per session (ms since epoch) to gate popups
+    private final Map<GeckoSession, Long> sessionLastGestureMs = new HashMap<>();
+    // Track last popup creation time per session for rate limiting
+    private final Map<GeckoSession, Long> sessionLastPopupMs = new HashMap<>();
+    private static final long POPUP_RATE_LIMIT_MS = 200L; // 1 popup per 200ms per session
+    private static final long USER_GESTURE_WINDOW_MS = 5000L; // gesture considered fresh within 5s
     private static final int MAX_SNAPSHOTS = 10; // Limit snapshots stored
     private static final int SNAPSHOT_WIDTH = 300; // Target width for resized snapshots
     
@@ -1570,6 +1578,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 if (newUri != null) {
                     // Always update the map with the new URI for the session.
                     sessionUrlMap.put(session, newUri);
+                    if (Boolean.TRUE.equals(hasUserGesture)) {
+                        synchronized (sessionLastGestureMs) {
+                            sessionLastGestureMs.put(session, System.currentTimeMillis());
+                        }
+                    }
 
                     // Only update the UI if the change is for the currently active session.
                     if (session == getActiveSession()) {
@@ -1603,19 +1616,43 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 }
             }
 
-            // This onNewSession is called when the main tab (newSession) tries to open a popup/new window
-                    @Override
-            public GeckoResult<GeckoSession> onNewSession(GeckoSession originatingSession, String uri) {
-                Log.d(TAG, "createNewTab NavDelegate: onNewSession called for URI: " + uri + " from session: " + (sessionUrlMap.containsKey(originatingSession) ? sessionUrlMap.get(originatingSession) : "N/A"));
+// This onNewSession is called when the main tab (newSession) tries to open a popup/new window
+@Override
+public GeckoResult<GeckoSession> onNewSession(GeckoSession originatingSession, String uri) {
+Log.d(TAG, "createNewTab NavDelegate: onNewSession called for URI: " + uri + " from session: " + (sessionUrlMap.containsKey(originatingSession) ? sessionUrlMap.get(originatingSession) : "N/A"));
 
-                // 1. Create the GeckoSession object for the new tab/popup.
-                //    DO NOT CALL .open(runtime) on it here. GeckoView will do that.
-                final GeckoSession newTabSession = new GeckoSession();
-                
-                // Apply user agent settings to the popup session
-                applyUserAgentToSession(newTabSession, uri);
-                
-                newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.this
+// 1. Create the GeckoSession object for the new tab/popup.
+//    DO NOT CALL .open(runtime) on it here. GeckoView will do that.
+final GeckoSession newTabSession = new GeckoSession();
+// Depth: parent depth + 1 (default 0 if not found)
+int parentDepth = 0;
+synchronized (sessionPopupDepth) {
+Integer d = sessionPopupDepth.get(originatingSession);
+if (d != null) parentDepth = d;
+}
+final int newDepth = parentDepth + 1;
+synchronized (sessionPopupDepth) { sessionPopupDepth.put(newTabSession, newDepth); }
+
+// Enforce per-session rate limit
+long now = System.currentTimeMillis();
+boolean rateOk = true;
+synchronized (sessionLastPopupMs) {
+    Long last = sessionLastPopupMs.get(originatingSession);
+    if (last != null && (now - last) < POPUP_RATE_LIMIT_MS) {
+        rateOk = false;
+    } else {
+        sessionLastPopupMs.put(originatingSession, now);
+    }
+}
+if (!rateOk) {
+    Log.w(TAG, "Popup creation rate-limited for session: " + (sessionUrlMap.get(originatingSession)));
+    return GeckoResult.fromValue(null);
+}
+        
+// Apply user agent settings to the popup session
+applyUserAgentToSession(newTabSession, uri);
+        
+newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.this
 
                 // 2. Configure its delegates:
                 newTabSession.setProgressDelegate(new ProgressDelegate() {
@@ -1739,7 +1776,31 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                     @Override
                     public GeckoResult<GeckoSession> onNewSession(GeckoSession currentPopupSession, String newUriFromPopup) {
                         Log.i(TAG, "Grandchild Popup NavDelegate: onNewSession for URI: " + newUriFromPopup + " from popup session: " + (sessionUrlMap.containsKey(currentPopupSession) ? sessionUrlMap.get(currentPopupSession) : "N/A"));
+                        // Compute next depth (no cap, track for observability/UX)
+                        int parentDepth2 = 0;
+                        synchronized (sessionPopupDepth) {
+                            Integer d2 = sessionPopupDepth.get(currentPopupSession);
+                            if (d2 != null) parentDepth2 = d2;
+                        }
+                        final int nextDepth = parentDepth2 + 1;
                         final GeckoSession grandChildSession = new GeckoSession();
+                        synchronized (sessionPopupDepth) { sessionPopupDepth.put(grandChildSession, nextDepth); }
+
+                        // Rate limit and gesture check for nested popups
+                        long now2 = System.currentTimeMillis();
+                        boolean rateOk2 = true;
+                        synchronized (sessionLastPopupMs) {
+                            Long last2 = sessionLastPopupMs.get(currentPopupSession);
+                            if (last2 != null && (now2 - last2) < POPUP_RATE_LIMIT_MS) {
+                                rateOk2 = false;
+                            } else {
+                                sessionLastPopupMs.put(currentPopupSession, now2);
+                            }
+                        }
+                        if (!rateOk2) {
+                            Log.w(TAG, "Nested popup creation rate-limited for session: " + (sessionUrlMap.get(currentPopupSession)));
+                            return GeckoResult.fromValue(null);
+                        }
                         
                         // Apply user agent settings to the grandchild popup session
                         applyUserAgentToSession(grandChildSession, newUriFromPopup);
@@ -1866,9 +1927,30 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
                     @Override
                             public GeckoResult<GeckoSession> onNewSession(GeckoSession session, String uri) {
-                                Log.w(TAG, "GrandChildPopup's NavDelegate: Blocking further (3rd level) nested popup: " + uri);
-                                Toast.makeText(MainActivity.this, "Further nested popups are blocked.", Toast.LENGTH_SHORT).show();
-                                return null; // Block 3rd level popups
+                                // Fallback nested onNewSession: apply tracking, gesture and rate checks
+                                int parentDepth3 = 0;
+                                synchronized (sessionPopupDepth) {
+                                    Integer d3 = sessionPopupDepth.get(session);
+                                    if (d3 != null) parentDepth3 = d3;
+                                }
+                                final int nextDepth2 = parentDepth3 + 1;
+                                long now3 = System.currentTimeMillis();
+                                boolean rateOk3 = true;
+                                synchronized (sessionLastPopupMs) {
+                                    Long last3 = sessionLastPopupMs.get(session);
+                                    if (last3 != null && (now3 - last3) < POPUP_RATE_LIMIT_MS) {
+                                        rateOk3 = false;
+                                    } else {
+                                        sessionLastPopupMs.put(session, now3);
+                                    }
+                                }
+                                if (!rateOk3) {
+                                    Log.w(TAG, "Popup creation rate-limited (fallback) for session: " + (sessionUrlMap.get(session)));
+                                    return GeckoResult.fromValue(null);
+                                }
+                                final GeckoSession s = new GeckoSession();
+                                synchronized (sessionPopupDepth) { sessionPopupDepth.put(s, nextDepth2); }
+                                return GeckoResult.fromValue(s);
                             }
                         });
 
@@ -3714,14 +3796,16 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
     // --- Download Handling ---
     private void handleDownloadResponse(org.mozilla.geckoview.WebResponse response) {
-        // Check storage permission
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-            Log.i(TAG, "Storage permission not granted. Requesting...");
-            // Store the response to retry after permission grant
-            pendingDownloadResponse = response; 
-            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_CODE_WRITE_STORAGE);
-            // Don't proceed with download logic yet
-            return; 
+        // Check storage permission (legacy behavior for SDK <= 28). On Android 10+ scoped storage, no runtime write permission is required for DownloadManager to public Downloads.
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                Log.i(TAG, "Storage permission (legacy) not granted. Requesting...");
+                // Store the response to retry after permission grant
+                pendingDownloadResponse = response;
+                ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_CODE_WRITE_STORAGE);
+                // Don't proceed with download logic yet
+                return;
+            }
         }
         
         Log.i(TAG, "Storage permission granted. Proceeding with download.");
@@ -3819,7 +3903,10 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 }
             } else {
                 Log.w(TAG, "WRITE_EXTERNAL_STORAGE permission denied after request.");
-                Toast.makeText(this, "Storage permission is required to download files.", Toast.LENGTH_LONG).show();
+                // Only show toast on legacy devices; on newer devices we shouldn't have requested it.
+                if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                    Toast.makeText(this, "Storage permission is required to download files.", Toast.LENGTH_LONG).show();
+                }
                 pendingDownloadResponse = null; // Clear pending download as permission was denied
             }
         }
