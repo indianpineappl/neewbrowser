@@ -767,12 +767,77 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         }
     }
 
+    // Focus the nearest scrollable element under the cursor to let Gecko handle Arrow key scrolling natively
+    private void tryFocusScrollableAtCursor(GeckoSession session, @Nullable Runnable onFail) {
+        if (session == null || geckoView == null || tvCursorView == null) {
+            if (onFail != null) onFail.run();
+            return;
+        }
+        int[] cursorLoc = new int[2];
+        int[] viewLoc = new int[2];
+        tvCursorView.getLocationOnScreen(cursorLoc);
+        geckoView.getLocationOnScreen(viewLoc);
+        float xDevice = (cursorLoc[0] - viewLoc[0]) + (tvCursorView.getWidth() / 2f);
+        float yDevice = (cursorLoc[1] - viewLoc[1]) + (tvCursorView.getHeight() / 2f);
+
+        org.mozilla.geckoview.WebExtension.Port port = tvPort;
+        if (port == null) {
+            ensureTvScrollExtension();
+            if (onFail != null) onFail.run();
+            return;
+        }
+        String reqId = "f" + (tvReqCounter++);
+        org.json.JSONObject msg = new org.json.JSONObject();
+        try {
+            final float dpr = getResources().getDisplayMetrics().density;
+            msg.put("id", reqId);
+            msg.put("cmd", "focusScrollableAtPoint");
+            msg.put("x", xDevice);
+            msg.put("y", yDevice);
+            msg.put("dpr", dpr);
+        } catch (org.json.JSONException je) {
+            if (onFail != null) onFail.run();
+            return;
+        }
+        try {
+            port.postMessage(msg);
+            Log.d(TAG, "[TV][EXT] sent focusScrollableAtPoint reqId=" + reqId + " dev=(" + xDevice + "," + yDevice + ")");
+        } catch (Exception e) {
+            if (onFail != null) onFail.run();
+        }
+    }
+
     // --- TV Scroll Extension Helpers ---
     private org.mozilla.geckoview.WebExtension.Port tvPort = null;
     private final Map<String, Runnable> tvPendingFail = new HashMap<>();
     private int tvReqCounter = 1;
     // Track requests initiated from top-edge UP so we can react to ok=false immediately
     private final Map<String, Boolean> tvPendingTopEdgeUp = new HashMap<>();
+    // Menu-mode window: time since last content ack for menu navigation
+    private long lastMenuAckTs = 0L;
+    private static final long MENU_MODE_MS = 700L;
+    // During menu-mode, allow a cursor nudge every N vertical presses
+    private int menuModeUpCount = 0;
+    private int menuModeDownCount = 0;
+
+    // Send a tv-menu-nav command to the content script via background port
+    private void sendTvMenuNav(String dir) {
+        org.mozilla.geckoview.WebExtension.Port port = tvPort;
+        if (port == null) {
+            Log.w(TAG, "[TV][DPAD] tv-menu-nav not sent: BG port null");
+            ensureTvScrollExtension();
+            return;
+        }
+        try {
+            JSONObject msg = new JSONObject();
+            msg.put("type", "tv-menu-nav");
+            msg.put("dir", dir);
+            port.postMessage(msg);
+            Log.d(TAG, "[TV][DPAD] sent tv-menu-nav dir=" + dir);
+        } catch (Exception e) {
+            Log.e(TAG, "[TV][DPAD] sendTvMenuNav error", e);
+        }
+    }
 
     // We now communicate with the background page's native port instead of content directly.
     // No session message delegate required.
@@ -808,12 +873,47 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                                                 id = jo.optString("id", null);
                                                 type = jo.optString("type", null);
                                                 if (jo.has("ok")) ok = jo.optBoolean("ok", false);
+                                                if ("tv-menu-nav-ack".equals(type)) {
+                                                    lastMenuAckTs = System.currentTimeMillis();
+                                                    Log.d(TAG, "[TV][DPAD] ack -> menu-mode window started");
+                                                    return;
+                                                }
+                                                // Surface content-script diagnostics
+                                                if ("tv-ext-log".equals(type)) {
+                                                    String text = jo.optString("text", "");
+                                                    if (!text.isEmpty()) {
+                                                        Log.d(TAG, "[TV][EXT][APP] " + text);
+                                                    }
+                                                    return;
+                                                }
+                                                // Optional: content script warmup
+                                                if ("content_ready".equals(type)) {
+                                                    String url = jo.optString("url", "");
+                                                    Log.d(TAG, "[TV][EXT][CT] content_ready url=" + url);
+                                                    // Do not return; other fields may be relevant
+                                                }
                                             } else if (message instanceof String) {
                                                 try {
                                                     JSONObject jo = new JSONObject((String) message);
                                                     id = jo.optString("id", null);
                                                     type = jo.optString("type", null);
                                                     if (jo.has("ok")) ok = jo.optBoolean("ok", false);
+                                                    if ("tv-menu-nav-ack".equals(type)) {
+                                                        lastMenuAckTs = System.currentTimeMillis();
+                                                        Log.d(TAG, "[TV][DPAD] ack(string) -> menu-mode window started");
+                                                        return;
+                                                    }
+                                                    if ("tv-ext-log".equals(type)) {
+                                                        String text = jo.optString("text", "");
+                                                        if (!text.isEmpty()) {
+                                                            Log.d(TAG, "[TV][EXT][APP] " + text);
+                                                        }
+                                                        return;
+                                                    }
+                                                    if ("content_ready".equals(type)) {
+                                                        String url = jo.optString("url", "");
+                                                        Log.d(TAG, "[TV][EXT][CT] content_ready url=" + url);
+                                                    }
                                                 } catch (Exception ignored) {
                                                 }
                                             } else if (message instanceof Map) {
@@ -824,6 +924,24 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                                                 if (typeObj != null) type = String.valueOf(typeObj);
                                                 Object okObj = map.get("ok");
                                                 if (okObj instanceof Boolean) ok = (Boolean) okObj;
+                                                if ("tv-menu-nav-ack".equals(type)) {
+                                                    lastMenuAckTs = System.currentTimeMillis();
+                                                    Log.d(TAG, "[TV][DPAD] ack(map) -> menu-mode window started");
+                                                    return;
+                                                }
+                                                if ("tv-ext-log".equals(type)) {
+                                                    Object textObj = map.get("text");
+                                                    String text = textObj != null ? String.valueOf(textObj) : "";
+                                                    if (!text.isEmpty()) {
+                                                        Log.d(TAG, "[TV][EXT][APP] " + text);
+                                                    }
+                                                    return;
+                                                }
+                                                if ("content_ready".equals(type)) {
+                                                    Object urlObj = map.get("url");
+                                                    String url = urlObj != null ? String.valueOf(urlObj) : "";
+                                                    Log.d(TAG, "[TV][EXT][CT] content_ready url=" + url);
+                                                }
                                             }
                                             if (id != null && "scrollAtPoint:done".equals(type)) {
                                                 Runnable failCb;
@@ -4949,19 +5067,45 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
             int currentX = params.leftMargin;
             int currentY = params.topMargin;
             int geckoViewBottomEdge = getWindowManager().getDefaultDisplay().getHeight() - tvCursorView.getHeight();
+            final long _nowMenu = System.currentTimeMillis();
+            final boolean inMenuMode = (_nowMenu - lastMenuAckTs) < MENU_MODE_MS;
+            if (!inMenuMode) { menuModeUpCount = 0; menuModeDownCount = 0; }
 
             switch (keyCode) {
                 case KeyEvent.KEYCODE_DPAD_LEFT:
+                    // leaving menu area horizontally should reset vertical counters
+                    menuModeUpCount = 0; menuModeDownCount = 0;
                     params.leftMargin = Math.max(0, currentX - currentStepSize);
                     tvCursorView.setLayoutParams(params);
                     break;
 
                 case KeyEvent.KEYCODE_DPAD_RIGHT:
+                    // leaving menu area horizontally should reset vertical counters
+                    menuModeUpCount = 0; menuModeDownCount = 0;
                     params.leftMargin = Math.min(getWindowManager().getDefaultDisplay().getWidth() - tvCursorView.getWidth(), currentX + currentStepSize);
                     tvCursorView.setLayoutParams(params);
                     break;
 
                 case KeyEvent.KEYCODE_DPAD_UP:
+                    // Always forward an app-driven menu navigation message.
+                    sendTvMenuNav("up");
+                    if (inMenuMode) {
+                        // Count and nudge cursor every 3rd press; no page scroll.
+                        menuModeUpCount++; menuModeDownCount = 0;
+                        int mod = menuModeUpCount % 3;
+                        if (mod != 0) {
+                            Log.d(TAG, "[TV][DPAD] inMenuMode: UP press " + menuModeUpCount + " (no cursor move)");
+                            return true;
+                        }
+                        if (currentY > 0) {
+                            params.topMargin = Math.max(0, currentY - currentStepSize);
+                            tvCursorView.setLayoutParams(params);
+                            Log.d(TAG, "[TV][DPAD] inMenuMode: UP nudge cursor");
+                        } else {
+                            Log.d(TAG, "[TV][DPAD] inMenuMode: UP at top edge (no scroll)");
+                        }
+                        return true;
+                    }
                     // If the cursor is not at the top edge, move the cursor.
                     if (currentY > 0) {
                         params.topMargin = Math.max(0, currentY - currentStepSize);
@@ -4970,7 +5114,8 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                         // At the top edge: try element-level scroll first; if not possible, fallback to root or UI focus.
                         GeckoSession active = getActiveSession();
                         if (tvElementScrollEnabled && active != null) {
-                            Log.d(TAG, "[TV][EXT] topEdge -> try elementScrollUp first");
+                            Log.d(TAG, "[TV][EXT] topEdge -> focus scrollable then try elementScrollUp");
+                            tryFocusScrollableAtCursor(active, null);
                             boolean willFallbackToRoot = mCanScrollUp; // else we'll enter UI focus
                             Runnable onFail = () -> {
                                 if (willFallbackToRoot) {
@@ -4996,6 +5141,25 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                     break;
 
                 case KeyEvent.KEYCODE_DPAD_DOWN:
+                    // Always forward an app-driven menu navigation message.
+                    sendTvMenuNav("down");
+                    if (inMenuMode) {
+                        // Count and nudge cursor every 3rd press; no page scroll.
+                        menuModeDownCount++; menuModeUpCount = 0;
+                        int mod = menuModeDownCount % 3;
+                        if (mod != 0) {
+                            Log.d(TAG, "[TV][DPAD] inMenuMode: DOWN press " + menuModeDownCount + " (no cursor move)");
+                            return true;
+                        }
+                        if (currentY < geckoViewBottomEdge) {
+                            params.topMargin = Math.min(geckoViewBottomEdge, currentY + currentStepSize);
+                            tvCursorView.setLayoutParams(params);
+                            Log.d(TAG, "[TV][DPAD] inMenuMode: DOWN nudge cursor");
+                        } else {
+                            Log.d(TAG, "[TV][DPAD] inMenuMode: DOWN at bottom edge (no scroll)");
+                        }
+                        return true;
+                    }
                     // If the cursor is not at the bottom edge, move the cursor.
                     if (currentY < geckoViewBottomEdge) {
                         params.topMargin = Math.min(geckoViewBottomEdge, currentY + currentStepSize);
@@ -5004,7 +5168,8 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                         // If at the bottom edge, try element-level scroll first, fallback to root scroll.
                         GeckoSession active = getActiveSession();
                         if (tvElementScrollEnabled && active != null) {
-                            Log.d(TAG, "[TV][EXT] bottomEdge -> try elementScrollDown first");
+                            Log.d(TAG, "[TV][EXT] bottomEdge -> focus scrollable then try elementScrollDown");
+                            tryFocusScrollableAtCursor(active, null);
                             Runnable onFail = () -> {
                                 Log.d(TAG, "[TV][SCROLL] extFailed -> rootScrollDown fallback");
                                 simulateScroll(false);

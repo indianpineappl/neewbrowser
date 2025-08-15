@@ -20,8 +20,24 @@
       const id = msg && msg.id; const cmd = msg && msg.cmd;
       try {
         if (lastContentTabId != null) {
-          await browser.tabs.sendMessage(lastContentTabId, msg);
-          try { console.log('[TV][EXT][BG] BG->CT forwarded via tabs.sendMessage tab=', lastContentTabId, 'cmd=', cmd); } catch (_) {}
+          // Special-case tv-menu-nav: broadcast to all frames so iframes receive it
+          if (msg && msg.type === 'tv-menu-nav') {
+            try {
+              const frames = await browser.webNavigation.getAllFrames({ tabId: lastContentTabId });
+              for (const f of frames || []) {
+                if (typeof f.frameId === 'number') {
+                  try { await browser.tabs.sendMessage(lastContentTabId, msg, { frameId: f.frameId }); } catch (_) {}
+                }
+              }
+              try { console.log('[TV][EXT][BG] BG->CT broadcast tv-menu-nav to all frames in tab', lastContentTabId); } catch (_) {}
+            } catch (e) {
+              try { console.log('[TV][EXT][BG] getAllFrames failed, falling back to top-only', String(e)); } catch (_) {}
+              await browser.tabs.sendMessage(lastContentTabId, msg);
+            }
+          } else {
+            await browser.tabs.sendMessage(lastContentTabId, msg);
+            try { console.log('[TV][EXT][BG] BG->CT forwarded via tabs.sendMessage tab=', lastContentTabId, 'cmd=', cmd); } catch (_) {}
+          }
         } else {
           throw new Error('No known content tab to forward to');
         }
