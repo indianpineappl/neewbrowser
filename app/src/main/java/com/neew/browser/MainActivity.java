@@ -218,6 +218,10 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private int activeSessionIndex = -1;
     private Map<GeckoSession, String> sessionUrlMap = new HashMap<>();
     // Track nested popup depth per session: 0 = main tab, 1 = popup, 2 = grandchild, ...
+
+    // Back long-press confirmation dialog state
+    private AlertDialog backConfirmDialog;
+    private boolean backLongPressed = false;
     private final Map<GeckoSession, Integer> sessionPopupDepth = new HashMap<>();
     // Track last user gesture time per session (ms since epoch) to gate popups
     private final Map<GeckoSession, Long> sessionLastGestureMs = new HashMap<>();
@@ -239,6 +243,60 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         }
     };
     private ActivityResultLauncher<Intent> tabSwitcherLauncher;
+
+    // --- BACK key long-press handling ---
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+      if (keyCode == KeyEvent.KEYCODE_BACK && isTvDevice()) {
+        // Prepare to detect a long press
+        event.startTracking();
+        backLongPressed = false;
+        return true; // consume; we'll decide on short vs long in onKeyUp/onKeyLongPress
+      }
+      return super.onKeyDown(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyLongPress(int keyCode, KeyEvent event) {
+      if (keyCode == KeyEvent.KEYCODE_BACK && isTvDevice()) {
+        backLongPressed = true;
+        showBackConfirmDialog();
+        return true;
+      }
+      return super.onKeyLongPress(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+      if (keyCode == KeyEvent.KEYCODE_BACK && isTvDevice()) {
+        if (backLongPressed) {
+          // Long-press already handled by dialog; reset state and consume
+          backLongPressed = false;
+          return true;
+        }
+        // Short press -> delegate to existing back behavior
+        onBackPressed();
+        return true;
+      }
+      return super.onKeyUp(keyCode, event);
+    }
+
+    private void showBackConfirmDialog() {
+      if (backConfirmDialog != null && backConfirmDialog.isShowing()) return;
+      AlertDialog.Builder builder = new AlertDialog.Builder(this);
+      builder.setMessage("Close app?")
+          .setCancelable(true)
+          .setPositiveButton("OK", (dialog, which) -> {
+            try { dialog.dismiss(); } catch (Exception ignored) {}
+            // Close all activities and exit app
+            finishAffinity();
+          })
+          .setNegativeButton("Cancel", (dialog, which) -> {
+            try { dialog.dismiss(); } catch (Exception ignored) {}
+          });
+      backConfirmDialog = builder.create();
+      backConfirmDialog.show();
+    }
     // --- End Tab Management ---
 
     private LinearLayout settingsPanelLayout;
