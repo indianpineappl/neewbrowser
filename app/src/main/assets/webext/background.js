@@ -11,6 +11,62 @@
   let attemptsLeft = 0;
   let lastContentTabId = null;
 
+  // Handle dynamic injection of TV content script
+  /** @type {browser.contentScripts.RegisteredContentScript|null} */
+  let tvScriptRegistration = null;
+  let tvEnabled = false;
+
+  async function registerTvScript() {
+    if (tvScriptRegistration) return;
+    try {
+      tvScriptRegistration = await browser.contentScripts.register({
+        matches: ['<all_urls>'],
+        js: [{ file: 'content.js' }],
+        runAt: 'document_idle',
+        allFrames: true
+      });
+      try { console.log('[TV][EXT][BG] content.js registered'); } catch(_) {}
+    } catch (e) {
+      try { console.log('[TV][EXT][BG] register error', String(e)); } catch(_) {}
+    }
+  }
+
+  async function unregisterTvScript() {
+    if (!tvScriptRegistration) return;
+    try {
+      await tvScriptRegistration.unregister();
+      tvScriptRegistration = null;
+      try { console.log('[TV][EXT][BG] content.js unregistered'); } catch(_) {}
+    } catch (e) {
+      try { console.log('[TV][EXT][BG] unregister error', String(e)); } catch(_) {}
+    }
+  }
+
+  async function setTvEnabled(flag) {
+    tvEnabled = !!flag;
+    try { await browser.storage.local.set({ tvEnabled }); } catch(_) {}
+    if (tvEnabled) {
+      await registerTvScript();
+      // Also inject into already loaded tabs so warmup can bind lastContentTabId
+      try {
+        const tabs = await browser.tabs.query({});
+        for (const t of tabs || []) {
+          try {
+            if (typeof t.id === 'number') {
+              await browser.tabs.executeScript(t.id, { file: 'content.js', allFrames: true, runAt: 'document_idle' });
+            }
+          } catch (e) {
+            try { console.log('[TV][EXT][BG] executeScript failed tab=', t && t.id, String(e)); } catch(_) {}
+          }
+        }
+      } catch (e) {
+        try { console.log('[TV][EXT][BG] tabs.query/executeScript error', String(e)); } catch(_) {}
+      }
+    } else {
+      await unregisterTvScript();
+    }
+  }
+
   // Helper to wire an app Port with relays
   function bindAppPort(p) {
     appPort = p;
@@ -19,9 +75,29 @@
       try { console.log('[TV][EXT][BG] App->BG msg', msg); } catch (_) {}
       const id = msg && msg.id; const cmd = msg && msg.cmd;
       try {
+        // Special: source of truth for TV enablement
+        if (msg && msg.type === 'tv-enabled') {
+          await setTvEnabled(!!msg.enabled);
+          try { console.log('[TV][EXT][BG] tv-enabled set to', !!msg.enabled); } catch(_) {}
+          return;
+        }
+        if (lastContentTabId == null) {
+          // Try to pick current active tab
+          try {
+            const activeTabs = await browser.tabs.query({ active: true, currentWindow: true });
+            if (activeTabs && activeTabs[0] && typeof activeTabs[0].id === 'number') {
+              lastContentTabId = activeTabs[0].id;
+              try { console.log('[TV][EXT][BG] inferred active tabId', lastContentTabId); } catch(_) {}
+            }
+          } catch (_) {}
+        }
         if (lastContentTabId != null) {
-          // Special-case tv-menu-nav: broadcast to all frames so iframes receive it
-          if (msg && msg.type === 'tv-menu-nav') {
+          // Special-case tv-menu-nav and menuProbe:*: broadcast to all frames so iframes receive it
+          const isMenuProbe = !!(msg && (
+            (typeof msg.cmd === 'string' && msg.cmd.indexOf('menuProbe:') === 0) ||
+            (typeof msg.type === 'string' && msg.type.indexOf('menuProbe:') === 0)
+          ));
+          if ((msg && msg.type === 'tv-menu-nav') || isMenuProbe) {
             try {
               const frames = await browser.webNavigation.getAllFrames({ tabId: lastContentTabId });
               for (const f of frames || []) {
@@ -29,17 +105,64 @@
                   try { await browser.tabs.sendMessage(lastContentTabId, msg, { frameId: f.frameId }); } catch (_) {}
                 }
               }
-              try { console.log('[TV][EXT][BG] BG->CT broadcast tv-menu-nav to all frames in tab', lastContentTabId); } catch (_) {}
+              try { console.log('[TV][EXT][BG] BG->CT broadcast', (msg && (msg.type || msg.cmd)), 'to all frames in tab', lastContentTabId); } catch (_) {}
             } catch (e) {
               try { console.log('[TV][EXT][BG] getAllFrames failed, falling back to top-only', String(e)); } catch (_) {}
-              await browser.tabs.sendMessage(lastContentTabId, msg);
+              try {
+                await browser.tabs.sendMessage(lastContentTabId, msg);
+              } catch (sendErr) {
+                // Attempt to inject script and retry once with slight delay
+                try {
+                  await browser.tabs.executeScript(lastContentTabId, { file: 'content.js', allFrames: true, runAt: 'document_idle' });
+                  await new Promise(r => setTimeout(r, 60));
+                  await browser.tabs.sendMessage(lastContentTabId, msg);
+                  try { console.log('[TV][EXT][BG] healed by injecting content.js and retried broadcast for', (msg && (msg.type || msg.cmd))); } catch(_) {}
+                } catch (healErr) {
+                  // As a last resort, broadcast to all tabs' top frames
+                  try {
+                    const tabs = await browser.tabs.query({});
+                    for (const t of tabs || []) {
+                      try { typeof t.id === 'number' && (await browser.tabs.sendMessage(t.id, msg)); } catch (_) {}
+                    }
+                    try { console.log('[TV][EXT][BG] broadcasted', (msg && (msg.type || msg.cmd)), 'to all tabs after heal failure'); } catch(_) {}
+                  } catch (e2) {}
+                }
+              }
             }
           } else {
-            await browser.tabs.sendMessage(lastContentTabId, msg);
-            try { console.log('[TV][EXT][BG] BG->CT forwarded via tabs.sendMessage tab=', lastContentTabId, 'cmd=', cmd); } catch (_) {}
+            try {
+              await browser.tabs.sendMessage(lastContentTabId, msg);
+              try { console.log('[TV][EXT][BG] BG->CT forwarded via tabs.sendMessage tab=', lastContentTabId, 'cmd=', cmd); } catch (_) {}
+            } catch (sendErr) {
+              // Attempt to inject script and retry once with slight delay
+              try {
+                await browser.tabs.executeScript(lastContentTabId, { file: 'content.js', allFrames: true, runAt: 'document_idle' });
+                await new Promise(r => setTimeout(r, 60));
+                await browser.tabs.sendMessage(lastContentTabId, msg);
+                try { console.log('[TV][EXT][BG] healed by injecting content.js and retried cmd=', cmd); } catch(_) {}
+              } catch (healErr) {
+                // As a last resort, broadcast to all tabs' top frames
+                try {
+                  const tabs = await browser.tabs.query({});
+                  for (const t of tabs || []) {
+                    try { typeof t.id === 'number' && (await browser.tabs.sendMessage(t.id, msg)); } catch (_) {}
+                  }
+                  try { console.log('[TV][EXT][BG] broadcasted generic cmd to all tabs after heal failure'); } catch(_) {}
+                } catch (e2) {}
+              }
+            }
           }
         } else {
-          throw new Error('No known content tab to forward to');
+          // Fallback: try to broadcast to all tabs' top frames
+          try {
+            const tabs = await browser.tabs.query({});
+            for (const t of tabs || []) {
+              try { typeof t.id === 'number' && (await browser.tabs.sendMessage(t.id, msg)); } catch (_) {}
+            }
+            try { console.log('[TV][EXT][BG] broadcasted to all tabs (no known content tab)'); } catch(_) {}
+          } catch (e) {
+            throw new Error('No known content tab to forward to');
+          }
         }
         // Send diagnostic echo to app (will not clear timeouts since type != cmd+':done')
         try { appPort && appPort.postMessage({ id, type: 'bg_forwarded', cmd }); } catch (_) {}
@@ -90,7 +213,32 @@
   browser.runtime.onInstalled.addListener(() => {
     startConnectLoop(50, 600);
   });
-  
+
+  // Initialize tvEnabled state from storage and register accordingly
+  (async () => {
+    try {
+      const st = await browser.storage.local.get('tvEnabled');
+      if (st && typeof st.tvEnabled === 'boolean') {
+        await setTvEnabled(st.tvEnabled);
+      }
+    } catch(_) {}
+  })();
+
+  // Track active tab to improve forwarding reliability
+  try {
+    browser.tabs.onActivated.addListener((info) => {
+      if (info && typeof info.tabId === 'number') {
+        lastContentTabId = info.tabId;
+        try { console.log('[TV][EXT][BG] onActivated tabId', lastContentTabId); } catch(_) {}
+      }
+    });
+    browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
+      if (tvEnabled && changeInfo && changeInfo.status === 'complete') {
+        lastContentTabId = tabId;
+        try { console.log('[TV][EXT][BG] onUpdated complete tabId', lastContentTabId); } catch(_) {}
+      }
+    });
+  } catch(_) {}
 
   // Content -> BG: warm-up and general messages
   browser.runtime.onMessage.addListener((msg, sender) => {

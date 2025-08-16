@@ -1,4 +1,4 @@
-package com.neew.browser;
+ package com.neew.browser;
 
 import android.os.Bundle;
 import android.view.KeyEvent;
@@ -163,6 +163,59 @@ import org.mozilla.geckoview.WebResponse;
 public class MainActivity extends AppCompatActivity implements ScrollDelegate, GeckoSession.PromptDelegate, MediaSession.Delegate {
     private static final String TAG = "MainActivity";
     private static final String SNAPSHOT_DIRECTORY_NAME = "tab_snapshots";
+
+    // --- Ephemeral popup tracking (suppress blank/new-tab until it proves useful) ---
+    private final java.util.Set<GeckoSession> ephemeralSessions = java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<GeckoSession, Boolean>());
+    private final java.util.Map<GeckoSession, Runnable> ephemeralTimeoutTasks = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<GeckoSession, GeckoSession> popupParentMap = new java.util.concurrent.ConcurrentHashMap<>();
+    private final android.os.Handler mainHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+
+    private boolean isBlankOrNullUri(String uri) {
+        if (uri == null) return true;
+        String u = uri.trim();
+        if (u.isEmpty()) return true;
+        String lu = u.toLowerCase();
+        if (lu.startsWith("about:blank")) return true; // covers about:blank and about:blank#...
+        if (lu.startsWith("about:srcdoc")) return true; // srcdoc placeholder windows
+        if (lu.startsWith("javascript:")) return true; // avoid showing js: popups as tabs
+        return false;
+    }
+
+    private boolean isHttpLike(String uri) {
+        if (uri == null) return false;
+        String u = uri.toLowerCase();
+        return u.startsWith("http://") || u.startsWith("https://");
+    }
+
+    private @Nullable String getHostSafely(String uri) {
+        try { java.net.URI u = new java.net.URI(uri); return u.getHost(); } catch (Exception e) { return null; }
+    }
+
+    private boolean isSameSite(@Nullable String a, @Nullable String b) {
+        if (a == null || b == null) return false;
+        if (a.equalsIgnoreCase(b)) return true;
+        // naive suffix match: sub.example.com vs example.com
+        return a.endsWith("." + b) || b.endsWith("." + a);
+    }
+
+    private void scheduleEphemeralTimeout(final GeckoSession session, long ms) {
+        Runnable task = () -> {
+            if (ephemeralSessions.contains(session)) {
+                Log.i(TAG, "Ephemeral session timed out; closing.");
+                ephemeralSessions.remove(session);
+                ephemeralTimeoutTasks.remove(session);
+                int idx = geckoSessionList.indexOf(session);
+                if (idx != -1) { closeTab(idx); } else { session.close(); }
+            }
+        };
+        ephemeralTimeoutTasks.put(session, task);
+        mainHandler.postDelayed(task, ms);
+    }
+
+    private void cancelEphemeralTimeout(GeckoSession session) {
+        Runnable r = ephemeralTimeoutTasks.remove(session);
+        if (r != null) { mainHandler.removeCallbacks(r); }
+    }
 
     // --- Consolidated PromptDelegate Fields ---
     private FilePrompt pendingFilePrompt;
@@ -598,7 +651,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         if (geckoSessionList.isEmpty() && !restoreSessionState()) {
             // If restore failed or no saved state, create a single initial tab
             Log.d(TAG, "No saved state found or restore failed, creating initial tab.");
-            createNewTab("https://www.google.com", true); // Create and make active
+            createNewTab(getDefaultHomepageUrl(), true); // Create and make active
         }
         // --- End Restore Session State ---
 
@@ -877,6 +930,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     // During menu-mode, allow a cursor nudge every N vertical presses
     private int menuModeUpCount = 0;
     private int menuModeDownCount = 0;
+    // Pending arm for menu-probe based on DPAD Center without navigation
+    private String pendingArmPreUrl = null;
+    private Runnable pendingArmRunnable = null;
+    private String lastKnownUrl = null;
+    private boolean menuProbeAppActive = false;
 
     // Send a tv-menu-nav command to the content script via background port
     private void sendTvMenuNav(String dir) {
@@ -894,6 +952,24 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             Log.d(TAG, "[TV][DPAD] sent tv-menu-nav dir=" + dir);
         } catch (Exception e) {
             Log.e(TAG, "[TV][DPAD] sendTvMenuNav error", e);
+        }
+    }
+
+    // Send a simple command to the extension runtime listener (browser.runtime.onMessage)
+    private void sendTvSimpleCmd(String cmd) {
+        org.mozilla.geckoview.WebExtension.Port port = tvPort;
+        if (port == null) {
+            Log.w(TAG, "[TV][EXT] simpleCmd not sent (" + cmd + "): BG port null");
+            ensureTvScrollExtension();
+            return;
+        }
+        try {
+            JSONObject msg = new JSONObject();
+            msg.put("cmd", cmd);
+            port.postMessage(msg);
+            Log.d(TAG, "[TV][EXT] sent cmd=" + cmd);
+        } catch (Exception e) {
+            Log.e(TAG, "[TV][EXT] sendTvSimpleCmd error", e);
         }
     }
 
@@ -1044,10 +1120,26 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                                 };
                                 port.setDelegate(portDelegate);
                                 tvPort = port;
+                                // Announce TV mode to background so it (un)registers content.js accordingly
+                                try {
+                                    org.json.JSONObject tvMsg = new org.json.JSONObject();
+                                    tvMsg.put("type", "tv-enabled");
+                                    tvMsg.put("enabled", isTvDevice());
+                                    port.postMessage(tvMsg);
+                                    Log.d(TAG, "[TV][EXT] announced tv-enabled=" + isTvDevice());
+                                } catch (Exception e) {
+                                    Log.w(TAG, "[TV][EXT] failed to announce tv-enabled", e);
+                                }
                             }
                         };
                         // Namespace must match background.js connectNative('neewbrowser')
-                        ext.setMessageDelegate(bgDelegate, "neewbrowser");
+                        runOnUiThread(() -> {
+                            try {
+                                ext.setMessageDelegate(bgDelegate, "neewbrowser");
+                            } catch (Exception e) {
+                                Log.e(TAG, "[TV][EXT] setMessageDelegate failed", e);
+                            }
+                        });
                         // No session delegate; background relays to content.
                     }
                 });
@@ -1569,13 +1661,43 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
          } else {
              try {
                  String encodedQuery = URLEncoder.encode(input, "UTF-8");
-                 urlToLoad = "https://www.google.com/search?q=" + encodedQuery;
+                 urlToLoad = buildSearchUrl(encodedQuery);
              } catch (UnsupportedEncodingException e) {
                  Log.e(TAG, "Failed to encode search query", e);
                  urlToLoad = null;
              }
          }
          return urlToLoad;
+    }
+
+    // Locale helpers and search/homepage builders
+    private boolean isRussianLocale() {
+        try {
+            String lang = java.util.Locale.getDefault().getLanguage();
+            return lang != null && lang.toLowerCase(java.util.Locale.ROOT).startsWith("ru");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private String getDefaultHomepageUrl() {
+        if (isRussianLocale()) {
+            // On TV devices, use yandex.com per requirement; otherwise use dzen.ru
+            return isTvDevice() ? "https://yandex.com" : "https://dzen.ru";
+        }
+        return "https://www.google.com";
+    }
+
+    private String buildSearchUrl(String encodedQuery) {
+        if (isRussianLocale()) {
+            // TV devices: yandex.com; Non-TV: yandex.ru with Dzen source marker
+            if (isTvDevice()) {
+                return "https://yandex.com/search/?text=" + encodedQuery;
+            } else {
+                return "https://yandex.ru/search/?text=" + encodedQuery + "&search_source=dzen_desktop_safe";
+            }
+        }
+        return "https://www.google.com/search?q=" + encodedQuery;
     }
     
     // Helper to hide keyboard
@@ -1752,6 +1874,14 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 Log.d(TAG, "NavDelegate: onLocationChange for session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A") + " to URI: " + newUri +
                            " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
                 if (newUri != null) {
+                    lastKnownUrl = newUri;
+                    // Cancel any pending arm if navigation happens
+                    if (pendingArmRunnable != null) {
+                        inputHandler.removeCallbacks(pendingArmRunnable);
+                        pendingArmRunnable = null;
+                        pendingArmPreUrl = null;
+                        Log.d(TAG, "[TV][EXT] canceled pending menuProbe arm due to navigation");
+                    }
                     // Always update the map with the new URI for the session.
                     sessionUrlMap.put(session, newUri);
                     if (Boolean.TRUE.equals(hasUserGesture)) {
@@ -1937,6 +2067,19 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                         if (newUri != null) {
                             sessionUrlMap.put(session, newUri);
                             mLastValidUrl = newUri; // Update last valid URL
+                            // Promote ephemeral session if it navigated to a meaningful page
+                            if (ephemeralSessions.contains(session) && isHttpLike(newUri) && !isBlankOrNullUri(newUri)) {
+                                Log.i(TAG, "Promoting EPHEMERAL popup to real tab: " + newUri);
+                                ephemeralSessions.remove(session);
+                                cancelEphemeralTimeout(session);
+                                if (!geckoSessionList.contains(session)) {
+                                    synchronized (geckoSessionList) { geckoSessionList.add(session); }
+                                }
+                                final int idx = geckoSessionList.indexOf(session);
+                                if (idx != -1) {
+                                    runOnUiThread(() -> switchToTab(idx));
+                                }
+                            }
                             if (session == getActiveSession()) {
                         runOnUiThread(() -> {
                                     urlBar.setText(newUri);
@@ -2083,25 +2226,37 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                     }
 
                     @Override
-                    public void onLocationChange(GeckoSession session, @Nullable String newUri, @NonNull List<GeckoSession.PermissionDelegate.ContentPermission> perms, @NonNull Boolean hasUserGesture) {
-                        Log.d(TAG, "GrandChild NavDelegate: onLocationChange for session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A") + " to URI: " + newUri +
-                                   " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
-                        if (newUri != null) {
-                            sessionUrlMap.put(session, newUri);
-                            mLastValidUrl = newUri; // Update last valid URL
-                            if (session == getActiveSession()) {
-                        runOnUiThread(() -> {
-                                    urlBar.setText(newUri);
-                                    if (!isControlBarExpanded) {
-                                        minimizedUrlBar.setText(newUri);
+                            public void onLocationChange(GeckoSession session, @Nullable String newUri, @NonNull List<GeckoSession.PermissionDelegate.ContentPermission> perms, @NonNull Boolean hasUserGesture) {
+                                Log.d(TAG, "GrandChild NavDelegate: onLocationChange for session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A") + " to URI: " + newUri +
+                                           " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
+                                if (newUri != null) {
+                                    sessionUrlMap.put(session, newUri);
+                                    mLastValidUrl = newUri; // Update last valid URL
+                                    // Promote ephemeral grandchild if navigated to a meaningful page
+                                    if (ephemeralSessions.contains(session) && isHttpLike(newUri) && !isBlankOrNullUri(newUri)) {
+                                        Log.i(TAG, "Promoting EPHEMERAL grandchild popup to real tab: " + newUri);
+                                        ephemeralSessions.remove(session);
+                                        cancelEphemeralTimeout(session);
+                                        if (!geckoSessionList.contains(session)) {
+                                            synchronized (geckoSessionList) { geckoSessionList.add(session); }
+                                        }
+                                        final int idx = geckoSessionList.indexOf(session);
+                                        if (idx != -1) {
+                                            runOnUiThread(() -> switchToTab(idx));
+                                        }
                                     }
-                                });
+                                    if (session == getActiveSession()) {
+                                runOnUiThread(() -> {
+                                            urlBar.setText(newUri);
+                                            if (!isControlBarExpanded) {
+                                                minimizedUrlBar.setText(newUri);
+                                            }
+                                        });
+                                    }
+                                    saveSessionState(); // TEST: Re-enabled
+                                }
                             }
-                            saveSessionState(); // TEST: Re-enabled
-                        }
-                    }
-
-                    @Override
+         @Override
                             public GeckoResult<GeckoSession> onNewSession(GeckoSession session, String uri) {
                                 // Fallback nested onNewSession: apply tracking, gesture and rate checks
                                 int parentDepth3 = 0;
@@ -2143,7 +2298,27 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
 
                                 if (uriString == null) {
                                     Log.w(TAG, "GrandChildPopup ContentDelegate onExternalResponse: Null URI, falling back to download handler.");
-                                    runOnUiThread(() -> handleDownloadResponse(response));
+                                    runOnUiThread(() -> {
+                                        handleDownloadResponse(response);
+                                        // After download, if session ends up blank-like, close it and return focus to parent
+                                        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                                            String cur = sessionUrlMap.get(session);
+                                            if (isBlankOrNullUri(cur)) {
+                                                GeckoSession parent = popupParentMap.get(session);
+                                                int indexToClose = geckoSessionList.indexOf(session);
+                                                if (indexToClose != -1) { closeTab(indexToClose); } else { session.close(); }
+                                                if (parent != null) {
+                                                    int pIdx = geckoSessionList.indexOf(parent);
+                                                    if (pIdx != -1) { switchToTab(pIdx); }
+                                                }
+                                            }
+                                        }, 250);
+                                        // Also clear ephemeral tracking if any
+                                        if (ephemeralSessions.contains(session)) {
+                                            ephemeralSessions.remove(session);
+                                            cancelEphemeralTimeout(session);
+                                        }
+                                    });
                                     return;
                                 }
 
@@ -2220,7 +2395,27 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                                     } else {
                                         // For other HTTP/HTTPS links, assume it's a download if it reached onExternalResponse
                                         Log.d(TAG, "GrandChildPopup ContentDelegate: HTTP/HTTPS URI is not Play Store, falling back to download handling: " + uriString);
-                                        runOnUiThread(() -> handleDownloadResponse(response));
+                                        runOnUiThread(() -> {
+                                            handleDownloadResponse(response);
+                                            // After download, if session ends up blank-like, close it and return focus to parent
+                                            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                                                String cur = sessionUrlMap.get(session);
+                                                if (isBlankOrNullUri(cur)) {
+                                                    GeckoSession parent = popupParentMap.get(session);
+                                                    int indexToClose = geckoSessionList.indexOf(session);
+                                                    if (indexToClose != -1) { closeTab(indexToClose); } else { session.close(); }
+                                                    if (parent != null) {
+                                                        int pIdx = geckoSessionList.indexOf(parent);
+                                                        if (pIdx != -1) { switchToTab(pIdx); }
+                                                    }
+                                                }
+                                            }, 250);
+                                            // Also clear ephemeral tracking if any
+                                            if (ephemeralSessions.contains(session)) {
+                                                ephemeralSessions.remove(session);
+                                                cancelEphemeralTimeout(session);
+                                            }
+                                        });
                                     }
                                 } else {
                                     // For non-HTTP/HTTPS schemes (e.g., market://, mailto:, tel:, customscheme://)
@@ -2254,20 +2449,29 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                         // Add ConsoleDelegate for the grandchild popup session
                         // grandChildSession.setConsoleDelegate(new GeckoSession.ConsoleDelegate() { ... });
 
-                        synchronized (geckoSessionList) { geckoSessionList.add(grandChildSession); }
-                        sessionUrlMap.put(grandChildSession, newUriFromPopup != null ? newUriFromPopup : "about:blank");
+                        // Ephemeral gating for grandchild popup: avoid adding blank/null to tabs
+                        if (isBlankOrNullUri(newUriFromPopup)) {
+                            Log.i(TAG, "Popup's NavDelegate: creating EPHEMERAL grandchild (blank/null URI). Not adding to tab list yet.");
+                            ephemeralSessions.add(grandChildSession);
+                            sessionUrlMap.put(grandChildSession, newUriFromPopup != null ? newUriFromPopup : "about:blank");
+                            scheduleEphemeralTimeout(grandChildSession, 5000);
+                            return GeckoResult.fromValue(grandChildSession);
+                        } else {
+                            synchronized (geckoSessionList) { geckoSessionList.add(grandChildSession); }
+                            sessionUrlMap.put(grandChildSession, newUriFromPopup);
 
-                        final int newGrandChildIndex = geckoSessionList.indexOf(grandChildSession);
-                        if (newGrandChildIndex != -1) {
-                        runOnUiThread(() -> {
-                                Log.d(TAG, "Popup's NavDelegate: Switching to grandchild tab: " + newGrandChildIndex + " for URI: " + newUriFromPopup);
-                                switchToTab(newGrandChildIndex);
-                            });
-                            } else {
-                            Log.e(TAG, "Popup's NavDelegate: Grandchild session not found for URI: " + newUriFromPopup);
-                            if (newUriFromPopup != null) grandChildSession.loadUri(newUriFromPopup);
+                            final int newGrandChildIndex = geckoSessionList.indexOf(grandChildSession);
+                            if (newGrandChildIndex != -1) {
+                            runOnUiThread(() -> {
+                                    Log.d(TAG, "Popup's NavDelegate: Switching to grandchild tab: " + newGrandChildIndex + " for URI: " + newUriFromPopup);
+                                    switchToTab(newGrandChildIndex);
+                                });
+                                } else {
+                                Log.e(TAG, "Popup's NavDelegate: Grandchild session not found for URI: " + newUriFromPopup);
+                                if (newUriFromPopup != null) grandChildSession.loadUri(newUriFromPopup);
+                            }
+                            return GeckoResult.fromValue(grandChildSession);
                         }
-                        return GeckoResult.fromValue(grandChildSession);
                     }
                 });
 
@@ -2284,7 +2488,16 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
 
                         if (uriString == null) {
                             Log.w(TAG, "Popup ContentDelegate onExternalResponse: Null URI, falling back to download handler.");
-                            runOnUiThread(() -> handleDownloadResponse(response));
+                            runOnUiThread(() -> {
+                                handleDownloadResponse(response);
+                                // Close ephemeral popup if this was only used to trigger a download
+                                if (ephemeralSessions.contains(session)) {
+                                    ephemeralSessions.remove(session);
+                                    cancelEphemeralTimeout(session);
+                                    int indexToClose = geckoSessionList.indexOf(session);
+                                    if (indexToClose != -1) { closeTab(indexToClose); } else { session.close(); }
+                                }
+                            });
                             return;
                         }
 
@@ -2359,7 +2572,27 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                                 }
                             } else {
                                 Log.d(TAG, "Popup ContentDelegate: HTTP/HTTPS URI is not Play Store or Intent, falling back to download handling: " + uriString);
-                                runOnUiThread(() -> handleDownloadResponse(response));
+                                runOnUiThread(() -> {
+                                    handleDownloadResponse(response);
+                                    // After download, if session ends up blank-like, close it and return focus to parent
+                                    new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                                        String cur = sessionUrlMap.get(session);
+                                        if (isBlankOrNullUri(cur)) {
+                                            GeckoSession parent = popupParentMap.get(session);
+                                            int indexToClose = geckoSessionList.indexOf(session);
+                                            if (indexToClose != -1) { closeTab(indexToClose); } else { session.close(); }
+                                            if (parent != null) {
+                                                int pIdx = geckoSessionList.indexOf(parent);
+                                                if (pIdx != -1) { switchToTab(pIdx); }
+                                            }
+                                        }
+                                    }, 250);
+                                    // Also clear ephemeral tracking if any
+                                    if (ephemeralSessions.contains(session)) {
+                                        ephemeralSessions.remove(session);
+                                        cancelEphemeralTimeout(session);
+                                    }
+                                });
                             }
                         } else {
                             try {
@@ -2414,28 +2647,31 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                 // Add ConsoleDelegate for the new tab/popup session
                 // newTabSession.setConsoleDelegate(new GeckoSession.ConsoleDelegate() { ... });
 
-                // 3. Add to tab management list (ensure thread safety if needed)
-                synchronized (geckoSessionList) {
-                    geckoSessionList.add(newTabSession);
-                }
-                sessionUrlMap.put(newTabSession, uri != null ? uri : "about:blank");
-
-                // 4. UI: Switch to this new tab and update UI elements.
-                final int newTabIndex = geckoSessionList.indexOf(newTabSession);
-                if (newTabIndex != -1) {
-                        runOnUiThread(() -> {
-                        Log.d(TAG, "createNewTab NavDelegate: Switching to new tab index: " + newTabIndex + " for URI: " + uri);
-                        switchToTab(newTabIndex);
-                    });
+                // Ephemeral gating: only blank-like initial URIs should be ephemeral; others become real tabs
+                if (isBlankOrNullUri(uri)) {
+                    Log.i(TAG, "onNewSession: creating EPHEMERAL popup (blank/null URI). Not adding to tab list yet.");
+                    ephemeralSessions.add(newTabSession);
+                    sessionUrlMap.put(newTabSession, uri != null ? uri : "about:blank");
+                    if (originatingSession != null) { popupParentMap.put(newTabSession, originatingSession); }
+                    scheduleEphemeralTimeout(newTabSession, 5000);
+                    return GeckoResult.fromValue(newTabSession);
                 } else {
-                    Log.e(TAG, "createNewTab NavDelegate: New tab session not found in list for URI: " + uri);
-                    if (uri != null) {
+                    synchronized (geckoSessionList) { geckoSessionList.add(newTabSession); }
+                    sessionUrlMap.put(newTabSession, uri);
+                    if (originatingSession != null) { popupParentMap.put(newTabSession, originatingSession); }
+                    final int newTabIndex = geckoSessionList.indexOf(newTabSession);
+                    if (newTabIndex != -1) {
+                        runOnUiThread(() -> {
+                            Log.d(TAG, "createNewTab NavDelegate: Switching to new tab index: " + newTabIndex + " for URI: " + uri);
+                            switchToTab(newTabIndex);
+                        });
+                    } else {
+                        Log.e(TAG, "createNewTab NavDelegate: New tab session not found in list for URI: " + uri);
                         newTabSession.loadUri(uri);
                     }
+                    Log.d(TAG, "createNewTab NavDelegate: Returning new GeckoSession to GeckoView for URI: " + uri);
+                    return GeckoResult.fromValue(newTabSession);
                 }
-
-                Log.d(TAG, "createNewTab NavDelegate: Returning new GeckoSession to GeckoView for URI: " + uri);
-                return GeckoResult.fromValue(newTabSession);
             } // End of onNewSession for the main tab's NavigationDelegate
         });
 
@@ -2604,7 +2840,7 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
 
     // Overload for previous behavior (e.g., new tab button)
     private void createNewTab(boolean switchToTab) {
-        createNewTab("https://www.google.com", switchToTab);
+        createNewTab(getDefaultHomepageUrl(), switchToTab);
     }
 
     // Method to switch the active tab
@@ -3721,7 +3957,7 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                     } else {
                         // Not a URL, treat as search query
                         try {
-                            String searchQuery = "https://www.google.com/search?q=" + java.net.URLEncoder.encode(sharedText, "UTF-8");
+                            String searchQuery = buildSearchUrl(java.net.URLEncoder.encode(sharedText, "UTF-8"));
                             createNewTab(searchQuery, true);
                         } catch (java.io.UnsupportedEncodingException e) {
                             Log.e(TAG, "Failed to encode search query: " + sharedText, e);
@@ -3735,7 +3971,7 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
             Log.i(TAG, "Received WEB_SEARCH intent with query: " + query);
             if (query != null && !query.isEmpty()) {
                 try {
-                    String searchQuery = "https://www.google.com/search?q=" + java.net.URLEncoder.encode(query, "UTF-8");
+                    String searchQuery = buildSearchUrl(java.net.URLEncoder.encode(query, "UTF-8"));
                     createNewTab(searchQuery, true);
                 } catch (java.io.UnsupportedEncodingException e) {
                     Log.e(TAG, "Failed to encode web search query: " + query, e);
@@ -3990,18 +4226,45 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         pendingDownloadResponse = null;
 
         String url = response.uri;
-        String contentDisposition = response.headers != null ? response.headers.get("content-disposition") : null;
-        String mimeType = response.headers != null ? response.headers.get("content-type") : null;
+        // Case-insensitive header lookup
+        String contentDisposition = null;
+        String mimeType = null;
+        if (response.headers != null) {
+            for (Map.Entry<String, String> e : response.headers.entrySet()) {
+                final String k = e.getKey();
+                if (k == null) continue;
+                if ("content-type".equalsIgnoreCase(k)) mimeType = e.getValue();
+                else if ("content-disposition".equalsIgnoreCase(k)) contentDisposition = e.getValue();
+            }
+        }
         if (mimeType == null || mimeType.isEmpty()) {
             String fileExtension = MimeTypeMap.getFileExtensionFromUrl(url);
             if (fileExtension != null && !fileExtension.isEmpty()) {
-                mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(fileExtension);
+                String byExt = MimeTypeMap.getSingleton().getMimeTypeFromExtension(fileExtension.toLowerCase());
+                if (byExt != null && !byExt.isEmpty()) mimeType = byExt;
             }
         }
 
-        String fileName = URLUtil.guessFileName(url, contentDisposition, mimeType);
+        // If Content-Disposition provides a filename, prefer it
+        String fileNameFromCd = null;
+        if (contentDisposition != null) {
+            try {
+                // Common patterns: filename="name.mp4"; filename*=UTF-8''name.mp4
+                java.util.regex.Matcher mStar = java.util.regex.Pattern.compile("filename\\*\\s*=\\s*([^']*)''([^;]+)", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(contentDisposition);
+                if (mStar.find()) {
+                    fileNameFromCd = java.net.URLDecoder.decode(mStar.group(2), java.nio.charset.StandardCharsets.UTF_8.name());
+                } else {
+                    java.util.regex.Matcher m = java.util.regex.Pattern.compile("filename\\s*=\\s*\"?([^\";]+)\"?", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(contentDisposition);
+                    if (m.find()) fileNameFromCd = m.group(1);
+                }
+            } catch (Exception ignore) {}
+        }
+
+        String fileName = (fileNameFromCd != null && !fileNameFromCd.isEmpty())
+                ? fileNameFromCd
+                : URLUtil.guessFileName(url, contentDisposition, mimeType);
         // Fallback if guessFileName returns something generic or empty
-        if (fileName == null || fileName.isEmpty() || fileName.equals("downloadfile") || fileName.equals("dat")) {
+        if (fileName == null || fileName.isEmpty() || fileName.equals("downloadfile") || fileName.equals("dat") || fileName.endsWith(".bin")) {
             Log.w(TAG, "URLUtil.guessFileName returned a generic/empty name: " + fileName + ". Attempting to derive from URL path.");
             if (url != null) {
                 Uri parsedUri = Uri.parse(url);
@@ -4022,6 +4285,12 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
              Log.d(TAG, "Fallback filename derived: " + fileName);
         }
 
+        // If the filename has no extension or a generic one, fix it based on MIME
+        if (mimeType != null && !mimeType.isEmpty()) {
+            String fixed = ensureExtensionForMime(fileName, mimeType);
+            if (fixed != null) fileName = fixed;
+        }
+
         // Consider using ContentResolver and MediaStore for more robust filename/path generation on newer Android versions
         String destDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath();
         String filePath = destDir + "/" + fileName;
@@ -4034,6 +4303,9 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
             request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
             request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
             request.allowScanningByMediaScanner(); // Let media scanner pick it up
+            if (mimeType != null && !mimeType.isEmpty()) {
+                try { request.setMimeType(mimeType); } catch (Throwable t) { /* ignore */ }
+            }
             
             // Set headers from the response if needed (e.g., cookies)
             if (response.headers != null) {
@@ -4064,6 +4336,54 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
             Log.e(TAG, "Error initiating download for " + url, e);
             Toast.makeText(this, "Error starting download", Toast.LENGTH_SHORT).show();
         }
+    }
+
+    /**
+     * Ensure the filename has an appropriate extension for the given MIME type.
+     * Returns a possibly-updated filename; if no change is needed, returns the original name.
+     */
+    private String ensureExtensionForMime(String fileName, String mimeType) {
+        if (fileName == null || fileName.isEmpty() || mimeType == null || mimeType.isEmpty()) return fileName;
+        String name = fileName;
+        // Strip any stray query parameters mistakenly included in filename
+        int q = name.indexOf('?');
+        if (q >= 0) name = name.substring(0, q);
+        // Current extension
+        String currentExt = null;
+        int dot = name.lastIndexOf('.');
+        if (dot > 0 && dot < name.length() - 1) {
+            currentExt = name.substring(dot + 1).toLowerCase();
+        }
+        // If we already have a plausible extension (not bin/dat), keep it
+        if (currentExt != null && !currentExt.isEmpty() && !currentExt.equals("bin") && !currentExt.equals("dat")) {
+            return name;
+        }
+        // Guess extension from MIME
+        String want = null;
+        try {
+            want = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType.toLowerCase());
+        } catch (Throwable ignored) {}
+        if (want == null || want.isEmpty()) {
+            // Manual common mappings
+            if (mimeType.startsWith("video/")) {
+                if (mimeType.equalsIgnoreCase("video/mp4") || mimeType.equalsIgnoreCase("video/h264")) want = "mp4";
+                else if (mimeType.equalsIgnoreCase("video/webm")) want = "webm";
+                else if (mimeType.equalsIgnoreCase("video/x-matroska") || mimeType.equalsIgnoreCase("video/mkv")) want = "mkv";
+                else if (mimeType.equalsIgnoreCase("video/MP2T") || mimeType.equalsIgnoreCase("video/mp2t")) want = "ts";
+            } else if (mimeType.startsWith("audio/")) {
+                if (mimeType.equalsIgnoreCase("audio/mpeg")) want = "mp3";
+                else if (mimeType.equalsIgnoreCase("audio/aac")) want = "aac";
+                else if (mimeType.equalsIgnoreCase("audio/ogg")) want = "ogg";
+            } else if (mimeType.equalsIgnoreCase("application/vnd.android.package-archive")) {
+                want = "apk";
+            }
+        }
+        if (want == null || want.isEmpty()) {
+            return name; // no change
+        }
+        // Apply extension
+        String base = (dot > 0) ? name.substring(0, dot) : name;
+        return base + "." + want;
     }
 
     // Handle permission result
@@ -4909,8 +5229,8 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         activeSessionIndex = -1; // Reset active index
         this.geckoSession = null; // Clear the global convenience field
 
-        // Create a new default tab (e.g., Google homepage)
-        createNewTab("https://www.google.com", true);
+        // Create a new default tab based on locale
+        createNewTab(getDefaultHomepageUrl(), true);
 
         // Update UI (e.g., if there's a tab count display, it should reflect 1)
         updateUIForActiveSession(); // This will also update the URL bar for the new tab
@@ -5113,6 +5433,53 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                     simulateTouchEvent(MotionEvent.ACTION_DOWN);
                 }
             } else if (event.getAction() == KeyEvent.ACTION_UP) {
+                // If menu probe is already active, a second Center toggles it OFF immediately
+                if (menuProbeAppActive) {
+                    sendTvSimpleCmd("menuProbe:toggle");
+                    menuProbeAppActive = false;
+                    // Cancel any pending arm
+                    if (pendingArmRunnable != null) {
+                        inputHandler.removeCallbacks(pendingArmRunnable);
+                        pendingArmRunnable = null;
+                        pendingArmPreUrl = null;
+                    }
+                } else {
+                    // Snapshot URL, perform click, then arm after delay only if URL stays the same
+                    final String preUrlSnap = lastKnownUrl != null ? lastKnownUrl : mLastValidUrl;
+                    pendingArmPreUrl = preUrlSnap;
+                    // Schedule arm after 400ms if URL unchanged
+                    pendingArmRunnable = () -> {
+                        try {
+                            final String nowUrl = lastKnownUrl != null ? lastKnownUrl : mLastValidUrl;
+                            boolean unchanged = android.text.TextUtils.equals(nowUrl, pendingArmPreUrl);
+                            if (unchanged) {
+                                sendTvSimpleCmd("menuProbe:toggle");
+                                // Hint content to enable heavy menu features briefly
+                                try {
+                                    org.mozilla.geckoview.WebExtension.Port port = tvPort;
+                                    if (port != null) {
+                                        org.json.JSONObject arm = new org.json.JSONObject();
+                                        arm.put("type", "menuProbe:arm");
+                                        arm.put("ttlMs", 1500);
+                                        port.postMessage(arm);
+                                        Log.d(TAG, "[TV][EXT] sent menuProbe:arm ttlMs=1500");
+                                    }
+                                } catch (Exception e) {
+                                    Log.w(TAG, "[TV][EXT] failed to send menuProbe:arm", e);
+                                }
+                                menuProbeAppActive = true;
+                                lastMenuAckTs = System.currentTimeMillis();
+                                Log.d(TAG, "[TV][EXT] menuProbe armed (no navigation after Center)");
+                            } else {
+                                Log.d(TAG, "[TV][EXT] skip arm (navigation detected) pre=" + pendingArmPreUrl + " now=" + nowUrl);
+                            }
+                        } finally {
+                            pendingArmRunnable = null;
+                            pendingArmPreUrl = null;
+                        }
+                    };
+                    inputHandler.postDelayed(pendingArmRunnable, 400);
+                }
                 simulateTouchEvent(MotionEvent.ACTION_UP);
             }
             return true; // Consume all parts of the click event.
@@ -5135,6 +5502,7 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                     menuModeUpCount = 0; menuModeDownCount = 0;
                     params.leftMargin = Math.max(0, currentX - currentStepSize);
                     tvCursorView.setLayoutParams(params);
+                    if (menuProbeAppActive) { sendTvSimpleCmd("menuProbe:ping"); }
                     break;
 
                 case KeyEvent.KEYCODE_DPAD_RIGHT:
@@ -5142,11 +5510,13 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                     menuModeUpCount = 0; menuModeDownCount = 0;
                     params.leftMargin = Math.min(getWindowManager().getDefaultDisplay().getWidth() - tvCursorView.getWidth(), currentX + currentStepSize);
                     tvCursorView.setLayoutParams(params);
+                    if (menuProbeAppActive) { sendTvSimpleCmd("menuProbe:ping"); }
                     break;
 
                 case KeyEvent.KEYCODE_DPAD_UP:
                     // Always forward an app-driven menu navigation message.
                     sendTvMenuNav("up");
+                    if (menuProbeAppActive) { sendTvSimpleCmd("menuProbe:ping"); }
                     if (inMenuMode) {
                         // Count and nudge cursor every 3rd press; no page scroll.
                         menuModeUpCount++; menuModeDownCount = 0;
@@ -5201,6 +5571,7 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                 case KeyEvent.KEYCODE_DPAD_DOWN:
                     // Always forward an app-driven menu navigation message.
                     sendTvMenuNav("down");
+                    if (menuProbeAppActive) { sendTvSimpleCmd("menuProbe:ping"); }
                     if (inMenuMode) {
                         // Count and nudge cursor every 3rd press; no page scroll.
                         menuModeDownCount++; menuModeUpCount = 0;

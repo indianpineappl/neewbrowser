@@ -13,6 +13,29 @@
     } catch(_) { return false; }
   }
 
+  // Detect if we are in TV mode; allow explicit overrides via globals or storage.
+  function detectTvMode() {
+    try {
+      // Explicit app-provided global takes precedence
+      if (typeof window !== 'undefined') {
+        if (window.__NEEW_TV_DISABLED__ === true) return false;
+        if (window.__NEEW_TV_MODE__ === true) return true;
+      }
+      // Storage overrides for debugging
+      try {
+        const ss = (typeof sessionStorage !== 'undefined') ? sessionStorage.getItem('neew.tv.enabled') : null;
+        const ls = (typeof localStorage !== 'undefined') ? localStorage.getItem('neew.tv.enabled') : null;
+        const off = (typeof localStorage !== 'undefined') ? localStorage.getItem('neew.tv.disabled') : null;
+        if (off === '1' || off === 'true') return false;
+        if (ss === '1' || ss === 'true' || ls === '1' || ls === 'true') return true;
+      } catch(_) {}
+      // Heuristic UA hints for TV devices
+      const ua = (typeof navigator !== 'undefined' && navigator.userAgent) ? navigator.userAgent : '';
+      const tvHints = /(Android\s+TV|BRAVIA|AFTB|AFTM|AFTS|AFT|SmartTV|Tizen|Web0S|WebOS|AppleTV|Chromecast|Roku|Shield|MiBOX|\bTV\b)/i;
+      return !!tvHints.test(ua);
+    } catch(_) { return false; }
+  }
+
   // Label-based heuristic: find elements whose text/aria-label suggest seasons menu and choose a clickable ancestor
   function findToggleByLabelHeuristic(x, y) {
     try {
@@ -75,6 +98,33 @@
 (function() {
   'use strict';
 
+  // Gate: if not in TV mode, do nothing.
+  try {
+    // Since background registers/injects this only for TV, force-enable the flag
+    try { if (typeof window !== 'undefined') { window.__NEEW_TV_MODE__ = true; } } catch(_) {}
+    if (!detectTvMode()) {
+      try { console && console.debug && console.debug('[TV][EXT][CT] disabled: non-TV mode'); } catch(_) {}
+      return;
+    }
+  } catch(_) { return; }
+
+  // Runtime flag to enable/disable heavier menu features
+  let MENU_FEATURE_ENABLED = false;
+  let MENU_DISABLE_TIMER = null;
+  function enableMenuFeatures(ttlMs) {
+    MENU_FEATURE_ENABLED = true;
+    if (MENU_DISABLE_TIMER) { clearTimeout(MENU_DISABLE_TIMER); MENU_DISABLE_TIMER = null; }
+    if (typeof ttlMs === 'number' && ttlMs > 0) {
+      MENU_DISABLE_TIMER = setTimeout(() => { MENU_FEATURE_ENABLED = false; MENU_DISABLE_TIMER = null; }, Math.min(ttlMs, 5000));
+    }
+    try { ctEmit && ctEmit('[TV][EXT][CT] menu features ENABLED'); } catch(_) {}
+  }
+  function disableMenuFeatures() {
+    MENU_FEATURE_ENABLED = false;
+    if (MENU_DISABLE_TIMER) { clearTimeout(MENU_DISABLE_TIMER); MENU_DISABLE_TIMER = null; }
+    try { ctEmit && ctEmit('[TV][EXT][CT] menu features DISABLED'); } catch(_) {}
+  }
+
   // Emit a per-frame ready log to confirm injection and frame context
   try {
     const inFrame = (() => { try { return window.top !== window; } catch(_) { return true; } })();
@@ -120,6 +170,7 @@
   try {
     let lastClickHandledAt = 0;
     document.addEventListener('click', async (ev) => {
+      if (!MENU_FEATURE_ENABLED) return;
       try {
         if (!ev || !ev.isTrusted) return;
         const now = Date.now();
@@ -212,6 +263,7 @@
 
     // Keyboard navigation within open menus: ArrowDown/ArrowUp/PageDown/PageUp/Home/End
     document.addEventListener('keydown', async (ev) => {
+      if (!MENU_FEATURE_ENABLED) return;
       try {
         if (!ev || !ev.isTrusted) return;
         const key = ev.key;
@@ -331,22 +383,29 @@
       EXT.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         (async () => {
           try {
-            if (!msg || msg.type !== 'tv-menu-nav') return;
-            const dir = String(msg.dir || '').toLowerCase();
-            const okHere = await tryMenuNavLocal(dir);
-            if (okHere) return;
-            try { ctEmit('[TV][EXT][CT] menu_nav msg but no visible menu (relaying to child iframes)'); } catch(_) {}
-            // Relay to child iframes so the correct frame can handle it
-            try {
-              const iframes = Array.from(document.querySelectorAll('iframe'));
-              for (const f of iframes) {
-                try { f.contentWindow && f.contentWindow.postMessage({ type: 'tv-menu-nav-local', dir }, '*'); } catch(_) {}
+            if (!msg) return;
+            if (msg.type === 'menuProbe:arm') {
+              const ttlMs = Math.max(0, Math.min(5000, Number(msg.ttlMs) || 1500));
+              enableMenuFeatures(ttlMs);
+              return;
+            }
+            if (msg.type === 'tv-menu-nav') {
+              const dir = String(msg.dir || '').toLowerCase();
+              const okHere = await tryMenuNavLocal(dir);
+              if (okHere) return;
+              try { ctEmit('[TV][EXT][CT] menu_nav msg but no visible menu (relaying to child iframes)'); } catch(_) {}
+              // Relay to child iframes so the correct frame can handle it
+              try {
+                const iframes = Array.from(document.querySelectorAll('iframe'));
+                for (const f of iframes) {
+                  try { f.contentWindow && f.contentWindow.postMessage({ type: 'tv-menu-nav-local', dir }, '*'); } catch(_) {}
+                }
+              } catch(_) {}
+              if (target) {
+                try { target.setAttribute('tabindex','0'); target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest' }); } catch(_) {}
+                await enforceFocusStick(target);
+                try { ctEmit(`[TV][EXT][CT] menu_nav msg dir=${dir} -> ${describeNode(target)}`); } catch(_) {}
               }
-            } catch(_) {}
-            if (target) {
-              try { target.setAttribute('tabindex','0'); target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest' }); } catch(_) {}
-              await enforceFocusStick(target);
-              try { ctEmit(`[TV][EXT][CT] menu_nav msg dir=${dir} -> ${describeNode(target)}`); } catch(_) {}
             }
           } catch(_) {}
         })();
@@ -516,6 +575,9 @@
 
   // Track handled focus IDs to dedupe background vs frame messages
   const handledFocusIds = new Set();
+  // Menu probe gating: only run dropdown/menu heuristics when explicitly armed by host app
+  let menuProbeActive = false;
+  let menuProbeExpiresAt = 0;
 
   // Debounce maps to avoid repeated/accidental activations while scrolling
   const lastToggleActivation = new WeakMap();
@@ -1027,10 +1089,12 @@
         console.log(t); ctEmit(t);
       } catch (_) {}
 
-      // Special path: ARIA combobox/listbox style dropdowns
+      const allowMenuProbe = menuProbeActive && (Date.now() <= menuProbeExpiresAt);
+      // Special path: ARIA combobox/listbox style dropdowns (only when menu probe is active)
       let usedComboPath = false;
       let usedMenuPath = false;
       try {
+        if (!allowMenuProbe) throw new Error('menu-probe-disabled');
         const vv = window.visualViewport;
         const vx = vv ? (x - (vv.offsetLeft || 0)) : x;
         const vy = vv ? (y - (vv.offsetTop || 0)) : y;
@@ -1096,8 +1160,9 @@
         }
       } catch(_) {}
 
-      // Even without a toggle, if a visible menu container exists near the point, prefer it
+      // Even without a toggle, if a visible menu container exists near the point, prefer it (only when menu probe is active)
       try {
+        if (!allowMenuProbe) throw new Error('menu-probe-disabled');
         const vv = window.visualViewport;
         const vx = vv ? (x - (vv.offsetLeft || 0)) : x;
         const vy = vv ? (y - (vv.offsetTop || 0)) : y;
@@ -1125,8 +1190,9 @@
       // Disable generic synthetic hover to avoid unintended UI reveals during scrolling
       // (JW-specific fallback still does targeted hover when explicitly triggered)
 
-      // Detect dropdown toggle buttons and click to open menu if closed (local handling only). Skip if combo path was used.
+      // Detect dropdown toggle buttons and click to open menu if closed (local handling only). Skip if combo path was used. (only when menu probe is active)
       try {
+        if (!allowMenuProbe) throw new Error('menu-probe-disabled');
         if (usedComboPath) throw new Error('skip-toggle-due-combo-path');
         const TOGGLE_SEL = [
           '[data-toggle="dropdown"]', '[data-bs-toggle="dropdown"]', '.dropdown-toggle', '.seasons .dropdown-toggle', '.season .dropdown-toggle', '[aria-haspopup="listbox"]', '[aria-haspopup="menu"]',
@@ -1651,19 +1717,30 @@
           // leave success=false so the app won't force a root scroll
         } else {
           const root = document.scrollingElement || document.documentElement || document.body;
-          // try wheel on the hit element first for custom scrollers
+          // prefer native scroll on the nearest target to minimize latency
           const nearTarget = scrollTarget || el;
-          const nearBefore = nearTarget && typeof nearTarget.scrollTop === 'number' ? nearTarget.scrollTop : null;
-          const rootBefore = root ? root.scrollTop : window.scrollY;
-          dispatchWheelAt(x, y, dy);
-          // await micro-delay to allow script handlers to run
-          await new Promise(r => setTimeout(r, 40));
-          const nearAfter = nearTarget && typeof nearTarget.scrollTop === 'number' ? nearTarget.scrollTop : null;
-          const rootAfter = root ? root.scrollTop : window.scrollY;
-          const movedNear = nearBefore !== null && nearAfter !== null && nearAfter !== nearBefore;
-          const movedRoot = rootAfter !== rootBefore;
-          success = movedNear || movedRoot;
-          used = 'wheel';
+          let movedNear = false;
+          if (nearTarget) {
+            try {
+              movedNear = !!tryNativeScroll(nearTarget, dy);
+            } catch(_) { movedNear = false; }
+          }
+          if (movedNear) {
+            success = true;
+            used = 'near-native';
+          } else {
+            const nearBefore = nearTarget && typeof nearTarget.scrollTop === 'number' ? nearTarget.scrollTop : null;
+            const rootBefore = root ? root.scrollTop : window.scrollY;
+            dispatchWheelAt(x, y, dy);
+            // wait a frame to let scroll handlers/layout settle without adding noticeable latency
+            await new Promise(r => (typeof requestAnimationFrame === 'function' ? requestAnimationFrame(() => r()) : setTimeout(r, 8)));
+            const nearAfter = nearTarget && typeof nearTarget.scrollTop === 'number' ? nearTarget.scrollTop : null;
+            const rootAfter = root ? root.scrollTop : window.scrollY;
+            movedNear = nearBefore !== null && nearAfter !== null && nearAfter !== nearBefore;
+            const movedRoot = rootAfter !== rootBefore;
+            success = movedNear || movedRoot;
+            used = 'wheel';
+          }
           if (!success) {
             // wheel had no effect -> fall back to root scroll explicitly
             success = root ? tryNativeScroll(root, dy) : (window.scrollBy(0, dy), true);
@@ -1719,6 +1796,28 @@
       } else {
         handleFocusAtPoint(msg);
       }
+    } else if (msg && (msg.cmd === 'menuProbe:arm' || msg.type === 'menuProbe:arm')) {
+      try {
+        const ttlMs = Math.max(0, Math.min(5000, Number(msg.ttlMs) || 1500));
+        enableMenuFeatures(ttlMs);
+      } catch (_) {}
+    } else if (msg && (msg.cmd === 'menuProbe:toggle' || msg.type === 'menuProbe:toggle')) {
+      try {
+        menuProbeActive = !menuProbeActive;
+        if (menuProbeActive) {
+          menuProbeExpiresAt = Date.now() + 1500; // initial active window
+          console.log('[TV][EXT][CT] menuProbe toggled ON');
+        } else {
+          menuProbeExpiresAt = 0;
+          console.log('[TV][EXT][CT] menuProbe toggled OFF');
+        }
+      } catch (_) {}
+    } else if (msg && (msg.cmd === 'menuProbe:ping' || msg.type === 'menuProbe:ping')) {
+      try {
+        if (menuProbeActive) {
+          menuProbeExpiresAt = Date.now() + 800; // extend while navigating
+        }
+      } catch (_) {}
     }
     return false; // We are not using sendResponse, so return false.
   });
