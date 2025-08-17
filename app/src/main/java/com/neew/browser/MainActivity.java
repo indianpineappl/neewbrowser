@@ -399,6 +399,23 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private ImageButton tabsButton;
 
     private static final String PREF_IMMERSIVE_MODE_ENABLED = "immersive_mode_enabled";
+    
+    // --- Debounce for element-scroll timeout fallback to root scroll ---
+    // Prevents rapid repeated simulateScroll() calls when some sites (e.g., heavy player overlays)
+    // neither scroll nor promptly respond to scrollAtPoint, causing multiple timeouts in quick succession.
+    private static final long EXT_SCROLL_FALLBACK_MIN_GAP_MS = 220L; // minimal gap between root fallbacks
+    private long lastExtScrollFallbackMs = 0L;
+    
+    private void runDebouncedRootScroll(boolean up) {
+        long now = android.os.SystemClock.uptimeMillis();
+        long since = now - lastExtScrollFallbackMs;
+        if (since < EXT_SCROLL_FALLBACK_MIN_GAP_MS) {
+            Log.d(TAG, "[TV][SCROLL] root fallback debounced (" + since + "ms since last)");
+            return;
+        }
+        lastExtScrollFallbackMs = now;
+        simulateScroll(up);
+    }
     private SwitchCompat panelImmersiveSwitch;
     private SwitchCompat panelDesktopModeSwitch;
     private SwitchCompat panelFullDesktopModelSwitch; // New Switch field
@@ -1097,8 +1114,8 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                                                         // If root can scroll up, do it; otherwise enter UI focus
                                                         runOnUiThread(() -> {
                                                             if (mCanScrollUp) {
-                                                                Log.d(TAG, "[TV][SCROLL] topEdgeUp ok=false but root can scroll -> rootScrollUp");
-                                                                simulateScroll(true);
+                                                                Log.d(TAG, "[TV][SCROLL] topEdgeUp ok=false but root can scroll -> rootScrollUp (debounced)");
+                                                                runDebouncedRootScroll(true);
                                                             } else {
                                                                 Log.d(TAG, "[TV][FOCUS] topEdgeUp ok=false and root cannot scroll -> enterUiFocus");
                                                                 setUiFocus(true);
@@ -5600,8 +5617,8 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                             Log.d(TAG, "[TV][EXT] bottomEdge -> focus scrollable then try elementScrollDown");
                             tryFocusScrollableAtCursor(active, null);
                             Runnable onFail = () -> {
-                                Log.d(TAG, "[TV][SCROLL] extFailed -> rootScrollDown fallback");
-                                simulateScroll(false);
+                                Log.d(TAG, "[TV][SCROLL] extFailed -> rootScrollDown fallback (debounced)");
+                                runDebouncedRootScroll(false);
                             };
                             tryElementScrollAtCursor(active, TV_EXT_SCROLL_CSS_PX, onFail);
                         } else {

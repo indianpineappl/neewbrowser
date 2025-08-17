@@ -114,7 +114,7 @@
                 // Attempt to inject script and retry once with slight delay
                 try {
                   await browser.tabs.executeScript(lastContentTabId, { file: 'content.js', allFrames: true, runAt: 'document_idle' });
-                  await new Promise(r => setTimeout(r, 60));
+                  await new Promise(r => setTimeout(r, 16));
                   await browser.tabs.sendMessage(lastContentTabId, msg);
                   try { console.log('[TV][EXT][BG] healed by injecting content.js and retried broadcast for', (msg && (msg.type || msg.cmd))); } catch(_) {}
                 } catch (healErr) {
@@ -137,7 +137,7 @@
               // Attempt to inject script and retry once with slight delay
               try {
                 await browser.tabs.executeScript(lastContentTabId, { file: 'content.js', allFrames: true, runAt: 'document_idle' });
-                await new Promise(r => setTimeout(r, 60));
+                await new Promise(r => setTimeout(r, 16));
                 await browser.tabs.sendMessage(lastContentTabId, msg);
                 try { console.log('[TV][EXT][BG] healed by injecting content.js and retried cmd=', cmd); } catch(_) {}
               } catch (healErr) {
@@ -261,15 +261,68 @@
   });
 
   // Content -> App: forward responses from content scripts back to the app
-  browser.runtime.onMessage.addListener((msg) => {
-    try { console.log('[TV][EXT][BG] Content->BG msg', msg); } catch (_) {}
-    if (!appPort) return; // app not connected yet
+  const pendingDedupe = new Map(); // id -> { timer, bestMsg, final }
+  const DONE_SUFFIX_RE = /:done$/;
+  const GRACE_MS = 50; // wait briefly to allow a better ok:true to arrive
+
+  function forwardToApp(msg) {
+    if (!appPort) return;
     try {
       appPort.postMessage(msg);
-      try { console.log('[TV][EXT][BG] BG->APP forwarded', msg && msg.type); } catch (_) {}
+      try { console.log('[TV][EXT][BG] BG->APP forwarded', msg && msg.type, 'id=', msg && msg.id, 'ok=', msg && msg.ok); } catch (_) {}
     } catch (e) {
       try { console.log('[TV][EXT][BG] BG->APP forward error', String(e)); } catch (_) {}
     }
+  }
+
+  browser.runtime.onMessage.addListener((msg) => {
+    try { console.log('[TV][EXT][BG] Content->BG msg', msg); } catch (_) {}
+    // Only de-dupe messages that have an id and a *:done type
+    const id = msg && msg.id;
+    const type = msg && msg.type;
+    const isDone = !!(type && DONE_SUFFIX_RE.test(type));
+    if (!id || !isDone) {
+      forwardToApp(msg);
+      return;
+    }
+
+    // De-duplication path
+    let entry = pendingDedupe.get(id);
+    if (!entry) {
+      // First arrival for this id
+      if (msg && msg.ok === true) {
+        forwardToApp(msg); // definitive success -> forward immediately
+        pendingDedupe.set(id, { final: true, timer: null, bestMsg: msg });
+        // Cleanup soon to avoid leaks
+        setTimeout(() => { pendingDedupe.delete(id); }, 500);
+      } else {
+        // Not ok or unknown -> hold briefly to see if a better reply arrives
+        const hold = { final: false, bestMsg: msg, timer: null };
+        hold.timer = setTimeout(() => {
+          try { forwardToApp(hold.bestMsg); } finally { pendingDedupe.delete(id); }
+        }, GRACE_MS);
+        pendingDedupe.set(id, hold);
+      }
+      return;
+    }
+
+    // Subsequent arrivals for same id
+    if (entry.final) {
+      // Already finalized; drop duplicates
+      return;
+    }
+
+    if (msg && msg.ok === true) {
+      // Upgrade to success within grace window
+      try { entry.timer && clearTimeout(entry.timer); } catch (_) {}
+      forwardToApp(msg);
+      entry.final = true;
+      pendingDedupe.delete(id);
+      return;
+    }
+
+    // Another non-ok: keep the first one (or the better one if we want later). For now keep first.
+    // Optionally update bestMsg heuristically here.
   });
 
   // Kick off the connection at startup
