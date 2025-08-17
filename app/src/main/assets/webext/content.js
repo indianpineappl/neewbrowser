@@ -13,6 +13,27 @@
     } catch(_) { return false; }
   }
 
+  // Heuristic: determine if element is within a video/player UI that tends to capture wheel
+  function isPlayerContext(el) {
+    try {
+      let cur = el;
+      const SEL = [
+        'video',
+        'iframe[src*="youtube" i]',
+        '.html5-video-player',
+        '.jwplayer',
+        '.vjs-player', '.video-js', '.vjs-control-bar',
+        '.plyr',
+        '#player', '[data-player]', '[class*="player"]'
+      ].join(',');
+      while (cur && cur !== document) {
+        if (cur.matches && cur.matches(SEL)) return true;
+        cur = cur.assignedSlot || cur.parentElement || (cur.getRootNode() instanceof ShadowRoot && cur.getRootNode().host);
+      }
+    } catch(_) {}
+    return false;
+  }
+
   // Detect if we are in TV mode; allow explicit overrides via globals or storage.
   function detectTvMode() {
     try {
@@ -111,13 +132,20 @@
   // Runtime flag to enable/disable heavier menu features
   let MENU_FEATURE_ENABLED = false;
   let MENU_DISABLE_TIMER = null;
+  let LAST_MENU_ENABLED_LOG_TS = 0;
   function enableMenuFeatures(ttlMs) {
     MENU_FEATURE_ENABLED = true;
     if (MENU_DISABLE_TIMER) { clearTimeout(MENU_DISABLE_TIMER); MENU_DISABLE_TIMER = null; }
     if (typeof ttlMs === 'number' && ttlMs > 0) {
       MENU_DISABLE_TIMER = setTimeout(() => { MENU_FEATURE_ENABLED = false; MENU_DISABLE_TIMER = null; }, Math.min(ttlMs, 5000));
     }
-    try { ctEmit && ctEmit('[TV][EXT][CT] menu features ENABLED'); } catch(_) {}
+    try {
+      const now = Date.now();
+      if (!LAST_MENU_ENABLED_LOG_TS || (now - LAST_MENU_ENABLED_LOG_TS) > 800) {
+        LAST_MENU_ENABLED_LOG_TS = now;
+        ctEmit && ctEmit('[TV][EXT][CT] menu features ENABLED');
+      }
+    } catch(_) {}
   }
   function disableMenuFeatures() {
     MENU_FEATURE_ENABLED = false;
@@ -391,9 +419,32 @@
             }
             if (msg.type === 'tv-menu-nav') {
               const dir = String(msg.dir || '').toLowerCase();
-              const okHere = await tryMenuNavLocal(dir);
-              if (okHere) return;
-              try { ctEmit('[TV][EXT][CT] menu_nav msg but no visible menu (relaying to child iframes)'); } catch(_) {}
+              // Ensure gated listeners are active during nav
+              try { enableMenuFeatures(1000); } catch(_) {}
+              let okHere = false;
+              try { okHere = await tryMenuNavLocal(dir); } catch(_) { okHere = false; }
+              if (!okHere) {
+                // Fallback: synthesize Arrow keys to currently focused element/body
+                try {
+                  const keyMap = { up: 'ArrowUp', down: 'ArrowDown', home: 'Home', end: 'End', pageup: 'PageUp', pagedown: 'PageDown' };
+                  const key = keyMap[dir] || (dir === '+1' || dir === 'next' ? 'ArrowDown' : (dir === '-1' || dir === 'prev' ? 'ArrowUp' : 'ArrowDown'));
+                  const tgt = (document.activeElement && document.activeElement !== document.body) ? document.activeElement : document.body;
+                  const evInit = { key, code: key, keyCode: 0, which: 0, bubbles: true, cancelable: true };
+                  tgt && tgt.dispatchEvent(new KeyboardEvent('keydown', evInit));
+                  tgt && tgt.dispatchEvent(new KeyboardEvent('keyup', evInit));
+                } catch(_) {}
+              }
+              if (!okHere) {
+                // Rate-limit this noisy log per frame
+                try {
+                  window.__TV_NO_MENU_LOG_TS__ = window.__TV_NO_MENU_LOG_TS__ || 0;
+                  const now2 = Date.now();
+                  if ((now2 - window.__TV_NO_MENU_LOG_TS__) > 250) {
+                    window.__TV_NO_MENU_LOG_TS__ = now2;
+                    ctEmit('[TV][EXT][CT] menu_nav msg but no visible menu (relaying to child iframes)');
+                  }
+                } catch(_) {}
+              }
               // Relay to child iframes so the correct frame can handle it
               try {
                 const iframes = Array.from(document.querySelectorAll('iframe'));
@@ -1547,24 +1598,37 @@
   function tryNativeScroll(target, dy) {
     if (!target) return false;
     const root = document.scrollingElement || document.documentElement || document.body;
-    const beforeRootY = root ? root.scrollTop : window.scrollY;
-    const before = typeof target.scrollTop === 'number' ? target.scrollTop : null;
-    let changed = false;
+    const el = (target === window || target === document || target === document.body) ? (root || document.documentElement || document.body) : target;
+    // Guard: if effective element cannot scroll vertically, bail early
     try {
-      if (typeof target.scrollBy === 'function') {
-        target.scrollBy({ top: dy, behavior: 'auto' });
-      } else if (typeof target.scrollTop === 'number') {
-        target.scrollTop = (before || 0) + dy;
-      } else if (target === window || target === document || target === document.body) {
+      const sh = el.scrollHeight;
+      const ch = el.clientHeight;
+      const style = (el instanceof Element) ? window.getComputedStyle(el) : null;
+      const overflowY = style ? style.overflowY : '';
+      const canScrollRange = (sh - ch) > 1;
+      const isHtml = el === document.documentElement;
+      if (!canScrollRange) return false;
+      if (isHtml && overflowY === 'hidden') return false;
+    } catch(_) {}
+
+    const beforeRootY = root ? root.scrollTop : window.scrollY;
+    const before = (typeof el.scrollTop === 'number') ? el.scrollTop : null;
+    try {
+      if (typeof el.scrollBy === 'function') {
+        el.scrollBy({ top: dy, behavior: 'auto' });
+      } else if (typeof el.scrollTop === 'number') {
+        el.scrollTop = (before || 0) + dy;
+      } else if (el === window) {
         window.scrollBy(0, dy);
       }
-    } catch (_) {
-      // ignore
-    }
-    const after = typeof target.scrollTop === 'number' ? target.scrollTop : null;
+    } catch (_) { /* ignore */ }
+
+    const after = (typeof el.scrollTop === 'number') ? el.scrollTop : null;
     const afterRootY = root ? root.scrollTop : window.scrollY;
-    changed = (after !== null && before !== null && after !== before) || afterRootY !== beforeRootY;
-    return changed;
+    const deltaEl = (after !== null && before !== null) ? Math.abs(after - before) : 0;
+    const deltaRoot = Math.abs(afterRootY - beforeRootY);
+    const delta = deltaEl || deltaRoot;
+    return delta; // 0 means no movement; any positive number is movement magnitude in CSS px
   }
 
   function dispatchWheelAt(x, y, dy) {
@@ -1635,6 +1699,7 @@
     const { id, x: xDev, y: yDev, dy, dpr: appDpr } = msg;
     let used = 'none';
     let success = false;
+    let movedBy = 0; // track actual movement magnitude (CSS px)
 
     try {
       const dpr = appDpr || window.devicePixelRatio || 1;
@@ -1658,11 +1723,9 @@
           if (!data || data.type !== 'tv-frame-scroll:done' || data.id !== id) return;
           resolved = true;
           window.removeEventListener('message', doneHandler);
-          try {
-            browser.runtime.sendMessage({ id, type: 'scrollAtPoint:done', ok: true, used: data.used || 'iframe' });
-          } catch (e) {
-            console.error(`[TV][EXT][CT] id=${id} | Failed to send done after iframe delegation: ${e.message}`);
-          }
+          // Record success and channel used; unified reply happens in finally
+          try { used = data.used || 'iframe'; } catch(_) { used = 'iframe'; }
+          try { success = !!data.ok; } catch(_) { success = false; }
         };
         window.addEventListener('message', doneHandler);
         try {
@@ -1677,6 +1740,39 @@
         window.removeEventListener('message', doneHandler);
         console.log(`[TV][EXT][CT] id=${id} | iframe did not respond, continuing with local fallbacks`);
       }
+      // If an overlay sits above an iframe, try to find an iframe under the pointer and delegate to it
+      if (!isLocal && (!el || el.tagName !== 'IFRAME')) {
+        try {
+          const stack = (document.elementsFromPoint && document.elementsFromPoint(x, y)) || [];
+          const iframeEl = stack.find(n => n && n.tagName === 'IFRAME');
+          if (iframeEl) {
+            const rect = iframeEl.getBoundingClientRect();
+            const childX = x - rect.left;
+            const childY = y - rect.top;
+            let resolved2 = false;
+            const doneHandler2 = (ev) => {
+              const data = ev && ev.data;
+              if (!data || data.type !== 'tv-frame-scroll:done' || data.id !== id) return;
+              resolved2 = true;
+              window.removeEventListener('message', doneHandler2);
+              // Record success and channel used; unified reply happens in finally
+              try { used = data.used || 'iframe'; } catch(_) { used = 'iframe'; }
+              try { success = !!data.ok; } catch(_) { success = false; }
+            };
+            window.addEventListener('message', doneHandler2);
+            try {
+              (iframeEl.contentWindow || window).postMessage({ type: 'tv-frame-scroll', id, payload: { cmd: 'scrollAtPoint', local: true, id, x: childX, y: childY, dy, dpr } }, '*');
+            } catch (e) {
+              console.warn(`[TV][EXT][CT] id=${id} | postMessage to overlay-iframe failed: ${e.message}`);
+              window.removeEventListener('message', doneHandler2);
+            }
+            await new Promise(r => setTimeout(r, 120));
+            if (resolved2) return;
+            window.removeEventListener('message', doneHandler2);
+            console.log(`[TV][EXT][CT] id=${id} | overlay-iframe did not respond, continuing with local fallbacks`);
+          }
+        } catch(_) {}
+      }
 
       // Direction-aware selection: pick deepest ancestor that can move in requested direction
       let scrollTarget = chooseTargetForDirection(el, dy) || getScrollableAncestor(el);
@@ -1688,11 +1784,15 @@
       logAncestorDiagnostics(el);
 
       if (scrollTarget) {
-        success = tryNativeScroll(scrollTarget, dy);
-        used = scrollTarget.tagName ? scrollTarget.tagName.toLowerCase() : 'document';
-        if (success && !isRootLike(scrollTarget)) {
-          // Do not overwrite with root/html; keep memory of a nested container if any
-          lastScrollableTarget = scrollTarget;
+        const delta0 = tryNativeScroll(scrollTarget, dy);
+        if (delta0 > 0) {
+          success = true;
+          used = scrollTarget.tagName ? scrollTarget.tagName.toLowerCase() : 'document';
+          movedBy = delta0;
+          if (!isRootLike(scrollTarget)) {
+            // Do not overwrite with root/html; keep memory of a nested container if any
+            lastScrollableTarget = scrollTarget;
+          }
         }
       }
       // If no success and we're scrolling up, try the last known good target (e.g., nested container) before falling back
@@ -1703,6 +1803,7 @@
           if (alt) {
             success = true;
             used = lastScrollableTarget.tagName ? lastScrollableTarget.tagName.toLowerCase() : 'document';
+            movedBy = alt;
           }
         }
       }
@@ -1712,42 +1813,125 @@
         const protectLocalOnly = /(^|\.)youtube\.com$/.test(host);
         // If we have a non-root local target on YouTube, do NOT fall back to wheel/root.
         if (protectLocalOnly && scrollTarget && !isRootLike(scrollTarget)) {
-          console.log(`[TV][EXT][CT] id=${id} | Protect local-only scroll on YouTube -> no root fallback`);
-          used = describeNode(scrollTarget);
+          try { used = describeNode(scrollTarget); } catch(_) { used = 'local-only'; }
           // leave success=false so the app won't force a root scroll
         } else {
           const root = document.scrollingElement || document.documentElement || document.body;
-          // prefer native scroll on the nearest target to minimize latency
+          // 1) try native on nearest scrollable
           const nearTarget = scrollTarget || el;
-          let movedNear = false;
           if (nearTarget) {
             try {
-              movedNear = !!tryNativeScroll(nearTarget, dy);
-            } catch(_) { movedNear = false; }
+              const d1 = tryNativeScroll(nearTarget, dy);
+              if (d1) {
+                success = true;
+                used = nearTarget.tagName ? nearTarget.tagName.toLowerCase() : 'near-native';
+                movedBy = d1;
+              }
+            } catch(_) {}
           }
-          if (movedNear) {
-            success = true;
-            used = 'near-native';
-          } else {
-            const nearBefore = nearTarget && typeof nearTarget.scrollTop === 'number' ? nearTarget.scrollTop : null;
-            const rootBefore = root ? root.scrollTop : window.scrollY;
-            dispatchWheelAt(x, y, dy);
-            // wait a frame to let scroll handlers/layout settle without adding noticeable latency
-            await new Promise(r => (typeof requestAnimationFrame === 'function' ? requestAnimationFrame(() => r()) : setTimeout(r, 8)));
-            const nearAfter = nearTarget && typeof nearTarget.scrollTop === 'number' ? nearTarget.scrollTop : null;
-            const rootAfter = root ? root.scrollTop : window.scrollY;
-            movedNear = nearBefore !== null && nearAfter !== null && nearAfter !== nearBefore;
-            const movedRoot = rootAfter !== rootBefore;
-            success = movedNear || movedRoot;
-            used = 'wheel';
+          // 2) try native on root
+          if (!success && root) {
+            try {
+              const d2 = tryNativeScroll(root, dy);
+              if (d2) {
+                success = true;
+                used = root.tagName ? root.tagName.toLowerCase() : 'root-native';
+                movedBy = d2;
+              }
+            } catch(_) {}
           }
+          // 2b) If still not successful, attempt to find a non-player scrollable container under pointer
           if (!success) {
-            // wheel had no effect -> fall back to root scroll explicitly
-            success = root ? tryNativeScroll(root, dy) : (window.scrollBy(0, dy), true);
-            used = root ? (root.tagName ? root.tagName.toLowerCase() : 'document') : 'window';
-            console.log(`[TV][EXT][CT] id=${id} | Wheel no-op, fallback root: ${used}, success=${success}`);
-          } else {
-            console.log(`[TV][EXT][CT] id=${id} | Wheel moved near=${movedNear} rootDelta=${rootAfter - rootBefore}`);
+            try {
+              const stack = (document.elementsFromPoint && document.elementsFromPoint(x, y)) || [];
+              for (const n of stack) {
+                if (!(n instanceof Element)) continue;
+                if (isPlayerContext(n)) continue;
+                const cand = getScrollableAncestor(n);
+                if (cand && !isRootLike(cand)) {
+                  const d3 = tryNativeScroll(cand, dy);
+                  if (d3) {
+                    success = true;
+                    used = cand.tagName ? cand.tagName.toLowerCase() : 'container-native';
+                    movedBy = d3;
+                    break;
+                  }
+                }
+              }
+            } catch(_) {}
+          }
+          // 3) If pointer is within a player context, avoid wheel (player may capture it). Force root/window.
+          const overPlayer = isPlayerContext(el);
+          let avoidWheel = false;
+          if (!success && overPlayer) {
+            let moved = false;
+            try {
+              if (root) {
+                const dp = tryNativeScroll(root, dy);
+                if (dp) { moved = true; used = 'root-native-player'; movedBy = dp; }
+              }
+              else {
+                const beforeY = window.scrollY;
+                window.scrollBy(0, dy);
+                moved = (window.scrollY !== beforeY);
+                if (moved) { used = 'window-player'; movedBy = Math.abs(window.scrollY - beforeY); }
+              }
+            } catch(_) {
+              try {
+                const beforeY2 = window.scrollY;
+                window.scrollBy(0, dy);
+                moved = (window.scrollY !== beforeY2);
+                if (moved) { used = 'window-player'; movedBy = Math.abs(window.scrollY - beforeY2); }
+              } catch(_) {}
+            }
+            if (moved) {
+              success = true;
+            } else {
+              // Last resort under player: try to delegate into an iframe under the pointer again
+              try {
+                const stack = (document.elementsFromPoint && document.elementsFromPoint(x, y)) || [];
+                const iframeEl3 = stack.find(n => n && n.tagName === 'IFRAME');
+                if (iframeEl3) {
+                  const rect3 = iframeEl3.getBoundingClientRect();
+                  const childX3 = x - rect3.left;
+                  const childY3 = y - rect3.top;
+                  let resolved3 = false;
+                  const doneHandler3 = (ev) => {
+                    const data = ev && ev.data;
+                    if (!data || data.type !== 'tv-frame-scroll:done' || data.id !== id) return;
+                    resolved3 = true;
+                    window.removeEventListener('message', doneHandler3);
+                    // Record success and channel used; unified reply happens in finally
+                    try { used = data.used || 'iframe'; } catch(_) { used = 'iframe'; }
+                    try { success = !!data.ok; } catch(_) { success = false; }
+                  };
+                  window.addEventListener('message', doneHandler3);
+                  try {
+                    (iframeEl3.contentWindow || window).postMessage({ type: 'tv-frame-scroll', id, payload: { cmd: 'scrollAtPoint', local: true, id, x: childX3, y: childY3, dy, dpr } }, '*');
+                  } catch(_) {
+                    window.removeEventListener('message', doneHandler3);
+                  }
+                  await new Promise(r => setTimeout(r, 120));
+                  if (resolved3) return; // child handled and we already replied
+                  window.removeEventListener('message', doneHandler3);
+                }
+              } catch(_) {}
+              // Still no movement and no child handled; avoid wheel when over player to prevent capture/no-op
+              avoidWheel = true;
+            }
+          }
+          // 4) As last resort, wheel fallback without extra waiting
+          if (!success && !avoidWheel) {
+            try {
+              const rootForWheel = document.scrollingElement || document.documentElement || document.body;
+              const beforeWheel = rootForWheel ? rootForWheel.scrollTop : window.scrollY;
+              dispatchWheelAt(x, y, dy);
+              // allow layout/scroll to process
+              await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+              const afterWheel = rootForWheel ? rootForWheel.scrollTop : window.scrollY;
+              const dWheel = Math.abs(afterWheel - beforeWheel);
+              if (dWheel > 0) { success = true; used = 'wheel'; movedBy = dWheel; }
+            } catch(_) {}
           }
         }
       }
@@ -1761,6 +1945,16 @@
 
     } finally {
       // IMPORTANT: Always reply to avoid a timeout in the native app.
+      // Guard against false positives: don't report success without a concrete 'used' or movement
+      try {
+        if (success && (!used || used === 'none')) {
+          success = false;
+        }
+        if (success && (!movedBy || movedBy <= 0) && used === 'wheel') {
+          // if wheel path did not actually move, treat as failure
+          success = false;
+        }
+      } catch(_) {}
       if (!isLocal) {
         try {
           browser.runtime.sendMessage({ id, type: 'scrollAtPoint:done', ok: !!success, used });
