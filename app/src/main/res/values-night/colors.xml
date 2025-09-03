@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="control_bar_bg">#000000</color>
+    <!-- 100% opacity black -->
+    <color name="control_bar_bg">#FF000000</color>
     <color name="icon_gray">#FFFFFF</color>
     <color name="settings_panel_bg">#000000</color>
     <color name="settings_panel_text">#FFFFFF</color>

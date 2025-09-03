@@ -6,7 +6,7 @@
     android:orientation="vertical"
     android:background="@drawable/control_bar_background_rounded"
     android:clipToOutline="true"
-    android:elevation="4dp"
+    android:elevation="3dp"
     android:visibility="visible"> <!-- Assume visible by default when included -->
 
     <!-- Address Bar Area -->
@@ -16,8 +16,8 @@
         android:layout_height="wrap_content"
         android:paddingStart="8dp"
         android:paddingEnd="8dp"
-        android:paddingTop="10dp"
-        android:paddingBottom="10dp">
+        android:paddingTop="11dp"
+        android:paddingBottom="11dp">
 
          <ImageButton
             android:id="@+id/settingsButton"
@@ -28,7 +28,9 @@
             android:contentDescription="@string/action_settings"
             android:layout_centerVertical="true"
             android:layout_alignParentStart="true"
-            android:padding="6dp"/>
+            android:paddingStart="18dp"
+            android:paddingEnd="6dp"
+            android:layout_marginStart="8dp"/>
 
         <EditText
             android:id="@+id/urlBar"
@@ -37,8 +39,8 @@
             android:layout_toEndOf="@id/settingsButton"
             android:layout_toStartOf="@id/refreshButton"
             android:layout_centerVertical="true"
-            android:layout_marginStart="8dp"
-            android:layout_marginEnd="8dp"
+            android:layout_marginStart="12dp"
+            android:layout_marginEnd="12dp"
             android:background="@drawable/url_bar_background" 
             android:padding="10dp"
             android:hint="@string/url_bar_hint"
@@ -58,8 +60,10 @@
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="@string/action_refresh"
             android:layout_centerVertical="true"
-            android:padding="6dp"
-            android:layout_alignParentEnd="true" />
+            android:paddingStart="6dp"
+            android:paddingEnd="18dp"
+            android:layout_alignParentEnd="true"
+            android:layout_marginEnd="8dp" />
 
     </RelativeLayout>
 
@@ -69,7 +73,7 @@
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize" 
         android:orientation="horizontal"
-        android:background="@color/control_bar_bg">
+        android:background="@android:color/transparent">
 
         <ImageButton
             android:id="@+id/backButton"
