@@ -3240,6 +3240,9 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
             urlBar.setFocusable(true);
             urlBar.setClickable(true);
 
+            // Animate expanded bar in for consistency with minimized bar
+            slideInFromBottom(expandedControlBar);
+
             isControlBarExpanded = true;
             isControlBarHidden = false;
             Log.d(TAG, "showExpandedBar: Expanded bar visible.");
@@ -3278,7 +3281,18 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         if (expandedControlBar != null && minimizedControlBar != null) {
             // Cancel any ongoing animations on expanded bar
             try { expandedControlBar.clearAnimation(); } catch (Throwable ignored) {}
-            expandedControlBar.setVisibility(View.GONE);
+            if (expandedControlBar.getVisibility() == View.VISIBLE) {
+                // Animate expanded bar out, then set to GONE
+                slideOutToBottom(expandedControlBar, new Animation.AnimationListener() {
+                    @Override public void onAnimationStart(Animation animation) {}
+                    @Override public void onAnimationEnd(Animation animation) {
+                        expandedControlBar.setVisibility(View.GONE);
+                    }
+                    @Override public void onAnimationRepeat(Animation animation) {}
+                });
+            } else {
+                expandedControlBar.setVisibility(View.GONE);
+            }
             if (minimizedControlBar.getVisibility() == View.VISIBLE) {
                 // Animate minimized bar out, then set to GONE
                 slideOutToBottom(minimizedControlBar, new Animation.AnimationListener() {
