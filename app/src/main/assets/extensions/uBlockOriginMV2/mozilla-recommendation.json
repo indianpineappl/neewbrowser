@@ -1,3 +1,1 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:d88c4c03333c65ddc8b1ad4f09adfc6fa780652e2e7a692f5ef29e3cfc1bd206
-size 188
+{"addon_id":"uBlock0@raymondhill.net","states":["recommended","recommended-android"],"validity":{"not_after":"2030-07-15T00:45:10Z","not_before":"2025-07-14T18:45:10Z"},"schema_version":1}

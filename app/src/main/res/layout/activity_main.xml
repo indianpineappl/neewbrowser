@@ -30,30 +30,24 @@
             android:layout_height="0dp"
             android:layout_weight="1"/>
 
-        <!-- Drop Shadow Above Control Bar -->
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="0.5dp"
-            android:background="#E4E4E1" />
-
-        <!-- Control Bar Container at the bottom -->
-        <FrameLayout
-            android:id="@+id/controlBarContainer"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="0dp"
-            android:background="@android:color/black"
-            android:elevation="2dp">
-            
-            <!-- Include Expanded Control Bar Layout -->
-            <include layout="@layout/control_bar_expanded" />
-            
-            <!-- Include Minimized Control Bar Layout -->
-            <include layout="@layout/control_bar_minimized" />
-            
-        </FrameLayout>
-
     </LinearLayout>
+
+    <!-- Control Bar Container overlaid at the bottom (so GeckoView stays visible behind during animations) -->
+    <FrameLayout
+        android:id="@+id/controlBarContainer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="@android:color/transparent"
+        android:elevation="4dp">
+
+        <!-- Include Expanded Control Bar Layout -->
+        <include layout="@layout/control_bar_expanded" />
+
+        <!-- Include Minimized Control Bar Layout -->
+        <include layout="@layout/control_bar_minimized" />
+
+    </FrameLayout>
 
     <!-- Settings Panel (Initially Gone) -->
     <!-- Place it here so it overlays the GeckoView when visible -->

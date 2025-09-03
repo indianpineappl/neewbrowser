@@ -181,6 +181,38 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         return false;
     }
 
+    // Validate that the uBlock assets are real files, not Git LFS pointer stubs
+    private boolean isUblockAssetsValid() {
+        // Asset paths relative to assets/ folder
+        String base = "extensions/uBlockOriginMV2/";
+        return isAssetRealJson(base + "manifest.json") && isAssetRealJson(base + "managed_storage.json");
+    }
+
+    private boolean isAssetRealJson(String assetPath) {
+        java.io.InputStream is = null;
+        try {
+            is = getAssets().open(assetPath);
+            java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(is));
+            // Read small prefix
+            char[] buf = new char[64];
+            int n = br.read(buf);
+            if (n <= 0) return false;
+            String head = new String(buf, 0, n).trim();
+            // Git LFS pointer files begin with 'version https://git-lfs.github.com/spec/v1'
+            if (head.startsWith("version https://git-lfs")) {
+                Log.e(TAG, "Asset appears to be a Git LFS pointer: " + assetPath);
+                return false;
+            }
+            // Basic sanity: JSON files should start with '{' or '['
+            return head.startsWith("{") || head.startsWith("[");
+        } catch (Throwable t) {
+            Log.e(TAG, "Failed to read asset: " + assetPath, t);
+            return false;
+        } finally {
+            if (is != null) try { is.close(); } catch (Exception ignored) {}
+        }
+    }
+
     private boolean isHttpLike(String uri) {
         if (uri == null) return false;
         String u = uri.toLowerCase();
@@ -252,6 +284,13 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private static final int SCROLL_THRESHOLD = 50; // Pixels to scroll before triggering hide/show
     private static final int TAP_THRESHOLD_BOTTOM_EDGE_DP = 60; // DP for tap detection
     private int tapThresholdBottomEdgePx; // Will be calculated in onCreate
+    // DP-based scroll thresholds and accumulators for mobile minimized control bar behavior
+    private static final int HIDE_THRESHOLD_DP = 64;  // how far to scroll down before hiding
+    private static final int SHOW_THRESHOLD_DP = 24;  // how far to scroll up before showing
+    private int hideThresholdPx = 80; // init defaults; set properly in onCreate
+    private int showThresholdPx = 30; // init defaults; set properly in onCreate
+    private int accumulatedScrollDownPx = 0;
+    private int accumulatedScrollUpPx = 0;
 
     private SharedPreferences prefs;
     private static final String PREF_COOKIES_ENABLED = "cookies_enabled";
@@ -550,6 +589,15 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         minimizedRefreshButton = findViewById(R.id.minimizedRefreshButton);
         minimizedForwardButton = findViewById(R.id.minimizedForwardButton);
         
+        // Initialize scroll thresholds (convert DP to PX)
+        {
+            final float density = getResources().getDisplayMetrics().density;
+            hideThresholdPx = Math.max(1, Math.round(HIDE_THRESHOLD_DP * density));
+            showThresholdPx = Math.max(1, Math.round(SHOW_THRESHOLD_DP * density));
+            tapThresholdBottomEdgePx = Math.max(1, Math.round(TAP_THRESHOLD_BOTTOM_EDGE_DP * density));
+            Log.d(TAG, "[SCROLL] thresholds: hide=" + hideThresholdPx + "px show=" + showThresholdPx + "px tapBottom=" + tapThresholdBottomEdgePx + "px");
+        }
+
         // Initialize lists for focusable UI elements
         controlBarElements = Arrays.asList(
                 settingsButton, urlBar, backButton, forwardButton, newTabButton, tabsButton, downloadsButton
@@ -1697,10 +1745,23 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         }
     }
 
+    private boolean isCzechLocale() {
+        try {
+            String lang = java.util.Locale.getDefault().getLanguage();
+            return lang != null && lang.toLowerCase(java.util.Locale.ROOT).startsWith("cs");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private String getDefaultHomepageUrl() {
         if (isRussianLocale()) {
             // On TV devices, use yandex.com per requirement; otherwise use dzen.ru
             return isTvDevice() ? "https://yandex.com" : "https://dzen.ru";
+        }
+        if (isCzechLocale()) {
+            // For Czech devices, use yandex.com
+            return "https://yandex.com";
         }
         return "https://www.google.com";
     }
@@ -1713,6 +1774,10 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             } else {
                 return "https://yandex.ru/search/?text=" + encodedQuery + "&search_source=dzen_desktop_safe";
             }
+        }
+        if (isCzechLocale()) {
+            // For Czech devices, use yandex.com
+            return "https://yandex.com/search/?text=" + encodedQuery;
         }
         return "https://www.google.com/search?q=" + encodedQuery;
     }
@@ -3164,6 +3229,10 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
 
     private void showExpandedBar() {
         if (expandedControlBar != null && minimizedControlBar != null) {
+            // Cancel any ongoing animations
+            try { minimizedControlBar.clearAnimation(); } catch (Throwable ignored) {}
+            try { expandedControlBar.clearAnimation(); } catch (Throwable ignored) {}
+
             expandedControlBar.setVisibility(View.VISIBLE);
             minimizedControlBar.setVisibility(View.GONE);
             // Ensure the main URL bar is interactive
@@ -3179,8 +3248,15 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
 
     private void showMinimizedBar() {
         if (expandedControlBar != null && minimizedControlBar != null && getActiveSession() != null) {
+            // Cancel any ongoing animations
+            try { minimizedControlBar.clearAnimation(); } catch (Throwable ignored) {}
+            try { expandedControlBar.clearAnimation(); } catch (Throwable ignored) {}
+
             expandedControlBar.setVisibility(View.GONE);
-            minimizedControlBar.setVisibility(View.VISIBLE);
+            if (minimizedControlBar.getVisibility() != View.VISIBLE) {
+                minimizedControlBar.setVisibility(View.VISIBLE);
+                slideInFromBottom(minimizedControlBar);
+            }
             // Main URL bar should not be interactive when minimized bar is shown
             urlBar.setFocusable(false);
             urlBar.setFocusableInTouchMode(false);
@@ -3200,8 +3276,21 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
 
     private void hideBothBars() {
         if (expandedControlBar != null && minimizedControlBar != null) {
+            // Cancel any ongoing animations on expanded bar
+            try { expandedControlBar.clearAnimation(); } catch (Throwable ignored) {}
             expandedControlBar.setVisibility(View.GONE);
-            minimizedControlBar.setVisibility(View.GONE);
+            if (minimizedControlBar.getVisibility() == View.VISIBLE) {
+                // Animate minimized bar out, then set to GONE
+                slideOutToBottom(minimizedControlBar, new Animation.AnimationListener() {
+                    @Override public void onAnimationStart(Animation animation) {}
+                    @Override public void onAnimationEnd(Animation animation) {
+                        minimizedControlBar.setVisibility(View.GONE);
+                    }
+                    @Override public void onAnimationRepeat(Animation animation) {}
+                });
+            } else {
+                minimizedControlBar.setVisibility(View.GONE);
+            }
 
             isControlBarExpanded = false; // When hidden, it's not expanded
             isControlBarHidden = true;
@@ -3216,31 +3305,65 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         mCanScrollUp = scrollY > 0;
         Log.d(TAG, "[TV][SCROLL] onScrollChanged x=" + scrollX + " y=" + scrollY + " mCanScrollUp=" + mCanScrollUp);
 
-        // Existing scroll handling code
         int dy = scrollY - lastScrollY;
-        if (Math.abs(dy) < SCROLL_THRESHOLD) {
-            if (Math.abs(dy) > 5) {
-                 lastScrollY = scrollY;
-            }
-            return;
-        }
+        lastScrollY = scrollY;
 
         if (dy > 0) {
-            if (!isControlBarHidden) {
+            // Scrolling down
+            accumulatedScrollDownPx += dy;
+            accumulatedScrollUpPx = 0;
+            if (!isControlBarHidden && accumulatedScrollDownPx >= hideThresholdPx) {
                 hideBothBars();
-                Log.d(TAG, "onScrollChanged: Scrolled DOWN - Hiding both bars.");
+                Log.d(TAG, "onScrollChanged: Scrolled DOWN (" + accumulatedScrollDownPx + "px) - Hiding both bars.");
+                accumulatedScrollDownPx = 0; // reset after action
             }
-        } else {
-            if (isControlBarHidden || isControlBarExpanded) {
+        } else if (dy < 0) {
+            // Scrolling up
+            int up = -dy;
+            accumulatedScrollUpPx += up;
+            accumulatedScrollDownPx = 0;
+            if ((isControlBarHidden || isControlBarExpanded) && accumulatedScrollUpPx >= showThresholdPx) {
                 showMinimizedBar();
-                Log.d(TAG, "onScrollChanged: Scrolled UP - Showing minimized bar.");
+                Log.d(TAG, "onScrollChanged: Scrolled UP (" + accumulatedScrollUpPx + "px) - Showing minimized bar.");
+                accumulatedScrollUpPx = 0; // reset after action
             }
         }
-
-        lastScrollY = scrollY;
 
         // Update focusable rectangles for the TV cursor
         updateFocusableRects();
+    }
+
+    // --- Simple slide animations for minimized control bar ---
+    private void slideInFromBottom(View v) {
+        int h = v.getHeight();
+        if (h == 0) {
+            // If height not measured yet, approximate with action bar size or 56dp fallback
+            try {
+                h = v.getResources().getDimensionPixelSize(androidx.appcompat.R.dimen.abc_action_bar_default_height_material);
+            } catch (Throwable t) {
+                final float density = v.getResources().getDisplayMetrics().density;
+                h = Math.max(1, Math.round(56 * density));
+            }
+        }
+        TranslateAnimation anim = new TranslateAnimation(0, 0, h, 0);
+        anim.setDuration(200);
+        v.startAnimation(anim);
+    }
+
+    private void slideOutToBottom(View v, Animation.AnimationListener listener) {
+        int h = v.getHeight();
+        if (h == 0) {
+            try {
+                h = v.getResources().getDimensionPixelSize(androidx.appcompat.R.dimen.abc_action_bar_default_height_material);
+            } catch (Throwable t) {
+                final float density = v.getResources().getDisplayMetrics().density;
+                h = Math.max(1, Math.round(56 * density));
+            }
+        }
+        TranslateAnimation anim = new TranslateAnimation(0, 0, 0, h);
+        anim.setDuration(200);
+        if (listener != null) anim.setAnimationListener(listener);
+        v.startAnimation(anim);
     }
 
     // Method to apply runtime settings based on SharedPreferences
@@ -3701,6 +3824,15 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         // For onCreate, if it failed once, it might keep failing.
         // For now, always attempt if ublockOriginExtension is null, as the call might come from a settings change.
         Log.i(TAG, "uBlock Origin extension object is null. Attempting installation. Prior attempt: " + uBlockInstallAttempted);
+
+        // Validate assets to avoid JSON.parse failures when Git LFS pointers are present
+        if (!isUblockAssetsValid()) {
+            Log.e(TAG, "uBlock Origin assets look invalid (likely Git LFS pointer files). Skipping installation. Please fetch real assets.");
+            Toast.makeText(MainActivity.this, "uBlock Origin assets missing. Run 'git lfs pull' and rebuild.", Toast.LENGTH_LONG).show();
+            if (panelUBlockSwitch != null) panelUBlockSwitch.setChecked(false);
+            uBlockInstallAttempted = true;
+            return;
+        }
 
         Log.i(TAG, "Attempting to ensureBuiltIn uBlock Origin from: " + UBLOCK_ASSET_PATH + " with ID: " + UBLOCK_EXTENSION_ID);
 

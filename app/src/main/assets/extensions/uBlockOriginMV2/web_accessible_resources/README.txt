@@ -1,3 +1,11 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:e9c22fc98d4682d7412b122db8f48d0c04d797d6010c52c2eafa92ae183c0542
-size 507
+IMPORTANT
+
+Content of this folder cannot be accessed without the internal secret token
+created for each request to any of the "web accessible resources".
+
+Any fetch operation made without uBlock Origin's internal secret will result
+in failure. This means that despite the content of the folder here declared as
+"web accessible resources", it still cannot be seen by the outside world.
+
+Only uBlock Origin knows the secret token at runtime and hence only
+uBlock Origin can access the content of this folder.

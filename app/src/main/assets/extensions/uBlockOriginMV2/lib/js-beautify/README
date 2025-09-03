@@ -1,3 +1,5 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:7c090bd75c8579f572bfae24f9119ef0a44443aecf715ef2822f565cf8b38d34
-size 143
+Project repo:
+https://github.com/beautify-web/js-beautify
+
+Source:
+https://cdnjs.cloudflare.com/ajax/libs/js-beautify/1.14.7/beautifier.min.js

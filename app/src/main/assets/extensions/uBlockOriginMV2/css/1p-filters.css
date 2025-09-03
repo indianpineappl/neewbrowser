@@ -1,3 +1,33 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:d120f94ac4aaf05122e58e4f49ca2d967b7a88a984509cc8ccf510730d19066f
-size 624
+html {
+    height: 100vh;
+        height: 100svh;
+    overflow: hidden;
+    width: 100vw;
+    }
+body {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    justify-content: stretch;
+    overflow: hidden;
+    overflow-y: auto;
+    width: 100%;
+    }
+.body {
+    flex-shrink: 0;
+    }
+/* https://github.com/uBlockOrigin/uBlock-issues/issues/3058 */
+:root.mobile body {
+    min-height: unset;
+    }
+html:not(.mobile) [data-i18n="1pTrustWarning"] {
+    font-weight: bold;
+    }
+.codeMirrorContainer {
+    flex-grow: 1;
+    }
+#userFilters {
+    min-height: 8em;
+    text-align: left;
+    word-wrap: normal;
+    }

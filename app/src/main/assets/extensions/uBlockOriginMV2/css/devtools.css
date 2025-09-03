@@ -1,3 +1,23 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:60ef1f092fd5e4ed6e78e3109ee2d455f9c22cc6ab78dd32bfb430491aec2ecb
-size 363
+html {
+    height: 100vh;
+        height: 100svh;
+    overflow: hidden;
+    width: 100vw;
+    }
+body {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    justify-content: stretch;
+    overflow: hidden;
+    width: 100%;
+    }
+.body {
+    flex-shrink: 0;
+    }
+.codeMirrorContainer {
+    flex-grow: 1;
+    }
+#console {
+    text-align: left;
+    }
