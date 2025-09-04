@@ -23,4 +23,17 @@
     <color name="address_bar_bg">#F0F0F0</color>
     <color name="address_bar_text">#6F6F6F</color>
     <color name="address_bar_hint">#999999</color>
-</resources> 
+    
+    <!-- Figma control bar palette (Light) -->
+    <!-- Revert to previous lighter overlay -->
+    <color name="control_bar_overlay">#47FFFFFF</color>
+    <!-- Enabled icon tint (Light mode should be dark) -->
+    <color name="icon_enabled">#FF000000</color>
+    <!-- hsla(206, 11%, 73%, 1) approx -->
+    <color name="icon_disabled">#FFB3BBC2</color>
+    <!-- hsla(212, 4%, 34%, 1) approx -->
+    <color name="input_text">#FF53575A</color>
+    
+    <!-- Address bar fill per Figma (Light) -->
+    <color name="address_bar_fill">#FFFFFFFF</color>
+</resources>

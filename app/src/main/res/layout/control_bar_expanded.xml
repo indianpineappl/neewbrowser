@@ -25,6 +25,7 @@
             android:layout_height="wrap_content"
             android:src="@drawable/ic_settings"
             android:background="?attr/selectableItemBackgroundBorderless"
+            android:tint="@color/icon_tint"
             android:contentDescription="@string/action_settings"
             android:layout_centerVertical="true"
             android:layout_alignParentStart="true"
@@ -44,7 +45,7 @@
             android:background="@drawable/url_bar_background" 
             android:padding="10dp"
             android:hint="@string/url_bar_hint"
-            android:textColor="@color/address_bar_text"
+            android:textColor="@color/input_text"
             android:textColorHint="@color/address_bar_hint"
             android:textCursorDrawable="@null"
             android:inputType="textUri"
@@ -58,6 +59,7 @@
             android:layout_height="wrap_content"
             android:src="@drawable/ic_refresh"
             android:background="?attr/selectableItemBackgroundBorderless"
+            android:tint="@color/icon_tint"
             android:contentDescription="@string/action_refresh"
             android:layout_centerVertical="true"
             android:paddingStart="6dp"
@@ -82,6 +84,7 @@
             android:layout_weight="1"
             android:src="@drawable/ic_back"
             android:background="?attr/selectableItemBackgroundBorderless"
+            android:tint="@color/icon_tint"
             android:contentDescription="@string/action_back" />
 
         <ImageButton
@@ -91,6 +94,7 @@
             android:layout_weight="1"
             android:src="@drawable/ic_downloads"
             android:background="?attr/selectableItemBackgroundBorderless"
+            android:tint="@color/icon_tint"
             android:contentDescription="@string/action_downloads" />
 
         <ImageButton
@@ -100,6 +104,7 @@
             android:layout_weight="1"
             android:src="@drawable/ic_new_tab"
             android:background="?attr/selectableItemBackgroundBorderless"
+            android:tint="@color/icon_tint"
             android:contentDescription="@string/action_new_tab" />
 
         <ImageButton
@@ -109,6 +114,7 @@
             android:layout_weight="1"
             android:src="@drawable/ic_tabs"
             android:background="?attr/selectableItemBackgroundBorderless"
+            android:tint="@color/icon_tint"
             android:contentDescription="@string/action_tabs"
             android:transitionName="fab_transition" />
 
@@ -119,6 +125,7 @@
             android:layout_weight="1"
             android:src="@drawable/ic_forward"
             android:background="?attr/selectableItemBackgroundBorderless"
+            android:tint="@color/icon_tint"
             android:contentDescription="@string/action_forward" />
 
     </LinearLayout>

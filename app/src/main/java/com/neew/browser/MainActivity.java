@@ -280,7 +280,12 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private boolean isUiFocused = false;
     private volatile boolean isUiReady = false; // New flag to prevent UI updates before initialization
     private boolean isControlBarHidden = false; // New: true if both bars are GONE
+    // Only allow hide when initiated from a scroll event on the active page
+    private boolean scrollTriggeredHideRequest = false;
     private int lastScrollY = 0;
+    // Suppress scroll-triggered hide immediately after navigation/back/forward
+    private static final long SUPPRESS_AFTER_NAV_MS = 1000L;
+    private long suppressScrollHideUntilMs = 0L;
     private static final int SCROLL_THRESHOLD = 50; // Pixels to scroll before triggering hide/show
     private static final int TAP_THRESHOLD_BOTTOM_EDGE_DP = 60; // DP for tap detection
     private int tapThresholdBottomEdgePx; // Will be calculated in onCreate
@@ -1513,14 +1518,19 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         if (backButton != null) {
         backButton.setOnClickListener(v -> {
             GeckoSession activeSession = getActiveSession();
-                if (activeSession != null) activeSession.goBack();
+            if (activeSession != null) {
+                // Only acts if there is history; UI updates will happen on navigation callbacks
+                activeSession.goBack();
+            }
         });
         }
 
         if (forwardButton != null) {
         forwardButton.setOnClickListener(v -> {
             GeckoSession activeSession = getActiveSession();
-                if (activeSession != null) activeSession.goForward();
+                if (activeSession != null) {
+                    activeSession.goForward();
+                }
         });
         }
 
@@ -1571,14 +1581,18 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         if (minimizedBackButton != null) {
         minimizedBackButton.setOnClickListener(v -> {
              GeckoSession activeSession = getActiveSession();
-             if (activeSession != null) activeSession.goBack();
+             if (activeSession != null) {
+                 activeSession.goBack();
+             }
         });
         }
 
         if (minimizedForwardButton != null) {
         minimizedForwardButton.setOnClickListener(v -> {
              GeckoSession activeSession = getActiveSession();
-             if (activeSession != null) activeSession.goForward();
+             if (activeSession != null) {
+                 activeSession.goForward();
+             }
         });
         }
 
@@ -1833,6 +1847,8 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                     if (isTvDevice() && tvCursorView != null) {
                         tvCursorView.showProgress();
                     }
+                    // Ensure a control bar is visible on navigation start
+                    ensureControlBarVisibleOnNavigation();
                 }
             }
 
@@ -1979,6 +1995,8 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         mLastValidUrl = newUri;
 
                         runOnUiThread(() -> {
+                            // Ensure control bar visible when location changes on active session
+                            ensureControlBarVisibleOnNavigation();
                             // This call is safe because it checks for null UI components.
                             MainActivity.this.updateUIForActiveSession();
 
@@ -2051,6 +2069,8 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                             if (isTvDevice() && tvCursorView != null) {
                                 tvCursorView.showProgress();
                             }
+                            // Ensure a control bar is visible on navigation start
+                            ensureControlBarVisibleOnNavigation();
                         }
                     }
 
@@ -2164,6 +2184,8 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                             }
                             if (session == getActiveSession()) {
                         runOnUiThread(() -> {
+                                    // Ensure control bar visible when location changes on active popup session
+                                    ensureControlBarVisibleOnNavigation();
                                     urlBar.setText(newUri);
                                     if (!isControlBarExpanded) {
                                         minimizedUrlBar.setText(newUri);
@@ -3233,6 +3255,7 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
             try { minimizedControlBar.clearAnimation(); } catch (Throwable ignored) {}
             try { expandedControlBar.clearAnimation(); } catch (Throwable ignored) {}
 
+            boolean wasVisible = expandedControlBar.getVisibility() == View.VISIBLE;
             expandedControlBar.setVisibility(View.VISIBLE);
             minimizedControlBar.setVisibility(View.GONE);
             // Ensure the main URL bar is interactive
@@ -3241,10 +3264,13 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
             urlBar.setClickable(true);
 
             // Animate expanded bar in for consistency with minimized bar
-            slideInFromBottom(expandedControlBar);
+            if (!wasVisible) {
+                slideInFromBottom(expandedControlBar);
+            }
 
             isControlBarExpanded = true;
             isControlBarHidden = false;
+            scrollTriggeredHideRequest = false; // reset
             Log.d(TAG, "showExpandedBar: Expanded bar visible.");
         }
     }
@@ -3262,15 +3288,15 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
             }
             // Main URL bar should not be interactive when minimized bar is shown
             urlBar.setFocusable(false);
-            urlBar.setFocusableInTouchMode(false);
             urlBar.setClickable(false);
             
             isControlBarExpanded = false;
             isControlBarHidden = false;
+            scrollTriggeredHideRequest = false; // reset any pending hide
             // Update the text of the minimized URL bar
             String currentUrl = sessionUrlMap.containsKey(getActiveSession()) ? sessionUrlMap.get(getActiveSession()) : "";
-            minimizedUrlBar.setText(currentUrl);
-            Log.d(TAG, "showMinimizedBar: Minimized bar visible. URL: " + currentUrl);
+            if (currentUrl != null) minimizedUrlBar.setText(currentUrl);
+            Log.d(TAG, "showMinimizedBar: Minimized bar visible.");
         } else if (getActiveSession() == null) {
             Log.w(TAG, "showMinimizedBar: Cannot show, active session is null. Hiding both bars.");
             hideBothBars(); // Fallback if no session
@@ -3279,6 +3305,11 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
 
     private void hideBothBars() {
         if (expandedControlBar != null && minimizedControlBar != null) {
+            // Enforce: never hide unless a scroll was detected on the same page
+            if (!scrollTriggeredHideRequest) {
+                Log.d(TAG, "hideBothBars: ignored because no scrollTriggeredHideRequest");
+                return;
+            }
             // Cancel any ongoing animations on expanded bar
             try { expandedControlBar.clearAnimation(); } catch (Throwable ignored) {}
             if (expandedControlBar.getVisibility() == View.VISIBLE) {
@@ -3308,6 +3339,7 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
 
             isControlBarExpanded = false; // When hidden, it's not expanded
             isControlBarHidden = true;
+            scrollTriggeredHideRequest = false; // consume the request
             Log.d(TAG, "hideBothBars: Both control bars hidden.");
         }
     }
@@ -3319,6 +3351,19 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         mCanScrollUp = scrollY > 0;
         Log.d(TAG, "[TV][SCROLL] onScrollChanged x=" + scrollX + " y=" + scrollY + " mCanScrollUp=" + mCanScrollUp);
 
+        // If we're in a brief suppression period after navigation/back/forward,
+        // ignore this scroll to avoid auto-hiding due to restored scroll position
+        long now = System.currentTimeMillis();
+        if (now < suppressScrollHideUntilMs) {
+            accumulatedScrollDownPx = 0;
+            accumulatedScrollUpPx = 0;
+            lastScrollY = scrollY; // sync baseline
+            Log.d(TAG, "onScrollChanged: Suppressed due to recent navigation (" + (suppressScrollHideUntilMs - now) + "ms remaining)");
+            // Still update focusable rects and return
+            updateFocusableRects();
+            return;
+        }
+
         int dy = scrollY - lastScrollY;
         lastScrollY = scrollY;
 
@@ -3327,6 +3372,8 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
             accumulatedScrollDownPx += dy;
             accumulatedScrollUpPx = 0;
             if (!isControlBarHidden && accumulatedScrollDownPx >= hideThresholdPx) {
+                // Mark that a scroll triggered the hide on this page
+                scrollTriggeredHideRequest = true;
                 hideBothBars();
                 Log.d(TAG, "onScrollChanged: Scrolled DOWN (" + accumulatedScrollDownPx + "px) - Hiding both bars.");
                 accumulatedScrollDownPx = 0; // reset after action
@@ -3345,6 +3392,34 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
 
         // Update focusable rectangles for the TV cursor
         updateFocusableRects();
+    }
+
+    // Ensure control bar visibility upon navigation or new tab activity
+    private void ensureControlBarVisibleOnNavigation() {
+        if (controlBarContainer == null) return;
+        // Reset scroll/hide state so we don't accidentally hide on restored scroll
+        resetControlBarScrollState();
+        // Start suppression window so restored scroll doesn't hide the bar
+        suppressScrollHideUntilMs = System.currentTimeMillis() + SUPPRESS_AFTER_NAV_MS;
+        controlBarContainer.setVisibility(View.VISIBLE);
+        // If previously expanded, keep expanded. Otherwise show minimized.
+        if (isControlBarExpanded) {
+            showExpandedBar();
+        } else {
+            showMinimizedBar();
+        }
+        // Do not allow a carry-over hidden state between pages
+        isControlBarHidden = false;
+        scrollTriggeredHideRequest = false;
+    }
+
+    // Reset scroll-related accumulators and flags
+    private void resetControlBarScrollState() {
+        accumulatedScrollDownPx = 0;
+        accumulatedScrollUpPx = 0;
+        lastScrollY = 0;
+        mLastScrollY = 0;
+        scrollTriggeredHideRequest = false;
     }
 
     // --- Simple slide animations for minimized control bar ---

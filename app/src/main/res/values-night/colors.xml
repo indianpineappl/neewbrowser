@@ -11,4 +11,16 @@
     <color name="address_bar_bg">#1F1F1F</color>
     <color name="address_bar_text">#FFFFFF</color>
     <color name="address_bar_hint">#AAAAAA</color>
-</resources> 
+    
+    <!-- Address bar fill per Figma (Dark) -->
+    <color name="address_bar_fill">#FF3F3F3F</color>
+    
+    <!-- Figma control bar palette (Dark) -->
+    <color name="control_bar_overlay">#47000000</color>
+    <!-- hsla(0, 0%, 100%, 1) -->
+    <color name="icon_enabled">#FFFFFFFF</color>
+    <!-- hsla(206, 11%, 73%, 1) approx -->
+    <color name="icon_disabled">#FFB3BBC2</color>
+    <!-- For readability on dark background -->
+    <color name="input_text">#FFFFFFFF</color>
+</resources>
