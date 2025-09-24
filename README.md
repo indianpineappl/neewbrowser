@@ -1,40 +1,75 @@
-# NeewBrowser Project
+# NeewBrowser
 
-This is the README for the NeewBrowser Android application.
+NeewBrowser is a GeckoView-based Android browser focused on extreme privacy, no tracking, robust ad blocking, and a first-class Leanback/TV experience.
+
+## Highlights
+
+- **Extreme privacy, by default**
+  - No analytics of your browsing. No background telemetry. No user tracking.
+  - Third-party requests are minimized; user data never leaves the device. We never maintain or track your history of websites.
+
+- **Built-in ad blocking**
+  - Integrated uBlock Origin (MV2) as a bundled WebExtension for GeckoView.
+  - Local filter lists with update support; effective against ads, trackers, and annoyances.
+
+- **Smart User-Agent handling (PiP-friendly)**
+  - Some sites disable Picture-in-Picture (PiP) on mobile web. NeewBrowser applies a desktop-like User-Agent where needed so PiP can run smoothly without site-imposed mobile restrictions.
+  - UA overrides are applied conservatively and may be scoped per-domain to balance feature access and layout compatibility.
+
+- **Powered by GeckoView**
+  - Modern Mozilla engine with WebRender, excellent standards support, and strong media capabilities.
+  - Carefully managed `GeckoSession` lifecycle for stability across app start/stop/resume.
+
+- **TV mode (Leanback) experience**
+  - DPAD navigation with a visible on-screen cursor for precise selection on big screens.
+  - TV-optimized control bars (expanded/minimized) and remote-first interactions.
+  - TV Scroll Helper WebExtension enables scrolling complex or nested scroll containers on sites that don’t respond to DPAD by default.
+
+- **Advanced scrolling for complex pages**
+  - Focuses the nearest scrollable element under the cursor when DPAD scrolling fails.
+  - Falls back to simulated pointer/touch via Gecko’s PanZoom when needed.
+
+- **Resume stability & black-screen mitigation**
+  - Minimal, standards-aligned lifecycle: reattach session and call `setActive(true)` on resume; deactivate on pause/stop.
+  - One-time post-resume probe (TV-aware) to recover only when the compositor truly failed to repaint.
+  - Guard to ignore transient `about:blank` top-level location changes that can momentarily blank restored tabs.
+
+## Build and Run
+
+Prerequisites
+
+- Android Studio Hedgehog or newer
+- Android SDK 34+
+
+Build
+
+```bash
+./gradlew assembleDebug
+```
+
+Install
+
+```bash
+./gradlew installDebug
+```
+
+Launch
+
+```bash
+adb shell monkey -p com.neew.browser -c android.intent.category.LAUNCHER 1
+```
+
+## Emulator Notes (if applicable)
+
+- Some emulator GPU backends (notably on Apple Silicon hosts) can exhibit compositor glitches. If you encounter blank frames after resume:
+  - Switch AVD Graphics to ANGLE or Software (Swiftshader) and cold boot the emulator.
+  - Prefer testing on a physical device for final verification.
 
 ## Development Notes
 
-### GeckoView: CTA Failures and `window.arguments` Error
+- Remote debugging can be enabled in development via `GeckoRuntimeSettings`.
+- uBlock Origin MV2 is bundled as an extension; ensure its assets are present and not LFS pointers.
 
-**Symptom:**
-- Call-to-Action (CTA) buttons or other interactive elements on some websites (e.g., `https://webflow.com/made-in-webflow/example`) may not function correctly.
-- Logcat may show a `TypeError: window.arguments is undefined` error originating from GeckoView's internal script `chrome://geckoview/content/geckoview.js` (around line 52, in `_initData`).
+## License
 
-**Cause (Hypothesis):**
-- This issue appears to be related to an incomplete or incorrect initialization within GeckoView when it's not running in a more debug-friendly mode. The `window.arguments` object, expected by GeckoView's internal scripts, might not be properly set up. This issue was present before uBlock Origin integration.
-
-**Solution/Workaround:**
-The following combination of settings resolved the issue, allowing CTAs to function correctly and eliminating the `window.arguments` error:
-
-1.  **Enable Debuggable Release Builds (Locally):**
-    Add the following line to your project's `local.properties` file (create the file if it doesn't exist at the project root):
-    ```properties
-    android.buildTypes.release.debuggable=true
-    ```
-    *Note: `local.properties` is typically not checked into version control and affects local builds.*
-
-2.  **Enable Remote Debugging in GeckoRuntimeSettings:**
-    In `MainActivity.java`, within the `applyRuntimeSettings()` method (or wherever `GeckoRuntimeSettings` are configured), enable remote debugging:
-    ```java
-    GeckoRuntimeSettings settings = runtime.getSettings();
-    // ... other settings ...
-    settings.setRemoteDebuggingEnabled(true); // Enable remote debugging
-    // ... other settings ...
-    ```
-
-**Outcome:**
-- With these settings, GeckoView appears to initialize more completely, resolving the internal error and allowing web content to function as expected.
-- It's recommended to keep `settings.setRemoteDebuggingEnabled(true);` for debug builds. The `local.properties` change will make local release builds debuggable. If building release versions for distribution through a CI/CD system, this `local.properties` change won't apply, and the issue might reappear unless the root cause in GeckoView is fixed in a future version.
-
----
-*(You can add more sections to this README as your project develops.)* 
+This project is currently proprietary to the NeewBrowser team unless stated otherwise.
