@@ -89,6 +89,13 @@ android {
         buildConfig = true
     }
 
+    // Ensure native libraries are not repackaged/extracted; keep uncompressed & page-aligned
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = false
+        }
+    }
+
     testOptions {
         managedDevices {
             devices {

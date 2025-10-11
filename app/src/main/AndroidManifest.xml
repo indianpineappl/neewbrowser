@@ -33,7 +33,8 @@
         android:supportsRtl="true"
         android:banner="@drawable/banner"
         android:theme="@style/Theme.NeewBrowser"
-        android:hardwareAccelerated="true">
+        android:hardwareAccelerated="true"
+        android:extractNativeLibs="false">
         <activity
             android:name=".MainActivity"
             android:exported="true"
