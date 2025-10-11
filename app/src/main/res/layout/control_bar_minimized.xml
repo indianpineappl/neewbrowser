@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/minimizedControlBar"
     android:layout_width="match_parent"
     android:layout_height="?attr/actionBarSize" 
@@ -17,7 +18,7 @@
         android:layout_weight="1"
         android:src="@drawable/ic_back"
         android:background="?attr/selectableItemBackgroundBorderless"
-        android:tint="@color/icon_tint"
+        app:tint="@color/icon_tint"
         android:contentDescription="@string/action_back" />
     
     <ImageButton
@@ -27,7 +28,7 @@
         android:layout_weight="1"
         android:src="@drawable/ic_new_tab"
         android:background="?attr/selectableItemBackgroundBorderless"
-        android:tint="@color/icon_tint"
+        app:tint="@color/icon_tint"
         android:contentDescription="@string/action_new_tab" />
 
     <EditText
@@ -54,7 +55,7 @@
         android:layout_weight="1"
         android:src="@drawable/ic_refresh"
         android:background="?attr/selectableItemBackgroundBorderless"
-        android:tint="@color/icon_tint"
+        app:tint="@color/icon_tint"
         android:contentDescription="@string/action_refresh" />
 
     <ImageButton
@@ -64,7 +65,7 @@
         android:layout_weight="1"
         android:src="@drawable/ic_forward"
         android:background="?attr/selectableItemBackgroundBorderless"
-        android:tint="@color/icon_tint"
+        app:tint="@color/icon_tint"
         android:contentDescription="@string/action_forward" />
 
 </LinearLayout> 

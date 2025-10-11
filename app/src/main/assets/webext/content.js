@@ -130,6 +130,8 @@
   } catch(_) { return; }
 
   // Runtime flag to enable/disable heavier menu features
+  // Master flag: controlled by the host app via tv-menu-feature:set; default OFF
+  let MENU_FEATURE_MASTER_ON = false;
   let MENU_FEATURE_ENABLED = false;
   let MENU_DISABLE_TIMER = null;
   let LAST_MENU_ENABLED_LOG_TS = 0;
@@ -198,7 +200,7 @@
   try {
     let lastClickHandledAt = 0;
     document.addEventListener('click', async (ev) => {
-      if (!MENU_FEATURE_ENABLED) return;
+      if (!MENU_FEATURE_MASTER_ON) return; // master OFF -> no dropdown handling
       try {
         if (!ev || !ev.isTrusted) return;
         const now = Date.now();
@@ -291,6 +293,7 @@
 
     // Keyboard navigation within open menus: ArrowDown/ArrowUp/PageDown/PageUp/Home/End
     document.addEventListener('keydown', async (ev) => {
+      if (!MENU_FEATURE_MASTER_ON) return; // master OFF -> no dropdown handling
       if (!MENU_FEATURE_ENABLED) return;
       try {
         if (!ev || !ev.isTrusted) return;
@@ -412,15 +415,43 @@
         (async () => {
           try {
             if (!msg) return;
-            if (msg.type === 'menuProbe:arm') {
-              const ttlMs = Math.max(0, Math.min(5000, Number(msg.ttlMs) || 1500));
-              enableMenuFeatures(ttlMs);
+            // Normalize command type (some app paths send {cmd: ...})
+            const mtype = typeof msg.type === 'string' ? msg.type : (typeof msg.cmd === 'string' ? msg.cmd : '');
+            // Master enable/disable from host app
+            if (mtype === 'tv-menu-feature:set') {
+              MENU_FEATURE_MASTER_ON = !!msg.enabled;
+              try { ctEmit(`[TV][EXT][CT] master menu feature -> ${MENU_FEATURE_MASTER_ON}`); } catch(_){ }
               return;
             }
-            if (msg.type === 'tv-menu-nav') {
+            if (mtype === 'menuProbe:arm') {
+              if (MENU_FEATURE_MASTER_ON) {
+                const ttlMs = Math.max(0, Math.min(5000, Number(msg.ttlMs) || 1500));
+                enableMenuFeatures(ttlMs);
+              }
+              return;
+            }
+            if (mtype === 'menuProbe:toggle') {
+              if (!MENU_FEATURE_MASTER_ON) return;
+              if (MENU_FEATURE_ENABLED) {
+                disableMenuFeatures();
+              } else {
+                enableMenuFeatures(1500);
+              }
+              return;
+            }
+            if (mtype === 'menuProbe:ping') {
+              if (!MENU_FEATURE_MASTER_ON) return;
+              // Light keep-alive: extend briefly if already enabled
+              if (MENU_FEATURE_ENABLED) {
+                enableMenuFeatures(800);
+              }
+              return;
+            }
+            if (mtype === 'tv-menu-nav') {
+              if (!MENU_FEATURE_MASTER_ON) return; // ignore when master OFF
               const dir = String(msg.dir || '').toLowerCase();
               // Ensure gated listeners are active during nav
-              try { enableMenuFeatures(1000); } catch(_) {}
+              try { if (MENU_FEATURE_MASTER_ON) enableMenuFeatures(1000); } catch(_) {}
               let okHere = false;
               try { okHere = await tryMenuNavLocal(dir); } catch(_) { okHere = false; }
               if (!okHere) {
@@ -456,6 +487,66 @@
                 try { target.setAttribute('tabindex','0'); target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest' }); } catch(_) {}
                 await enforceFocusStick(target);
                 try { ctEmit(`[TV][EXT][CT] menu_nav msg dir=${dir} -> ${describeNode(target)}`); } catch(_) {}
+              }
+            } else if (mtype === 'tv-dropdown-open-near') {
+              if (!MENU_FEATURE_MASTER_ON) return;
+              // Explicit open near coordinates (viewport coords expected)
+              let x = Number(msg.x)||0, y = Number(msg.y)||0;
+              // Convert from device pixels to CSS pixels if DPR provided
+              try {
+                const dprIn = Number(msg.dpr) || (window.devicePixelRatio || 1);
+                if (dprIn && dprIn !== 1) { x = x / dprIn; y = y / dprIn; }
+              } catch(_) {}
+              try {
+                const vv = window.visualViewport;
+                if (vv) { x = x - (vv.offsetLeft||0); y = y - (vv.offsetTop||0); }
+              } catch(_) {}
+              try { enableMenuFeatures(1500); } catch(_) {}
+              // Try exact toggle or proximity heuristics
+              let toggle = null;
+              try {
+                const stack = (document.elementsFromPoint && document.elementsFromPoint(x, y)) || [];
+                const TOGGLE_SEL = [
+                  '[data-toggle="dropdown"]', '[data-bs-toggle="dropdown"]', '.dropdown-toggle', '.seasons .dropdown-toggle', '.season .dropdown-toggle',
+                  '[aria-haspopup="listbox"]', '[aria-haspopup="menu"]', '#current-season', '.btn.btn-seasons.dropdown-toggle', '.btn-seasons'
+                ].join(', ');
+                for (const n of stack) {
+                  if (!(n instanceof Element)) continue;
+                  const hit = n.closest && n.closest(TOGGLE_SEL);
+                  if (hit && isToggleCandidateVisible(hit)) { toggle = hit; break; }
+                }
+              } catch(_) {}
+              if (!toggle) toggle = findNearestSeasonsToggleNear(x, y);
+              if (!toggle) toggle = findToggleByProximity(x, y);
+              if (!toggle) toggle = findToggleByLabelHeuristic(x, y);
+              // Remap non-clickable current-season span to its real toggle
+              if (toggle && toggle.id === 'current-season') {
+                try {
+                  const drop = toggle.closest && toggle.closest('.dropdown, .seasons, .season');
+                  const real = drop && drop.querySelector && drop.querySelector('.dropdown-toggle, button, [role="button"]');
+                  if (real) toggle = real;
+                } catch(_) {}
+              }
+              if (toggle) {
+                try { toggle.focus && toggle.focus({ preventScroll: true }); } catch(_) {}
+                dispatchKey(toggle, 'keydown', 'Enter', 'Enter');
+                dispatchKey(toggle, 'keyup', 'Enter', 'Enter');
+                dispatchKey(toggle, 'keydown', 'ArrowDown', 'ArrowDown');
+                dispatchKey(toggle, 'keyup', 'ArrowDown', 'ArrowDown');
+              }
+              // Poll briefly for a visible menu near the point
+              let menu = null;
+              const deadline = Date.now() + 900;
+              while (!menu && Date.now() < deadline) {
+                await new Promise(r => setTimeout(r, 80));
+                menu = findVisibleMenuNear(x, y) || findFloatingScrollableNear(x, y);
+              }
+              if (menu) {
+                const item = focusMenuOrItem(menu) || menu;
+                await enforceFocusStick(item);
+                try { ctEmit(`[TV][EXT][CT] open_near menu -> ${describeNode(menu)} | focused=${describeNode(item)}`); } catch(_) {}
+              } else {
+                try { ctEmit('[TV][EXT][CT] open_near no menu'); } catch(_) {}
               }
             }
           } catch(_) {}

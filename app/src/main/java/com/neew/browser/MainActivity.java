@@ -160,6 +160,9 @@ import org.mozilla.geckoview.PanZoomController;
 import org.mozilla.geckoview.ScreenLength;
 import org.mozilla.geckoview.WebResponse;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 public class MainActivity extends AppCompatActivity implements ScrollDelegate, GeckoSession.PromptDelegate, MediaSession.Delegate {
     private static final String TAG = "MainActivity";
     private static final String SNAPSHOT_DIRECTORY_NAME = "tab_snapshots";
@@ -169,6 +172,15 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private final java.util.Map<GeckoSession, Runnable> ephemeralTimeoutTasks = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.Map<GeckoSession, GeckoSession> popupParentMap = new java.util.concurrent.ConcurrentHashMap<>();
     private final android.os.Handler mainHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    // Single-threaded executor for IO-heavy tasks to avoid blocking the UI thread
+    private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
+    // Debounce storage checks to avoid repeated heavy scans
+    private volatile boolean storageCheckInFlight = false;
+    // Guard to ensure we only attempt a single lightweight recovery per resume
+    private volatile boolean resumeRecoveryAttempted = false;
+    // Track whether we saw page progress shortly after resume to avoid unnecessary recovery
+    private volatile boolean resumeHadProgress = false;
+    private volatile long resumeAtMs = 0L;
 
     private boolean isBlankOrNullUri(String uri) {
         if (uri == null) return true;
@@ -179,6 +191,18 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         if (lu.startsWith("about:srcdoc")) return true; // srcdoc placeholder windows
         if (lu.startsWith("javascript:")) return true; // avoid showing js: popups as tabs
         return false;
+    }
+
+    // Mark that we've seen navigation/progress soon after resume to suppress probe recovery
+    private void markResumeProgressIfWithinWindow(GeckoSession session) {
+        try {
+            if (session == getActiveSession()) {
+                long dt = System.currentTimeMillis() - resumeAtMs;
+                if (dt >= 0 && dt < 3000) {
+                    resumeHadProgress = true;
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 
     // Validate that the uBlock assets are real files, not Git LFS pointer stubs
@@ -327,18 +351,22 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private static final long POPUP_RATE_LIMIT_MS = 200L; // 1 popup per 200ms per session
     private static final long USER_GESTURE_WINDOW_MS = 5000L; // gesture considered fresh within 5s
     private static final int MAX_SNAPSHOTS = 10; // Limit snapshots stored
-    private static final int SNAPSHOT_WIDTH = 300; // Target width for resized snapshots
+    private static final int SNAPSHOT_WIDTH = 220; // Reduced target width for resized snapshots to lower memory/IO
+    private static final long SNAPSHOT_MIN_INTERVAL_MS = 30_000L; // Throttle: once per tab per 30s
     
     private Map<GeckoSession, Bitmap> sessionSnapshotMap = new LinkedHashMap<GeckoSession, Bitmap>(MAX_SNAPSHOTS + 1, .75F, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<GeckoSession, Bitmap> eldest) {
-             boolean shouldRemove = size() > MAX_SNAPSHOTS;
-             if (shouldRemove) {
-                  Log.d(TAG, "Removing eldest snapshot due to size limit.");
-             }
-             return shouldRemove;
+            boolean shouldRemove = size() > MAX_SNAPSHOTS;
+            if (shouldRemove) {
+                Bitmap b = eldest.getValue();
+                if (b != null && !b.isRecycled()) b.recycle();
+            }
+            return shouldRemove;
         }
     };
+    // Last snapshot capture time per session for throttling
+    private final java.util.concurrent.ConcurrentHashMap<GeckoSession, Long> sessionLastSnapshotMs = new java.util.concurrent.ConcurrentHashMap<>();
     private ActivityResultLauncher<Intent> tabSwitcherLauncher;
 
     // --- BACK key long-press handling ---
@@ -463,9 +491,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private SwitchCompat panelImmersiveSwitch;
     private SwitchCompat panelDesktopModeSwitch;
     private SwitchCompat panelFullDesktopModelSwitch; // New Switch field
+    private SwitchCompat panelScrollOnMenusSwitch; // TV-only: Scroll on Menus
     
     // User Agent configuration
     private static final String PREF_USER_AGENT_MODE = "user_agent_mode"; // "mobile", "desktop", "custom"
+    private static final String PREF_MENU_SCROLL_ENABLED = "pref_menu_scroll_enabled";
     private static final String DEFAULT_USER_AGENT_MODE = "mobile";
     private static final String PREF_FULL_DESKTOP_MODEL_ENABLED = "full_desktop_model_enabled"; // New preference key
 
@@ -617,13 +647,30 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         panelImmersiveSwitch = findViewById(R.id.panelImmersiveSwitch);
         panelDesktopModeSwitch = findViewById(R.id.panelDesktopModeSwitch);
         panelFullDesktopModelSwitch = findViewById(R.id.panelFullDesktopModelSwitch);
+        panelScrollOnMenusSwitch = findViewById(R.id.panelScrollOnMenusSwitch);
         panelApplyButton = findViewById(R.id.panelApplyButton);
         panelCancelButton = findViewById(R.id.panelCancelButton);
 
         settingsPanelElements = Arrays.asList(
                 panelCookieSwitch, panelAdBlockerSwitch, panelUBlockLayout, panelImmersiveSwitch,
-                panelDesktopModeSwitch, panelFullDesktopModelSwitch, panelApplyButton, panelCancelButton
+                panelDesktopModeSwitch, panelFullDesktopModelSwitch,
+                panelScrollOnMenusSwitch,
+                panelApplyButton, panelCancelButton
         );
+
+        // TV-only: Scroll on Menus (dropdown/overlay assist)
+        if (panelScrollOnMenusSwitch != null) {
+            panelScrollOnMenusSwitch.setVisibility(isTvDevice() ? View.VISIBLE : View.GONE);
+            boolean menuScrollEnabled = prefs.getBoolean(PREF_MENU_SCROLL_ENABLED, false);
+            panelScrollOnMenusSwitch.setChecked(menuScrollEnabled);
+            panelScrollOnMenusSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                prefs.edit().putBoolean(PREF_MENU_SCROLL_ENABLED, isChecked).apply();
+                sendTvMenuFeatureEnabled(isChecked);
+                Log.d(TAG, "[TV][Settings] Scroll on Menus set to " + isChecked);
+            });
+            // Attempt to send current state now (in case port is already ready); also resent on port connect
+            try { sendTvMenuFeatureEnabled(menuScrollEnabled); } catch (Throwable ignore) {}
+        }
 
         panelImmersiveSwitch = findViewById(R.id.panelImmersiveSwitch);
         // Set Immersive Mode enabled by default (true)
@@ -925,7 +972,8 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         // RECEIVER_NOT_EXPORTED ensures the receiver only handles system broadcasts, not from other apps.
         ContextCompat.registerReceiver(this, downloadCompleteReceiver, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_NOT_EXPORTED);
 
-        checkAndShowStorageWarning();
+        // Defer storage scan to reduce startup contention
+        mainHandler.postDelayed(this::checkAndShowStorageWarning, 5000);
 
         mFirebaseAnalytics = FirebaseAnalytics.getInstance(this);
 
@@ -938,14 +986,43 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     }
 
     private void checkAndShowStorageWarning() {
-        long totalBytes = getAppUsedStorageBytes();
-        Log.d(TAG, "[StorageDebug] App used storage: " + totalBytes + " bytes (" + (totalBytes / (1024.0 * 1024.0)) + " MB)");
-        if (totalBytes >= 400L * 1024 * 1024) { // 400 MB
-            Log.d(TAG, "[StorageDebug] Threshold exceeded, showing storage warning dialog.");
-            showStorageWarningDialog();
-        } else {
-            Log.d(TAG, "[StorageDebug] Threshold not reached, no dialog.");
+        if (storageCheckInFlight) {
+            Log.d(TAG, "[StorageDebug] Storage check already in flight; skipping");
+            return;
         }
+        storageCheckInFlight = true;
+        ioExecutor.execute(() -> {
+            long totalBytes = 0L;
+            try {
+                totalBytes = getAppUsedStorageBytes();
+            } catch (Throwable t) {
+                Log.w(TAG, "[StorageDebug] Failed to compute storage size", t);
+            }
+            final long resultBytes = totalBytes;
+            runOnUiThread(() -> {
+                try {
+                    Log.d(TAG, "[StorageDebug] App used storage: " + resultBytes + " bytes (" + (resultBytes / (1024.0 * 1024.0)) + " MB)");
+                    if (resultBytes >= 400L * 1024 * 1024) { // 400 MB
+                        // Avoid showing a dialog when the activity is not in a good UI state
+                        boolean safeToShow = !isFinishing() && !isDestroyed();
+                        try {
+                            View decor = getWindow() != null ? getWindow().getDecorView() : null;
+                            safeToShow = safeToShow && decor != null && decor.isShown();
+                        } catch (Throwable ignore) {}
+                        if (safeToShow) {
+                            Log.d(TAG, "[StorageDebug] Threshold exceeded, showing storage warning dialog.");
+                            showStorageWarningDialog();
+                        } else {
+                            Log.d(TAG, "[StorageDebug] Threshold exceeded but window not focused/visible; deferring dialog.");
+                        }
+                    } else {
+                        Log.d(TAG, "[StorageDebug] Threshold not reached, no dialog.");
+                    }
+                } finally {
+                    storageCheckInFlight = false;
+                }
+            });
+        });
     }
 
     // Focus the nearest scrollable element under the cursor to let Gecko handle Arrow key scrolling natively
@@ -1040,6 +1117,49 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             Log.d(TAG, "[TV][EXT] sent cmd=" + cmd);
         } catch (Exception e) {
             Log.e(TAG, "[TV][EXT] sendTvSimpleCmd error", e);
+        }
+    }
+
+    // TV-only: enable/disable dropdown/menu features in content script
+    private void sendTvMenuFeatureEnabled(boolean enabled) {
+        org.mozilla.geckoview.WebExtension.Port port = tvPort;
+        if (port == null) {
+            Log.d(TAG, "[TV][EXT] tv-menu-feature:set skipped (no port)");
+            return;
+        }
+        try {
+            JSONObject msg = new JSONObject();
+            msg.put("type", "tv-menu-feature:set");
+            msg.put("enabled", enabled);
+            port.postMessage(msg);
+            Log.d(TAG, "[TV][EXT] tv-menu-feature:set -> " + enabled);
+        } catch (Exception e) {
+            Log.w(TAG, "[TV][EXT] tv-menu-feature:set failed", e);
+        }
+    }
+
+    // TV-only: explicitly open dropdown near the cursor by sending viewport-relative coords
+    private void sendTvDropdownOpenNear() {
+        org.mozilla.geckoview.WebExtension.Port port = tvPort;
+        if (port == null) {
+            Log.d(TAG, "[TV][EXT] tv-dropdown-open-near skipped (no port)");
+            return;
+        }
+        try {
+            int[] cursorLoc = new int[2];
+            int[] viewLoc = new int[2];
+            tvCursorView.getLocationOnScreen(cursorLoc);
+            geckoView.getLocationOnScreen(viewLoc);
+            float xDevice = (cursorLoc[0] - viewLoc[0]) + (tvCursorView.getWidth() / 2f);
+            float yDevice = (cursorLoc[1] - viewLoc[1]) + (tvCursorView.getHeight() / 2f);
+            JSONObject msg = new JSONObject();
+            msg.put("type", "tv-dropdown-open-near");
+            msg.put("x", xDevice);
+            msg.put("y", yDevice);
+            port.postMessage(msg);
+            Log.d(TAG, "[TV][EXT] sent tv-dropdown-open-near dev=(" + xDevice + "," + yDevice + ")");
+        } catch (Exception e) {
+            Log.w(TAG, "[TV][EXT] tv-dropdown-open-near failed", e);
         }
     }
 
@@ -1199,6 +1319,13 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                                     Log.d(TAG, "[TV][EXT] announced tv-enabled=" + isTvDevice());
                                 } catch (Exception e) {
                                     Log.w(TAG, "[TV][EXT] failed to announce tv-enabled", e);
+                                }
+                                // Send current menu feature state to content
+                                try {
+                                    boolean menuOn = prefs != null && prefs.getBoolean("pref_menu_scroll_enabled", false);
+                                    sendTvMenuFeatureEnabled(menuOn);
+                                } catch (Throwable t) {
+                                    Log.w(TAG, "[TV][EXT] failed to send initial tv-menu-feature:set", t);
                                 }
                             }
                         };
@@ -1386,13 +1513,34 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
         dialog.findViewById(R.id.btnClose).setOnClickListener(v -> dialog.dismiss());
         dialog.findViewById(R.id.btnCleanUp).setOnClickListener(v -> {
-            int[] result = new int[1];
-            long[] size = new long[1];
-            result[0] = countFiles(getCacheDir());
-            size[0] = getDirSize(getCacheDir());
-            deleteDir(getCacheDir());
-            dialog.dismiss();
-            showCleanupDoneDialog(result[0], size[0]);
+            // Run cleanup asynchronously to prevent ANRs
+            Toast.makeText(MainActivity.this, "Cleaning cache...", Toast.LENGTH_SHORT).show();
+            v.setEnabled(false);
+            View btnDeep = dialog.findViewById(R.id.btnDeepClean);
+            View btnClose = dialog.findViewById(R.id.btnClose);
+            if (btnDeep != null) btnDeep.setEnabled(false);
+            if (btnClose != null) btnClose.setEnabled(false);
+
+            ioExecutor.execute(() -> {
+                int filesCount = 0;
+                long bytes = 0L;
+                try {
+                    File cache = getCacheDir();
+                    filesCount = countFiles(cache);
+                    bytes = getDirSize(cache);
+                    deleteDir(cache);
+                } catch (Throwable t) {
+                    Log.e(TAG, "Cache cleanup failed", t);
+                }
+                final int fFiles = filesCount;
+                final long fBytes = bytes;
+                runOnUiThread(() -> {
+                    try {
+                        if (dialog.isShowing()) dialog.dismiss();
+                    } catch (Throwable ignore) {}
+                    showCleanupDoneDialog(fFiles, fBytes);
+                });
+            });
         });
         dialog.findViewById(R.id.btnDeepClean).setOnClickListener(v -> {
             dialog.dismiss();
@@ -1842,6 +1990,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             public void onPageStart(@NonNull GeckoSession session, @NonNull String url) {
                 Log.d(TAG, "ProgressDelegate: onPageStart called for session: " + session.hashCode() + ", URL: " + url);
                 if (session == getActiveSession()) {
+                    markResumeProgressIfWithinWindow(session);
                     Log.d(TAG, "ProgressDelegate: onPageStart on ACTIVE session. Showing progress.");
                     progressBar.setVisibility(View.VISIBLE);
                     if (isTvDevice() && tvCursorView != null) {
@@ -1856,6 +2005,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             public void onProgressChange(GeckoSession session, int progress) {
                 // Log only for the active session to avoid spam
                 if (session == getActiveSession()) {
+                    markResumeProgressIfWithinWindow(session);
                     Log.d(TAG, "ProgressDelegate: onProgressChange on ACTIVE session: " + progress);
                     progressBar.setProgress(progress);
                     if (isTvDevice() && tvCursorView != null) {
@@ -1972,6 +2122,14 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                 Log.d(TAG, "NavDelegate: onLocationChange for session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A") + " to URI: " + newUri +
                            " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
                 if (newUri != null) {
+                    // Guard against transient about:blank which can blank restored tabs
+                    String lu = newUri.toLowerCase();
+                    if (lu.startsWith("about:blank")) {
+                        Log.d(TAG, "NavDelegate: Ignoring about:blank top-level location change");
+                        return;
+                    }
+                    // Mark resume progress to avoid unnecessary resume recovery
+                    markResumeProgressIfWithinWindow(session);
                     lastKnownUrl = newUri;
                     // Cancel any pending arm if navigation happens
                     if (pendingArmRunnable != null) {
@@ -2167,6 +2325,12 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                         Log.d(TAG, "Popup NavDelegate: onLocationChange for session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A") + " to URI: " + newUri +
                                    " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
                         if (newUri != null) {
+                            String lu = newUri.toLowerCase();
+                            if (lu.startsWith("about:blank")) {
+                                Log.d(TAG, "Popup NavDelegate: Ignoring about:blank top-level location change");
+                                return;
+                            }
+                            markResumeProgressIfWithinWindow(session);
                             sessionUrlMap.put(session, newUri);
                             mLastValidUrl = newUri; // Update last valid URL
                             // Promote ephemeral session if it navigated to a meaningful page
@@ -2334,6 +2498,12 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                                 Log.d(TAG, "GrandChild NavDelegate: onLocationChange for session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A") + " to URI: " + newUri +
                                            " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
                                 if (newUri != null) {
+                                    String lu = newUri.toLowerCase();
+                                    if (lu.startsWith("about:blank")) {
+                                        Log.d(TAG, "GrandChild NavDelegate: Ignoring about:blank top-level location change");
+                                        return;
+                                    }
+                                    markResumeProgressIfWithinWindow(session);
                                     sessionUrlMap.put(session, newUri);
                                     mLastValidUrl = newUri; // Update last valid URL
                                     // Promote ephemeral grandchild if navigated to a meaningful page
@@ -3037,66 +3207,56 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
             Log.w(TAG, "Cannot capture snapshot, session or geckoView is null.");
             return;
         }
-        
-        // Check if the session is currently attached to the view
+        // Only capture for the session currently attached to the GeckoView
         if (geckoView.getSession() != session) {
             Log.d(TAG, "Snapshot skipped: Session index " + geckoSessionList.indexOf(session) + " is not the active session in GeckoView.");
-            return; // Can only capture the currently displayed session
+            return;
         }
-        
+        // Throttle snapshots per session
+        long now = System.currentTimeMillis();
+        Long last = sessionLastSnapshotMs.get(session);
+        if (last != null && (now - last) < SNAPSHOT_MIN_INTERVAL_MS) {
+            Log.d(TAG, "Snapshot throttled for session index " + geckoSessionList.indexOf(session) + ": " + (now - last) + "ms since last < " + SNAPSHOT_MIN_INTERVAL_MS + "ms");
+            return;
+        }
+        sessionLastSnapshotMs.put(session, now);
+
         Log.d(TAG, "Requesting snapshot for active session index: " + geckoSessionList.indexOf(session));
 
-        // Add debouncing to prevent rapid captures:
-        // snapshotHandler.removeCallbacksAndMessages(session); // REMOVE
-        // snapshotHandler.postDelayed(() -> { // REMOVE
+        GeckoResult<Bitmap> result = geckoView.capturePixels();
+        result.accept(originalBitmap -> {
+            if (originalBitmap != null) {
+                Log.d(TAG, "Snapshot captured successfully for session index: " + geckoSessionList.indexOf(session) +
+                        " (Original size: " + originalBitmap.getWidth() + "x" + originalBitmap.getHeight() + ")");
 
-            // Actual capture logic
-            // synchronized (geckoSessionList) { // REMOVE CONTAINS CHECK
-                GeckoResult<Bitmap> result = geckoView.capturePixels();
+                // Resize to target width while preserving aspect ratio
+                int originalWidth = originalBitmap.getWidth();
+                int originalHeight = originalBitmap.getHeight();
+                if (originalWidth == 0 || originalHeight == 0) {
+                    Log.w(TAG, "Snapshot has zero dimensions, skipping resize/storage.");
+                    originalBitmap.recycle();
+                    return;
+                }
+                float aspectRatio = (float) originalHeight / originalWidth;
+                int targetHeight = Math.round(SNAPSHOT_WIDTH * aspectRatio);
+                if (targetHeight <= 0) targetHeight = 1;
 
-                result.accept(originalBitmap -> {
-                    if (originalBitmap != null) {
-                         Log.d(TAG, "Snapshot captured successfully for session index: " + geckoSessionList.indexOf(session) + 
-                               " (Original size: " + originalBitmap.getWidth() + "x" + originalBitmap.getHeight() + ")");
-                        
-                         // --- Resize the bitmap --- 
-                         int originalWidth = originalBitmap.getWidth();
-                         int originalHeight = originalBitmap.getHeight();
-                         if (originalWidth == 0 || originalHeight == 0) {
-                              Log.w(TAG, "Snapshot has zero dimensions, skipping resize/storage.");
-                              originalBitmap.recycle(); // Release the original bitmap
-                              return;
-                         }
-                         float aspectRatio = (float) originalHeight / originalWidth;
-                         int targetHeight = Math.round(SNAPSHOT_WIDTH * aspectRatio);
-                         
-                         if (targetHeight <= 0) { // Prevent zero height
-                             targetHeight = 1;
-                         }
+                Bitmap resizedBitmap = Bitmap.createScaledBitmap(originalBitmap, SNAPSHOT_WIDTH, targetHeight, true);
+                originalBitmap.recycle();
 
-                         Bitmap resizedBitmap = Bitmap.createScaledBitmap(originalBitmap, SNAPSHOT_WIDTH, targetHeight, true);
-                         originalBitmap.recycle(); // Recycle the original large bitmap immediately
-                         // --- End Resize ---
-                         
-                        Log.d(TAG, "Snapshot resized to: " + resizedBitmap.getWidth() + "x" + resizedBitmap.getHeight());
-                        sessionSnapshotMap.put(session, resizedBitmap); // Store the resized bitmap
+                Log.d(TAG, "Snapshot resized to: " + resizedBitmap.getWidth() + "x" + resizedBitmap.getHeight());
+                sessionSnapshotMap.put(session, resizedBitmap);
 
-                        // --- Save snapshot to disk ---
-                        String url = sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : null;
-                        if (url != null) {
-                            saveSnapshotToDisk(resizedBitmap, url);
-                        }
-                        // --- End save snapshot to disk ---
-
-                    } else {
-                         Log.w(TAG, "Snapshot capture returned null bitmap for session index: " + geckoSessionList.indexOf(session));
-                    }
-                }, e -> {
-                     Log.e(TAG, "Snapshot capture failed for session index: " + geckoSessionList.indexOf(session), e);
-                });
-            // } // REMOVE CONTAINS CHECK END
-
-        // }, SNAPSHOT_DEBOUNCE_MS); // REMOVE
+                String url = sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : null;
+                if (url != null) {
+                    saveSnapshotToDisk(resizedBitmap, url);
+                }
+            } else {
+                Log.w(TAG, "Snapshot capture returned null bitmap for session index: " + geckoSessionList.indexOf(session));
+            }
+        }, e -> {
+            Log.e(TAG, "Snapshot capture failed for session index: " + geckoSessionList.indexOf(session), e);
+        });
     }
 
     // Updates URL bar and navigation buttons based on the active session state
@@ -3245,6 +3405,13 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         if (downloadCompleteReceiver != null) {
             unregisterReceiver(downloadCompleteReceiver);
         }
+
+        // Shutdown background executors
+        try {
+            if (ioExecutor != null) {
+                ioExecutor.shutdownNow();
+            }
+        } catch (Throwable ignore) {}
     }
 
     // --- Control Bar State Logic ---
@@ -4302,12 +4469,205 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
 
     // --- Session Persistence Methods ---
     @Override
+    protected void onStart() {
+        super.onStart();
+        // Ensure the active GeckoSession is attached and active when Activity starts
+        GeckoSession active = getActiveSession();
+        if (active != null) {
+            if (geckoView.getSession() != active) {
+                Log.d(TAG, "onStart: Re-attaching active session to GeckoView");
+                geckoView.setSession(active);
+            }
+            try {
+                Log.d(TAG, "onStart: Setting active session active=true");
+                active.setActive(true);
+            } catch (Throwable t) {
+                Log.e(TAG, "Failed to activate GeckoSession onStart", t);
+            }
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // On resume, ensure the active session is attached and active
+        resumeAtMs = System.currentTimeMillis();
+        resumeHadProgress = false;
+        GeckoSession active = getActiveSession();
+        if (active != null) {
+            if (geckoView.getSession() != active) {
+                Log.d(TAG, "onResume: Re-attaching active session to GeckoView");
+                geckoView.setSession(active);
+                updateUIForActiveSession();
+            }
+            try {
+                Log.d(TAG, "onResume: Ensuring active session active=true");
+                active.setActive(true);
+            } catch (Throwable t) {
+                Log.e(TAG, "Failed to activate GeckoSession onResume", t);
+            }
+        }
+
+        // Schedule a one-time lightweight probe-and-recover if the surface appears blank
+        resumeRecoveryAttempted = false;
+        if (mainHandler != null) {
+            mainHandler.postDelayed(() -> {
+                try {
+                    if (resumeRecoveryAttempted) return;
+                    if (geckoView == null) return;
+
+                    int w = geckoView.getWidth();
+                    int h = geckoView.getHeight();
+                    boolean shown = geckoView.isShown();
+                    GeckoSession s = geckoView.getSession();
+                    GeckoSession act = getActiveSession();
+                    Log.d(TAG, "[ResumeProbe] gvShown=" + shown + " size=" + w + "x" + h + 
+                            " gvSession==active=" + (s == act));
+
+                    // If not visible or zero-sized, attempt one recovery immediately
+                    if (!shown || w == 0 || h == 0) {
+                        performSingleResumeRecovery();
+                        resumeRecoveryAttempted = true;
+                        return;
+                    }
+
+                    // If we've already observed progress since resume, skip recovery entirely
+                    if (System.currentTimeMillis() - resumeAtMs < 2500 && resumeHadProgress) {
+                        Log.d(TAG, "[ResumeProbe] Recent progress observed; skipping recovery");
+                        resumeRecoveryAttempted = true;
+                        return;
+                    }
+
+                    // Try a single capture to see if we have content
+                    try {
+                        GeckoResult<Bitmap> res = geckoView.capturePixels();
+                        res.accept(bmp -> {
+                            if (resumeRecoveryAttempted) {
+                                if (bmp != null) bmp.recycle();
+                                return;
+                            }
+                            boolean looksBlack = false;
+                            if (bmp != null && bmp.getWidth() > 0 && bmp.getHeight() > 0) {
+                                int px = bmp.getPixel(Math.min(bmp.getWidth() - 1, bmp.getWidth() / 2),
+                                                      Math.min(bmp.getHeight() - 1, bmp.getHeight() / 2));
+                                int r = (px >> 16) & 0xFF, g = (px >> 8) & 0xFF, b = px & 0xFF;
+                                looksBlack = (r + g + b) < 12; // very dark center pixel
+                            } else {
+                                looksBlack = true; // treat null/invalid as blank
+                            }
+                            if (bmp != null) bmp.recycle();
+
+                            Log.d(TAG, "[ResumeProbe] capture result looksBlack=" + looksBlack);
+                            if (looksBlack) {
+                                performSingleResumeRecovery();
+                            }
+                            resumeRecoveryAttempted = true;
+                        }, e -> {
+                            Log.w(TAG, "[ResumeProbe] capturePixels failed", e);
+                            // If compositor not ready yet on TV, retry capture once after a short delay
+                            if (isTvDevice() && !resumeRecoveryAttempted && e instanceof IllegalStateException) {
+                                if (mainHandler != null) {
+                                    mainHandler.postDelayed(() -> {
+                                        if (resumeRecoveryAttempted) return;
+                                        try {
+                                            GeckoResult<Bitmap> res2 = geckoView.capturePixels();
+                                            res2.accept(b2 -> {
+                                                boolean looksBlack2 = true;
+                                                if (b2 != null && b2.getWidth() > 0 && b2.getHeight() > 0) {
+                                                    int px2 = b2.getPixel(Math.min(b2.getWidth() - 1, b2.getWidth() / 2),
+                                                                          Math.min(b2.getHeight() - 1, b2.getHeight() / 2));
+                                                    int r2 = (px2 >> 16) & 0xFF, g2 = (px2 >> 8) & 0xFF, b2c = px2 & 0xFF;
+                                                    looksBlack2 = (r2 + g2 + b2c) < 12;
+                                                }
+                                                if (b2 != null) b2.recycle();
+                                                Log.d(TAG, "[ResumeProbe] retry capture looksBlack=" + looksBlack2);
+                                                if (looksBlack2 && !resumeHadProgress) {
+                                                    performSingleResumeRecovery();
+                                                }
+                                                resumeRecoveryAttempted = true;
+                                            }, e2 -> {
+                                                Log.w(TAG, "[ResumeProbe] retry capture failed; performing recovery", e2);
+                                                if (!resumeHadProgress) performSingleResumeRecovery();
+                                                resumeRecoveryAttempted = true;
+                                            });
+                                        } catch (Throwable rt) {
+                                            Log.w(TAG, "[ResumeProbe] retry capture threw; performing recovery", rt);
+                                            if (!resumeHadProgress) performSingleResumeRecovery();
+                                            resumeRecoveryAttempted = true;
+                                        }
+                                    }, 300);
+                                }
+                            } else {
+                                if (!resumeHadProgress) performSingleResumeRecovery();
+                                resumeRecoveryAttempted = true;
+                            }
+                        });
+                    } catch (Throwable capEx) {
+                        Log.w(TAG, "[ResumeProbe] capturePixels threw, attempting recovery", capEx);
+                        if (!resumeHadProgress) performSingleResumeRecovery();
+                        resumeRecoveryAttempted = true;
+                    }
+                } catch (Throwable t) {
+                    Log.e(TAG, "[ResumeProbe] Unexpected error", t);
+                }
+            }, isTvDevice() ? 900 : 450);
+        }
+    }
+
+    // Perform a single, minimal recovery: release current view session (if any), reattach active, activate, and request layout
+    private void performSingleResumeRecovery() {
+        try {
+            GeckoSession active = getActiveSession();
+            if (geckoView == null || active == null) return;
+            Log.w(TAG, "[ResumeProbe] Performing single release+reattach+activate recovery");
+            try {
+                if (geckoView.getSession() != null) {
+                    geckoView.releaseSession();
+                }
+            } catch (Throwable ignore) {}
+            geckoView.setSession(active);
+            try { active.setActive(true); } catch (Throwable ignore) {}
+            geckoView.requestLayout();
+            geckoView.invalidate();
+        } catch (Throwable t) {
+            Log.e(TAG, "[ResumeProbe] Recovery failed", t);
+        }
+    }
+
+    // Removed verifyAndRecoverRenderingAfterResume(): not needed with minimal lifecycle handling.
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        // Minimal lifecycle: just deactivate the session
+        GeckoSession active = getActiveSession();
+        if (active != null) {
+            try {
+                active.setActive(false);
+            } catch (Throwable t) {
+                Log.w(TAG, "onPause: Failed to deactivate session", t);
+            }
+        }
+    }
+
+    @Override
     protected void onStop() {
         super.onStop();
         if (!isFinishing()) {
             saveSessionState();
         }
+        // Deactivate the active GeckoSession when Activity stops to free resources
+        GeckoSession active = getActiveSession();
+        if (active != null) {
+            try {
+                Log.d(TAG, "onStop: Setting active session active=false");
+                active.setActive(false);
+            } catch (Throwable t) {
+                Log.e(TAG, "Failed to deactivate GeckoSession onStop", t);
+            }
+        }
     }
+
 
     private void saveSessionState() {
         Log.d(TAG, "[StorageDebug] saveSessionState CALLED");
@@ -5685,6 +6045,8 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                     // Snapshot URL, perform click, then arm after delay only if URL stays the same
                     final String preUrlSnap = lastKnownUrl != null ? lastKnownUrl : mLastValidUrl;
                     pendingArmPreUrl = preUrlSnap;
+                    // Explicitly request dropdown open near the cursor location
+                    sendTvDropdownOpenNear();
                     // Schedule arm after 400ms if URL unchanged
                     pendingArmRunnable = () -> {
                         try {

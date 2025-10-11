@@ -1,0 +1,245 @@
+--------- beginning of main
+09-20 10:10:56.355 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:11:02.190 I/bdee    ( 1455): (REDACTED) getHotwordActive::active query: %s, watch: %s, devices connected: %s
+09-20 10:11:06.356 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:11:16.360 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:11:21.683 I/AlarmManager( 1234): setExactAndAllowWhileIdle [name: GCM_HB_ALARM type: 2 triggerAtMillis: 2386053]
+09-20 10:11:21.684 I/AlarmManager( 1234): setExactAndAllowWhileIdle [name: GCM_HB_ALARM type: 2 triggerAtMillis: 2386054]
+09-20 10:11:26.364 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:11:36.369 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+--------- beginning of system
+09-20 10:11:42.019 D/ActivityManager(  624): sync unfroze 4629 com.google.android.googlequicksearchbox:search for 6
+09-20 10:11:42.038 W/ProcessStats(  624): Tracking association SourceState{34907eb system/1000 ImpBg #8640} whose proc state 6 is better than process ProcessState{8e35a63 com.google.android.googlequicksearchbox:search/10149 pkg=com.google.android.googlequicksearchbox} proc state 14 (18 skipped)
+09-20 10:11:42.046 I/axea    ( 4629): (REDACTED) Starting %s background task %s.
+09-20 10:11:42.087 W/aefw    ( 4629): Account id is not cached
+09-20 10:11:42.095 I/avxj    ( 4629): Using pair HTTP connection
+09-20 10:11:42.118 I/acup    ( 4629): [Upload] Connected
+09-20 10:11:42.118 I/avxj    ( 4629): Using pair HTTP connection
+09-20 10:11:42.119 E/rya     ( 4629): onError
+09-20 10:11:42.119 E/rya     ( 4629): ahif: errorCode: 65561, engine: 2
+09-20 10:11:42.119 E/rya     ( 4629): 	at avxl.a(PG:23)
+09-20 10:11:42.119 E/rya     ( 4629): 	at acul.hp(PG:13)
+09-20 10:11:42.119 E/rya     ( 4629): 	at gifa.e(PG:9)
+09-20 10:11:42.119 E/rya     ( 4629): 	at aino.d(PG:156)
+09-20 10:11:42.119 E/rya     ( 4629): 	at aino.iJ(PG:26)
+09-20 10:11:42.119 E/rya     ( 4629): 	at acum.c(PG:104)
+09-20 10:11:42.119 E/rya     ( 4629): 	at acun.run(PG:1)
+09-20 10:11:42.119 E/rya     ( 4629): 	at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:524)
+09-20 10:11:42.119 E/rya     ( 4629): 	at java.util.concurrent.FutureTask.run(FutureTask.java:317)
+09-20 10:11:42.119 E/rya     ( 4629): 	at ahte.run(PG:37)
+09-20 10:11:42.119 E/rya     ( 4629): 	at ahuc.run(PG:3)
+09-20 10:11:42.119 E/rya     ( 4629): 	at ahuc.run(PG:3)
+09-20 10:11:42.119 E/rya     ( 4629): 	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1156)
+09-20 10:11:42.119 E/rya     ( 4629): 	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:651)
+09-20 10:11:42.119 E/rya     ( 4629): 	at java.lang.Thread.run(Thread.java:1119)
+09-20 10:11:42.119 E/rya     ( 4629): 	at ahst.run(PG:44)
+09-20 10:11:42.119 E/rya     ( 4629): Caused by: ahih: errorCode: 65586, engine: 2
+09-20 10:11:42.119 E/rya     ( 4629): 	at acul.hp(PG:6)
+09-20 10:11:42.119 E/rya     ( 4629): 	... 14 more
+09-20 10:11:42.119 E/rya     ( 4629): Caused by: ahid: errorCode: 401, engine: 2
+09-20 10:11:42.119 E/rya     ( 4629): 	at rxx.b(PG:30)
+09-20 10:11:42.119 E/rya     ( 4629): 	at acvi.hx(PG:11)
+09-20 10:11:42.119 E/rya     ( 4629): 	at aino.d(PG:131)
+09-20 10:11:42.119 E/rya     ( 4629): 	... 12 more
+09-20 10:11:42.119 I/acup    ( 4629): [Upload] Connected
+09-20 10:11:42.120 W/rln     ( 4629): Failed to sync device settings.
+09-20 10:11:42.120 I/rln     ( 4629): Retrying to sync device settings.
+09-20 10:11:42.124 W/JobInfo ( 4629): Job 'com.google.android.googlequicksearchbox/com.google.android.apps.gsa.tasks.BackgroundTasksJobService#-353' has a deadline with functional constraints and an extremely short time window of 0 ms (delay=1920000, deadline=1920000). The functional constraints are not likely to be satisfied when the job runs.
+09-20 10:11:42.124 W/JobInfo (  624): Job 'com.google.android.googlequicksearchbox/com.google.android.apps.gsa.tasks.BackgroundTasksJobService#-353' has a deadline with functional constraints and an extremely short time window of 0 ms (delay=1920000, deadline=1920000). The functional constraints are not likely to be satisfied when the job runs.
+09-20 10:11:42.124 W/JobInfo (  624): Job 'com.google.android.googlequicksearchbox/com.google.android.apps.gsa.tasks.BackgroundTasksJobService#-353' has a deadline with functional constraints and an extremely short time window of 0 ms (delay=1920000, deadline=1920000). The functional constraints are not likely to be satisfied when the job runs.
+09-20 10:11:42.132 W/JobScheduler(  624): Job didn't exist in JobStore: e827cbe #u0a149/-353 com.google.android.googlequicksearchbox/com.google.android.apps.gsa.tasks.BackgroundTasksJobService
+09-20 10:11:42.156 W/earchbox:search( 4629): Reducing the number of considered missed Gc histogram windows from 123 to 100
+09-20 10:11:44.138 D/ConnectivityService(  624): requestNetwork for uid/pid:10149/4629 activeRequest: null callbackRequest: 272 [NetworkRequest [ REQUEST id=272, [ Transports: CELLULAR Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VPN&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED Uid: 10149 RequestorUid: 10149 RequestorPkg: com.google.android.googlequicksearchbox UnderlyingNetworks: Null] ]] callback flags: 0 order: 2147483647 isUidTracked: false declaredMethods: AVAIL|LOSING|LOST|NC|LP
+09-20 10:11:44.150 W/IPCThreadState(  624): Sending oneway calls to frozen process.
+09-20 10:11:44.151 W/IPCThreadState(  624): Sending oneway calls to frozen process.
+09-20 10:11:44.151 W/IPCThreadState(  624): Sending oneway calls to frozen process.
+09-20 10:11:44.167 D/ConnectivityService(  624): NetReassign [272 : null → 101] [c 2] [a 22] [i 2]
+09-20 10:11:44.167 D/ConnectivityService(  624): reportNetworkConnectivity(100, false) by 10149
+09-20 10:11:44.172 D/NetworkMonitor/100(  989): Forcing reevaluation for UID 10149. Dns signal count: 0
+09-20 10:11:44.203 D/NetworkMonitor/100(  989): PROBE_DNS www.google.com 27ms OK 74.125.130.105,74.125.130.104,74.125.130.106,74.125.130.99,74.125.130.147,74.125.130.103,2404:6800:4003:c01::69,2404:6800:4003:c01::68,2404:6800:4003:c01::93,2404:6800:4003:c01::6a
+09-20 10:11:44.207 D/NetworkMonitor/100(  989): PROBE_DNS connectivitycheck.gstatic.com 31ms OK 74.125.68.94,2404:6800:4003:c02::5e
+09-20 10:11:44.224 D/NetworkMonitor/100(  989): PROBE_HTTP http://connectivitycheck.gstatic.com/generate_204 time=15ms ret=204 request={Connection=[close], User-Agent=[Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.32 Safari/537.36]} headers={null=[HTTP/1.1 204 No Content], Connection=[close], Content-Length=[0], Cross-Origin-Resource-Policy=[cross-origin], Date=[Sat, 20 Sep 2025 02:11:45 GMT], X-Android-Received-Millis=[1758334304224], X-Android-Response-Source=[NETWORK 204], X-Android-Selected-Protocol=[http/1.1], X-Android-Sent-Millis=[1758334304216]}
+09-20 10:11:44.234 D/NetworkMonitor/100(  989): PROBE_HTTPS https://www.google.com/generate_204 time=29ms ret=204 request={Connection=[close], User-Agent=[Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.32 Safari/537.36]} headers={null=[HTTP/1.1 204 No Content], Alt-Svc=[h3=":443"; ma=2592000,h3-29=":443"; ma=2592000], Connection=[close], Content-Length=[0], Cross-Origin-Resource-Policy=[cross-origin], Date=[Sat, 20 Sep 2025 02:11:45 GMT], X-Android-Received-Millis=[1758334304233], X-Android-Response-Source=[NETWORK 204], X-Android-Selected-Protocol=[http/1.1], X-Android-Sent-Millis=[1758334304227]}
+09-20 10:11:44.236 D/NetworkMonitor/100(  989): isCaptivePortal: isSuccessful()=true isPortal()=false RedirectUrl=null isPartialConnectivity()=false Time=62ms
+09-20 10:11:44.237 D/ConnectivityService(  624): [100 WIFI] validation passed
+09-20 10:11:45.694 W/acut    ( 4629): (REDACTED) [%s] response code: %d
+09-20 10:11:46.374 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:11:52.184 D/ActivityManager(  624): freezing 4629 com.google.android.googlequicksearchbox:search
+09-20 10:11:54.326 D/TelephonyManager(  624): requestModemActivityInfo: Sending result to app: ModemActivityInfo{ mTimestamp=2238693 mSleepTimeMs=336 mIdleTimeMs=112 mActivityStatsTechSpecificInfo=[{mRat=UNKNOWN,mFrequencyRange=UNKNOWN,mTxTimeMs[]=[8, 24, 48, 64, 72],mRxTimeMs=72}]}
+09-20 10:11:56.377 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:12:02.191 I/bdee    ( 1455): (REDACTED) getHotwordActive::active query: %s, watch: %s, devices connected: %s
+09-20 10:12:06.381 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:12:16.386 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:12:17.047 D/WifiNl80211Manager(  624): Scan result ready event
+09-20 10:12:17.047 D/WifiNative(  624): Scan result ready event
+09-20 10:12:17.052 I/WifiScanner( 1234): onFullResults
+09-20 10:12:17.057 I/WifiScanner( 1234): onFullResults
+09-20 10:12:17.061 I/HalDevMgr(  624): bestIfaceCreationProposal is null, requestIface=STA, existingIface=[name=wlan0 type=STA]
+09-20 10:12:19.189 I/bluetooth( 5387): system/gd/hci/le_address_manager.cc:576 GetNextPrivateAddressIntervalRange: client=LeAddressManager, nonwake=7m49s, wake=14m45s
+09-20 10:12:19.196 I/bluetooth( 5387): system/gd/hci/le_address_manager.cc:777 OnCommandComplete: Received command complete with op_code LE_SET_RANDOM_ADDRESS(0x2005)
+09-20 10:12:19.196 I/bluetooth( 5387): system/gd/hci/le_address_manager.cc:797 OnCommandComplete: update random address : xx:xx:xx:xx:9e:99
+09-20 10:12:19.196 I/bluetooth( 5387): system/gd/hci/le_address_manager.cc:392 resume_registered_clients: Resuming registered clients
+09-20 10:12:19.196 I/bluetooth( 5387): system/gd/hci/le_scanning_manager.cc:601 stop_scan: Scanning already stopped, return!
+09-20 10:12:26.388 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:12:36.392 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:12:42.085 W/AppOps  (  624): Noting op not finished: uid 10148 pkg com.google.android.gms code 79 startTime of in progress event=1758334030385
+09-20 10:12:42.092 W/AppOps  (  624): Noting op not finished: uid 10148 pkg com.google.android.gms code 113 startTime of in progress event=1758334030385
+09-20 10:12:42.108 I/ActivityScheduler( 1234): nextTriggerTime: 2524578, in 238100ms, detectorType: 39, FULL_TYPE alarmWindowMillis: 80000
+09-20 10:12:43.085 W/AppOps  (  624): Noting op not finished: uid 10148 pkg com.google.android.gms code 113 startTime of in progress event=1758334030385
+09-20 10:12:46.398 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:12:56.398 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:13:02.191 I/bdee    ( 1455): (REDACTED) getHotwordActive::active query: %s, watch: %s, devices connected: %s
+09-20 10:13:06.403 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:13:09.863 I/BpBinder(  624): onLastStrongRef automatically unlinking death recipients: 
+09-20 10:13:10.179 I/AidlLazyServiceRegistrar( 8395): Process has 0 (of 1 available) client(s) in use after notification artd has clients: 0
+09-20 10:13:10.179 I/AidlLazyServiceRegistrar( 8395): Trying to shut down the service. No clients in use for any service in process.
+09-20 10:13:10.182 I/AidlLazyServiceRegistrar( 8395): Unregistered all clients and exiting
+09-20 10:13:12.291 D/KernelCpuUidUserSysTimeReader(  624): Removing uids 10219-10219
+09-20 10:13:12.300 D/KernelCpuUidUserSysTimeReader(  624): Removing uids 10220-10220
+09-20 10:13:12.302 D/KernelCpuUidUserSysTimeReader(  624): Removing uids 10221-10221
+09-20 10:13:12.302 D/KernelCpuUidUserSysTimeReader(  624): Removing uids 10222-10222
+09-20 10:13:12.302 D/KernelCpuUidUserSysTimeReader(  624): Removing uids 90000-90000
+09-20 10:13:12.311 I/AlarmManager( 1234): setExactAndAllowWhileIdle [name: GCM_HB_ALARM type: 2 triggerAtMillis: 2496681]
+09-20 10:13:12.312 I/AlarmManager( 1234): setExactAndAllowWhileIdle [name: GCM_HB_ALARM type: 2 triggerAtMillis: 2496682]
+09-20 10:13:16.406 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:13:26.409 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:13:36.414 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:13:46.419 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:13:56.422 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:14:02.192 I/bdee    ( 1455): (REDACTED) getHotwordActive::active query: %s, watch: %s, devices connected: %s
+09-20 10:14:06.425 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:14:16.429 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:14:26.434 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:14:36.441 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22817081, previous timestamp: 23104492
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22432899, previous timestamp: 23104492
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22432899, previous timestamp: 23104492
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22432899, previous timestamp: 23104492
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22432899, previous timestamp: 23104492
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22432899, previous timestamp: 23104492
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22817081, previous timestamp: 23104492
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22432899, previous timestamp: 23104492
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22948660, previous timestamp: 23094849
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22432899, previous timestamp: 23094849
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22432899, previous timestamp: 23094849
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22432899, previous timestamp: 23094849
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22432899, previous timestamp: 23094849
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22432899, previous timestamp: 23094849
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22948660, previous timestamp: 23094849
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22432899, previous timestamp: 23094849
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22432899, previous timestamp: 22751650
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22432899, previous timestamp: 22751650
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22432899, previous timestamp: 22751650
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22432899, previous timestamp: 22751650
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22432899, previous timestamp: 22751650
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22432899, previous timestamp: 22751650
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22445876, previous timestamp: 23110844
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22445876, previous timestamp: 23110844
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22445876, previous timestamp: 23110844
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22445876, previous timestamp: 23110844
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22445876, previous timestamp: 23110844
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22445876, previous timestamp: 23110844
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22445876, previous timestamp: 23110844
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22445876, previous timestamp: 23110844
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22948462, previous timestamp: 23094835
+09-20 10:14:41.841 E/system_server(  624): setState is called with an earlier timestamp: 22948462, previous timestamp: 23094835
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948462, previous timestamp: 23094835
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948462, previous timestamp: 23094835
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948462, previous timestamp: 23094835
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948462, previous timestamp: 23094835
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948462, previous timestamp: 23094835
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948462, previous timestamp: 23094835
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948528, previous timestamp: 23094835
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948528, previous timestamp: 23094835
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948528, previous timestamp: 23094835
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948528, previous timestamp: 23094835
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948528, previous timestamp: 23094835
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948528, previous timestamp: 23094835
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948528, previous timestamp: 23094835
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948528, previous timestamp: 23094835
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948556, previous timestamp: 23094600
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948556, previous timestamp: 23094600
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948556, previous timestamp: 23094600
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948556, previous timestamp: 23094600
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948556, previous timestamp: 23094600
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948556, previous timestamp: 23094600
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948556, previous timestamp: 23094600
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948556, previous timestamp: 23094600
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948937, previous timestamp: 23094430
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948937, previous timestamp: 23094430
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948937, previous timestamp: 23094430
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948937, previous timestamp: 23094430
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948937, previous timestamp: 23094430
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948937, previous timestamp: 23094430
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948937, previous timestamp: 23094430
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22948937, previous timestamp: 23094430
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22949797, previous timestamp: 23094492
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22949797, previous timestamp: 23094492
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22949797, previous timestamp: 23094492
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22949797, previous timestamp: 23094492
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22949797, previous timestamp: 23094492
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22949797, previous timestamp: 23094492
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22949797, previous timestamp: 23094492
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 22949797, previous timestamp: 23094492
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23019429, previous timestamp: 23091686
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23019429, previous timestamp: 23091686
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23019429, previous timestamp: 23091686
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23019429, previous timestamp: 23091686
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23019429, previous timestamp: 23091686
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23019429, previous timestamp: 23091686
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23019429, previous timestamp: 23091686
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23019429, previous timestamp: 23091686
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23022248, previous timestamp: 23092253
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23022248, previous timestamp: 23092253
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23022248, previous timestamp: 23092253
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23022248, previous timestamp: 23092253
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23022248, previous timestamp: 23092253
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23022248, previous timestamp: 23092253
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23022248, previous timestamp: 23092253
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23022248, previous timestamp: 23092253
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23024756, previous timestamp: 23091686
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23024756, previous timestamp: 23091686
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23024756, previous timestamp: 23091686
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23024756, previous timestamp: 23091686
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23024756, previous timestamp: 23091686
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23024756, previous timestamp: 23091686
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23024756, previous timestamp: 23091686
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23024756, previous timestamp: 23091686
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23025826, previous timestamp: 23093946
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23025826, previous timestamp: 23093946
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23025826, previous timestamp: 23093946
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23025826, previous timestamp: 23093946
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23025826, previous timestamp: 23093946
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23025826, previous timestamp: 23093946
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23025826, previous timestamp: 23093946
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23025826, previous timestamp: 23093946
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23201409, previous timestamp: 23266903
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23201409, previous timestamp: 23266903
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23201409, previous timestamp: 23266903
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23201409, previous timestamp: 23266903
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23201409, previous timestamp: 23266903
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23201409, previous timestamp: 23266903
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23201409, previous timestamp: 23266903
+09-20 10:14:41.842 E/system_server(  624): setState is called with an earlier timestamp: 23201409, previous timestamp: 23266903
+09-20 10:14:46.444 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:14:53.802 I/UsageStatsService(  624): User[0] Flushing usage stats to disk
+09-20 10:14:53.824 D/BackgroundInstallControlService(  624): Package event received: 0
+09-20 10:14:56.447 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:14:57.050 D/WifiNl80211Manager(  624): Scan result ready event
+09-20 10:14:57.050 D/WifiNative(  624): Scan result ready event
+09-20 10:14:57.058 I/WifiScanner( 1234): onFullResults
+09-20 10:14:57.058 I/WifiScanner( 1234): onFullResults
+09-20 10:14:57.064 I/HalDevMgr(  624): bestIfaceCreationProposal is null, requestIface=STA, existingIface=[name=wlan0 type=STA]
+09-20 10:15:02.193 I/bdee    ( 1455): (REDACTED) getHotwordActive::active query: %s, watch: %s, devices connected: %s
+09-20 10:15:02.787 I/AlarmManager( 1234): setExactAndAllowWhileIdle [name: GCM_HB_ALARM type: 2 triggerAtMillis: 2607157]
+09-20 10:15:02.790 I/AlarmManager( 1234): setExactAndAllowWhileIdle [name: GCM_HB_ALARM type: 2 triggerAtMillis: 2607161]
+09-20 10:15:06.451 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:15:16.455 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:15:23.192 I/system_server(  624): AssetManager2(0xb400007828f26ad8) locale list changing from [] to [en-US]
+09-20 10:15:23.199 D/BackgroundInstallControlService(  624): Package event received: 0
+09-20 10:15:26.459 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:15:36.464 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:15:40.795 D/ControlsListingControllerImpl(  893): Subscribing callback, service count: 0
+09-20 10:15:40.796 D/ControlsListingControllerImpl(  893): Unsubscribing callback
+09-20 10:15:46.466 D/SatelliteController( 1038): iisInCarrierRoamingNbIotNtn: satellite is disabled
+09-20 10:15:46.468 I/QuickAccessWalletTile(  893): QAW service is unavailable, recreating the wallet client.

@@ -53,6 +53,7 @@ android {
         //     abiFilters "arm64-v8a"
         // }
         versionName "1.7.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
     // Ensure asset directories starting with '_' (e.g., '_locales/') are not excluded by packaging
     // By default, aapt may ignore certain patterns; setting an empty pattern disables extra ignores
@@ -75,7 +76,7 @@ android {
             signingConfig signingConfigs.release
         }
         debug {
-            signingConfig signingConfigs.release
+            signingConfig signingConfigs.debug
         }
     }
     compileOptions {
@@ -86,6 +87,25 @@ android {
 
     buildFeatures {
         buildConfig = true
+    }
+
+    testOptions {
+        managedDevices {
+            devices {
+                pixel6Api33 (com.android.build.api.dsl.ManagedVirtualDevice) {
+                    device = "Pixel 6"
+                    apiLevel = 33
+                    systemImageSource = "aosp"
+                }
+                tv1080pApi33 (com.android.build.api.dsl.ManagedVirtualDevice) {
+                    device = "Android TV (1080p)"
+                    apiLevel = 33
+                    // Note: depending on your installed SDKs, you may need "google" or a TV image source.
+                    // If provisioning fails, install an Android TV system image for API 33 and adjust this value.
+                    systemImageSource = "google"
+                }
+            }
+        }
     }
 
     def getVersionNameFromGit = { ->
@@ -141,6 +161,13 @@ dependencies {
     implementation 'androidx.tvprovider:tvprovider:1.0.0' // Added for TV support
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'
-} 
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
+    androidTestImplementation 'androidx.test.espresso:espresso-intents:3.5.1'
+    androidTestImplementation 'androidx.test.espresso:espresso-contrib:3.5.1'
+    androidTestImplementation 'androidx.test:runner:1.5.2'
+    androidTestImplementation 'androidx.test:rules:1.5.0'
+    androidTestImplementation 'androidx.test.uiautomator:uiautomator:2.3.0'
+    androidTestUtil 'androidx.test:orchestrator:1.4.2'
+}
 
-apply plugin: 'com.google.gms.google-services' 
+apply plugin: 'com.google.gms.google-services'
