@@ -46,7 +46,7 @@ android {
     compileSdkVersion 34
     defaultConfig {
         applicationId "com.neew.browser"
-        minSdkVersion 21
+        minSdkVersion 23
         targetSdkVersion 35
         // versionCode and versionName will be set below using Git
         // ndk {

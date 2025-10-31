@@ -6,6 +6,7 @@ import android.view.View;
 import android.view.inputmethod.EditorInfo;
 import android.widget.EditText;
 import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.ProgressBar;
 import androidx.appcompat.app.AppCompatActivity;
 import org.mozilla.geckoview.GeckoResult;
@@ -16,6 +17,7 @@ import org.mozilla.geckoview.GeckoSession.NavigationDelegate;
 import org.mozilla.geckoview.GeckoSession.ProgressDelegate;
 import org.mozilla.geckoview.AllowOrDeny;
 import org.mozilla.geckoview.WebRequestError;
+import org.mozilla.geckoview.WebRequest;
 import android.util.Log;
 import android.util.Patterns;
 import java.net.URLEncoder;
@@ -359,12 +361,14 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         protected boolean removeEldestEntry(Map.Entry<GeckoSession, Bitmap> eldest) {
             boolean shouldRemove = size() > MAX_SNAPSHOTS;
             if (shouldRemove) {
-                Bitmap b = eldest.getValue();
-                if (b != null && !b.isRecycled()) b.recycle();
+                Bitmap bmp = eldest.getValue();
+                if (bmp != null && !bmp.isRecycled()) bmp.recycle();
             }
             return shouldRemove;
         }
     };
+    // Track which URL a session's in-memory snapshot corresponds to, to avoid mismatched overlays
+    private Map<GeckoSession, String> sessionSnapshotUrlMap = new HashMap<>();
     // Last snapshot capture time per session for throttling
     private final java.util.concurrent.ConcurrentHashMap<GeckoSession, Long> sessionLastSnapshotMs = new java.util.concurrent.ConcurrentHashMap<>();
     private ActivityResultLauncher<Intent> tabSwitcherLauncher;
@@ -457,6 +461,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     // Note: pendingColorPrompt, pendingGeckoResultForColorPrompt, pendingDateTimePrompt, and pendingGeckoResultForDateTimePrompt are in the consolidated block above
 
     private GeckoView geckoView; // This line acts as a sentinel for where the replacement should roughly end before other major fields.
+    private ImageView snapshotOverlay;
 
     private GeckoSession geckoSession;
     private static GeckoRuntime runtime; // Make GeckoRuntime a singleton
@@ -589,6 +594,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
         // Initialize UI components
         geckoView = findViewById(R.id.geckoView);
+        snapshotOverlay = findViewById(R.id.snapshotOverlay);
 
         // Wait for the initial layout to complete before calculating focusable areas.
         // This is crucial for the cursor to find the control bar on first load.
@@ -752,25 +758,29 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
             applyRuntimeSettings(); // Apply other dynamic settings
             initializeUBlockOrigin(); // Initialize uBlock Origin after runtime is ready
-            // Ensure TV Scroll helper extension is available (loads content.js)
-            ensureTvScrollExtension();
+            // Ensure TV Scroll helper extension is available (loads content.js) — TV only
+            if (isTvDevice()) {
+                ensureTvScrollExtension();
+            }
         } else {
             Log.d(TAG, "Reusing existing GeckoRuntime");
             // If reusing, maybe re-apply dynamic settings?
             applyRuntimeSettings(); // Consider if needed on reuse
             initializeUBlockOrigin(); // Initialize uBlock Origin if runtime is being reused
-            ensureTvScrollExtension();
-            // Retry a few times in case controller wasn't ready yet
-            scheduleEnsureTvScrollExtensionRetries(3, 500);
+            if (isTvDevice()) {
+                ensureTvScrollExtension();
+                // Retry a few times in case controller wasn't ready yet
+                scheduleEnsureTvScrollExtensionRetries(3, 500);
+            }
         }
 
-        // --- Restore Session State --- 
+        // --- Restore Session Tabs from prefs --- 
         if (geckoSessionList.isEmpty() && !restoreSessionState()) {
             // If restore failed or no saved state, create a single initial tab
             Log.d(TAG, "No saved state found or restore failed, creating initial tab.");
             createNewTab(getDefaultHomepageUrl(), true); // Create and make active
         }
-        // --- End Restore Session State ---
+        // --- End Restore ---
 
         // --- Register Activity Result Launcher --- 
         tabSwitcherLauncher = registerForActivityResult(
@@ -948,12 +958,15 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
              Log.d(TAG, "Setting GeckoView session after restore/create");
              geckoView.setSession(getActiveSession());
              updateUIForActiveSession();
+             // Show snapshot overlay for perceived continuity on reopened app
+             showSnapshotOverlayForActiveTab();
         } else if (getActiveSession() == null && !geckoSessionList.isEmpty()) {
              // Fallback if active index was invalid after restore
              Log.w(TAG, "Active session null after restore, defaulting to index 0");
              activeSessionIndex = 0;
              geckoView.setSession(getActiveSession());
              updateUIForActiveSession();
+             showSnapshotOverlayForActiveTab();
         } else if (getActiveSession() == null && geckoSessionList.isEmpty()) {
              // This case should have been handled by creating an initial tab, but log just in case
              Log.e(TAG, "Error: No active session and session list is empty after onCreate logic.");
@@ -1025,6 +1038,14 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         });
     }
 
+    // --- Snapshot overlay helpers ---
+    private void showSnapshotOverlayForActiveTab() {
+        // Snapshot overlay disabled
+        Log.d(TAG, "[SnapshotOverlay] Disabled");
+    }
+
+    private void hideSnapshotOverlayImmediate() { /* overlay disabled */ }
+
     // Focus the nearest scrollable element under the cursor to let Gecko handle Arrow key scrolling natively
     private void tryFocusScrollableAtCursor(GeckoSession session, @Nullable Runnable onFail) {
         if (session == null || geckoView == null || tvCursorView == null) {
@@ -1040,7 +1061,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
         org.mozilla.geckoview.WebExtension.Port port = tvPort;
         if (port == null) {
-            ensureTvScrollExtension();
+            if (isTvDevice()) ensureTvScrollExtension();
             if (onFail != null) onFail.run();
             return;
         }
@@ -1088,7 +1109,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         org.mozilla.geckoview.WebExtension.Port port = tvPort;
         if (port == null) {
             Log.w(TAG, "[TV][DPAD] tv-menu-nav not sent: BG port null");
-            ensureTvScrollExtension();
+            if (isTvDevice()) ensureTvScrollExtension();
             return;
         }
         try {
@@ -1107,7 +1128,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         org.mozilla.geckoview.WebExtension.Port port = tvPort;
         if (port == null) {
             Log.w(TAG, "[TV][EXT] simpleCmd not sent (" + cmd + "): BG port null");
-            ensureTvScrollExtension();
+            if (isTvDevice()) ensureTvScrollExtension();
             return;
         }
         try {
@@ -1166,6 +1187,10 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     // We now communicate with the background page's native port instead of content directly.
     // No session message delegate required.
     private void ensureTvScrollExtension() {
+        if (!isTvDevice()) {
+            Log.d(TAG, "[TV][EXT] ensureTvScrollExtension skipped (non-TV device)");
+            return;
+        }
         if (runtime == null) return;
         try {
             org.mozilla.geckoview.WebExtensionController controller = runtime.getWebExtensionController();
@@ -1347,7 +1372,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
     private void scheduleEnsureTvScrollExtensionRetries(int attempts, long delayMs) {
         if (attempts <= 0) return;
+        if (!isTvDevice()) return;
         new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            if (!isTvDevice()) return;
             Log.d(TAG, "[TV][EXT] retry ensureTvScrollExtension attemptsLeft=" + attempts);
             ensureTvScrollExtension();
             if (attempts - 1 > 0 && tvPort == null) {
@@ -1357,10 +1384,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     }
 
     private void ensureTvScrollExtension(GeckoSession session) {
+        if (!isTvDevice()) return;
         // No per-session attach needed for content scripts, but we ensure once globally
         ensureTvScrollExtension();
         // Optionally refresh DPR for this session
-        if (isTvDevice() && tvElementScrollEnabled) {
+        if (tvElementScrollEnabled) {
             queryTvDpr(session);
         }
     }
@@ -1405,7 +1433,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         org.mozilla.geckoview.WebExtension.Port port = tvPort;
         if (port == null) {
             Log.w(TAG, "[TV][EXT] no Port for session");
-            ensureTvScrollExtension();
+            if (isTvDevice()) ensureTvScrollExtension();
             if (allowRetry) {
                 new Handler(Looper.getMainLooper()).postDelayed(() ->
                     tryElementScrollAtCursorWithRetryFlag(session, dyCss, onFail, false), 250);
@@ -1989,6 +2017,20 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             @Override
             public void onPageStart(@NonNull GeckoSession session, @NonNull String url) {
                 Log.d(TAG, "ProgressDelegate: onPageStart called for session: " + session.hashCode() + ", URL: " + url);
+                // Fade out snapshot overlay on first real navigation of the ACTIVE tab
+                if (session == getActiveSession()) {
+                    if (snapshotOverlay != null && snapshotOverlay.getVisibility() == View.VISIBLE) {
+                        boolean isAboutBlank = (url != null && url.startsWith("about:blank"));
+                        if (!isAboutBlank) {
+                            snapshotOverlay.animate().alpha(0f).setDuration(250).withEndAction(() -> {
+                                snapshotOverlay.setVisibility(View.GONE);
+                                snapshotOverlay.setImageDrawable(null);
+                                snapshotOverlay.setAlpha(1f);
+                                Log.d(TAG, "[SnapshotOverlay] Faded out and hidden on first real page start");
+                            }).start();
+                        }
+                    }
+                }
                 if (session == getActiveSession()) {
                     markResumeProgressIfWithinWindow(session);
                     Log.d(TAG, "ProgressDelegate: onPageStart on ACTIVE session. Showing progress.");
@@ -2023,9 +2065,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                     if (isTvDevice() && tvCursorView != null) {
                         tvCursorView.hideProgress();
                     }
-
+                    // Update snapshot preview for tab switcher
                     if (success && geckoView.getSession() == session) {
-                        Log.d(TAG, "MainTab ProgressDelegate: onPageStop for active session. Capturing snapshot.");
+                        Log.d(TAG, "MainTab ProgressDelegate: onPageStop for active session. Capturing snapshot for previews.");
                         captureSnapshot(session);
                     }
                 }
@@ -3098,8 +3140,8 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         geckoSessionList.add(newSession);
         String targetUrl = (initialUrl != null && !initialUrl.isEmpty()) ? initialUrl : "about:blank";
         sessionUrlMap.put(newSession, targetUrl); // Store initial URL
-        
-        newSession.loadUri(targetUrl); // Load initial URL
+
+        newSession.loadUri(targetUrl);
         Log.d(TAG, "Loading initial URL in new session: " + targetUrl);
 
         if (switchToTab) {
@@ -3201,7 +3243,7 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         geckoView.requestFocus();
     }
 
-    // Method to capture snapshot for a session
+    // Method to capture snapshot for a session (for tab switcher previews)
     private void captureSnapshot(GeckoSession session) {
         if (session == null || geckoView == null) {
             Log.w(TAG, "Cannot capture snapshot, session or geckoView is null.");
@@ -3244,10 +3286,17 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                 Bitmap resizedBitmap = Bitmap.createScaledBitmap(originalBitmap, SNAPSHOT_WIDTH, targetHeight, true);
                 originalBitmap.recycle();
 
-                Log.d(TAG, "Snapshot resized to: " + resizedBitmap.getWidth() + "x" + resizedBitmap.getHeight());
-                sessionSnapshotMap.put(session, resizedBitmap);
+                // Skip saving/display if snapshot is mostly white (common when compositor paused)
+                if (isBitmapMostlyWhite(resizedBitmap)) {
+                    Log.w(TAG, "Snapshot mostly white; skipping store/display for session index: " + geckoSessionList.indexOf(session));
+                    resizedBitmap.recycle();
+                    return;
+                }
 
+                Log.d(TAG, "Snapshot resized to: " + resizedBitmap.getWidth() + "x" + resizedBitmap.getHeight());
                 String url = sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : null;
+                sessionSnapshotMap.put(session, resizedBitmap);
+                sessionSnapshotUrlMap.put(session, url);
                 if (url != null) {
                     saveSnapshotToDisk(resizedBitmap, url);
                 }
@@ -3257,6 +3306,55 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         }, e -> {
             Log.e(TAG, "Snapshot capture failed for session index: " + geckoSessionList.indexOf(session), e);
         });
+    }
+
+    // Heuristic: quickly check if bitmap is mostly white by sampling a small grid
+    private boolean isBitmapMostlyWhite(Bitmap bmp) {
+        try {
+            if (bmp == null || bmp.isRecycled()) return true;
+            int w = bmp.getWidth();
+            int h = bmp.getHeight();
+            if (w <= 0 || h <= 0) return true;
+            final int samples = 6; // 6x6 grid
+            int whiteish = 0;
+            int total = samples * samples;
+            for (int yi = 0; yi < samples; yi++) {
+                for (int xi = 0; xi < samples; xi++) {
+                    int x = (int) ((xi + 0.5f) * w / samples);
+                    int y = (int) ((yi + 0.5f) * h / samples);
+                    if (x >= w) x = w - 1;
+                    if (y >= h) y = h - 1;
+                    int c = bmp.getPixel(x, y);
+                    int a = (c >>> 24) & 0xFF;
+                    int r = (c >>> 16) & 0xFF;
+                    int g = (c >>> 8) & 0xFF;
+                    int b = c & 0xFF;
+                    if (a > 230 && r > 245 && g > 245 && b > 245) whiteish++;
+                }
+            }
+            return whiteish >= (int) (total * 0.9f);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    // If overlay is up and we saw no early progress, try a gentle reload of the active tab
+    private void maybeReloadActiveIfStuck() {
+        try {
+            GeckoSession active = getActiveSession();
+            if (active == null) return;
+            // Prefer reload(); if page is about:blank or URL known, loadUri fallback
+            String url = sessionUrlMap.get(active);
+            try {
+                Log.w(TAG, "[ResumeWatchdog] Triggering reload on active session due to stalled overlay");
+                active.reload();
+            } catch (Throwable t) {
+                if (url != null && !url.isEmpty()) {
+                    Log.w(TAG, "[ResumeWatchdog] reload() failed; calling loadUri(" + url + ")");
+                    active.loadUri(url);
+                }
+            }
+        } catch (Throwable ignore) {}
     }
 
     // Updates URL bar and navigation buttons based on the active session state
@@ -3335,6 +3433,7 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         GeckoSession sessionToClose = geckoSessionList.remove(indexToClose);
         String urlOfClosedTab = sessionUrlMap.remove(sessionToClose);
         Bitmap removedSnapshot = sessionSnapshotMap.remove(sessionToClose);
+        sessionSnapshotUrlMap.remove(sessionToClose);
         if (removedSnapshot != null && !removedSnapshot.isRecycled()) {
             removedSnapshot.recycle();
         }
@@ -3394,6 +3493,7 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         geckoSessionList.clear();
         sessionUrlMap.clear(); 
         sessionSnapshotMap.clear(); // Clear snapshot map
+        sessionSnapshotUrlMap.clear();
         activeSessionIndex = -1;
         // Note: GeckoRuntime might persist beyond Activity onDestroy depending on its creation context
         // If using Application context for runtime, don't close it here.
@@ -3516,7 +3616,9 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         // Update our scroll tracking
         mLastScrollY = scrollY;
         mCanScrollUp = scrollY > 0;
-        Log.d(TAG, "[TV][SCROLL] onScrollChanged x=" + scrollX + " y=" + scrollY + " mCanScrollUp=" + mCanScrollUp);
+        if (isTvDevice()) {
+            Log.d(TAG, "[TV][SCROLL] onScrollChanged x=" + scrollX + " y=" + scrollY + " mCanScrollUp=" + mCanScrollUp);
+        }
 
         // If we're in a brief suppression period after navigation/back/forward,
         // ignore this scroll to avoid auto-hiding due to restored scroll position
@@ -4490,7 +4592,7 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
     @Override
     protected void onResume() {
         super.onResume();
-        // On resume, ensure the active session is attached and active
+        // On resume, ensure the active session is attached and active (no pixel probing)
         resumeAtMs = System.currentTimeMillis();
         resumeHadProgress = false;
         GeckoSession active = getActiveSession();
@@ -4507,145 +4609,23 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                 Log.e(TAG, "Failed to activate GeckoSession onResume", t);
             }
         }
-
-        // Schedule a one-time lightweight probe-and-recover if the surface appears blank
-        resumeRecoveryAttempted = false;
-        if (mainHandler != null) {
-            mainHandler.postDelayed(() -> {
-                try {
-                    if (resumeRecoveryAttempted) return;
-                    if (geckoView == null) return;
-
-                    int w = geckoView.getWidth();
-                    int h = geckoView.getHeight();
-                    boolean shown = geckoView.isShown();
-                    GeckoSession s = geckoView.getSession();
-                    GeckoSession act = getActiveSession();
-                    Log.d(TAG, "[ResumeProbe] gvShown=" + shown + " size=" + w + "x" + h + 
-                            " gvSession==active=" + (s == act));
-
-                    // If not visible or zero-sized, attempt one recovery immediately
-                    if (!shown || w == 0 || h == 0) {
-                        performSingleResumeRecovery();
-                        resumeRecoveryAttempted = true;
-                        return;
-                    }
-
-                    // If we've already observed progress since resume, skip recovery entirely
-                    if (System.currentTimeMillis() - resumeAtMs < 2500 && resumeHadProgress) {
-                        Log.d(TAG, "[ResumeProbe] Recent progress observed; skipping recovery");
-                        resumeRecoveryAttempted = true;
-                        return;
-                    }
-
-                    // Try a single capture to see if we have content
-                    try {
-                        GeckoResult<Bitmap> res = geckoView.capturePixels();
-                        res.accept(bmp -> {
-                            if (resumeRecoveryAttempted) {
-                                if (bmp != null) bmp.recycle();
-                                return;
-                            }
-                            boolean looksBlack = false;
-                            if (bmp != null && bmp.getWidth() > 0 && bmp.getHeight() > 0) {
-                                int px = bmp.getPixel(Math.min(bmp.getWidth() - 1, bmp.getWidth() / 2),
-                                                      Math.min(bmp.getHeight() - 1, bmp.getHeight() / 2));
-                                int r = (px >> 16) & 0xFF, g = (px >> 8) & 0xFF, b = px & 0xFF;
-                                looksBlack = (r + g + b) < 12; // very dark center pixel
-                            } else {
-                                looksBlack = true; // treat null/invalid as blank
-                            }
-                            if (bmp != null) bmp.recycle();
-
-                            Log.d(TAG, "[ResumeProbe] capture result looksBlack=" + looksBlack);
-                            if (looksBlack) {
-                                performSingleResumeRecovery();
-                            }
-                            resumeRecoveryAttempted = true;
-                        }, e -> {
-                            Log.w(TAG, "[ResumeProbe] capturePixels failed", e);
-                            // If compositor not ready yet on TV, retry capture once after a short delay
-                            if (isTvDevice() && !resumeRecoveryAttempted && e instanceof IllegalStateException) {
-                                if (mainHandler != null) {
-                                    mainHandler.postDelayed(() -> {
-                                        if (resumeRecoveryAttempted) return;
-                                        try {
-                                            GeckoResult<Bitmap> res2 = geckoView.capturePixels();
-                                            res2.accept(b2 -> {
-                                                boolean looksBlack2 = true;
-                                                if (b2 != null && b2.getWidth() > 0 && b2.getHeight() > 0) {
-                                                    int px2 = b2.getPixel(Math.min(b2.getWidth() - 1, b2.getWidth() / 2),
-                                                                          Math.min(b2.getHeight() - 1, b2.getHeight() / 2));
-                                                    int r2 = (px2 >> 16) & 0xFF, g2 = (px2 >> 8) & 0xFF, b2c = px2 & 0xFF;
-                                                    looksBlack2 = (r2 + g2 + b2c) < 12;
-                                                }
-                                                if (b2 != null) b2.recycle();
-                                                Log.d(TAG, "[ResumeProbe] retry capture looksBlack=" + looksBlack2);
-                                                if (looksBlack2 && !resumeHadProgress) {
-                                                    performSingleResumeRecovery();
-                                                }
-                                                resumeRecoveryAttempted = true;
-                                            }, e2 -> {
-                                                Log.w(TAG, "[ResumeProbe] retry capture failed; performing recovery", e2);
-                                                if (!resumeHadProgress) performSingleResumeRecovery();
-                                                resumeRecoveryAttempted = true;
-                                            });
-                                        } catch (Throwable rt) {
-                                            Log.w(TAG, "[ResumeProbe] retry capture threw; performing recovery", rt);
-                                            if (!resumeHadProgress) performSingleResumeRecovery();
-                                            resumeRecoveryAttempted = true;
-                                        }
-                                    }, 300);
-                                }
-                            } else {
-                                if (!resumeHadProgress) performSingleResumeRecovery();
-                                resumeRecoveryAttempted = true;
-                            }
-                        });
-                    } catch (Throwable capEx) {
-                        Log.w(TAG, "[ResumeProbe] capturePixels threw, attempting recovery", capEx);
-                        if (!resumeHadProgress) performSingleResumeRecovery();
-                        resumeRecoveryAttempted = true;
-                    }
-                } catch (Throwable t) {
-                    Log.e(TAG, "[ResumeProbe] Unexpected error", t);
-                }
-            }, isTvDevice() ? 900 : 450);
-        }
     }
 
-    // Perform a single, minimal recovery: release current view session (if any), reattach active, activate, and request layout
-    private void performSingleResumeRecovery() {
-        try {
-            GeckoSession active = getActiveSession();
-            if (geckoView == null || active == null) return;
-            Log.w(TAG, "[ResumeProbe] Performing single release+reattach+activate recovery");
-            try {
-                if (geckoView.getSession() != null) {
-                    geckoView.releaseSession();
-                }
-            } catch (Throwable ignore) {}
-            geckoView.setSession(active);
-            try { active.setActive(true); } catch (Throwable ignore) {}
-            geckoView.requestLayout();
-            geckoView.invalidate();
-        } catch (Throwable t) {
-            Log.e(TAG, "[ResumeProbe] Recovery failed", t);
-        }
-    }
+    // performSingleResumeRecovery() removed; no resume-time probing or forced recovery
 
     // Removed verifyAndRecoverRenderingAfterResume(): not needed with minimal lifecycle handling.
 
     @Override
     protected void onPause() {
         super.onPause();
-        // Minimal lifecycle: just deactivate the session
+        // Capture snapshot to have an up-to-date overlay on next launch
         GeckoSession active = getActiveSession();
         if (active != null) {
             try {
-                active.setActive(false);
+                Log.d(TAG, "onPause: Capturing snapshot of active session before deactivation");
+                captureSnapshot(active);
             } catch (Throwable t) {
-                Log.w(TAG, "onPause: Failed to deactivate session", t);
+                Log.w(TAG, "onPause: Failed to capture snapshot", t);
             }
         }
     }
@@ -4659,6 +4639,12 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         // Deactivate the active GeckoSession when Activity stops to free resources
         GeckoSession active = getActiveSession();
         if (active != null) {
+            try {
+                Log.d(TAG, "onStop: Capturing snapshot of active session before deactivation");
+                captureSnapshot(active);
+            } catch (Throwable t) {
+                Log.w(TAG, "onStop: Failed to capture snapshot", t);
+            }
             try {
                 Log.d(TAG, "onStop: Setting active session active=false");
                 active.setActive(false);
@@ -4728,6 +4714,7 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         geckoSessionList.clear();
         sessionUrlMap.clear();
         sessionSnapshotMap.clear(); // Snapshots are not persisted
+        sessionSnapshotUrlMap.clear();
         activeSessionIndex = -1;
 
         // Recreate sessions - NOTE: Order might not be preserved perfectly with Set
@@ -4743,6 +4730,7 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
             Bitmap loadedSnapshot = loadSnapshotFromDisk(url);
             if (loadedSnapshot != null) {
                 sessionSnapshotMap.put(justCreatedSession, loadedSnapshot);
+                sessionSnapshotUrlMap.put(justCreatedSession, url);
                 Log.d(TAG, "[StorageDebug] Loaded snapshot from disk for: " + url);
             } else {
                 Log.d(TAG, "[StorageDebug] No snapshot found on disk for: " + url);
@@ -4767,6 +4755,8 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         return true;
     }
     // --- End Session Persistence Methods ---
+
+    // Cache-first helpers removed; standard loads are used exclusively
 
     // Add this method to setup the listener
     private void setupGeckoViewTouchListener() {

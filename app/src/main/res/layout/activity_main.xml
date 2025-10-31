@@ -32,6 +32,14 @@
 
     </LinearLayout>
 
+    <ImageView
+        android:id="@+id/snapshotOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone"
+        android:scaleType="centerCrop"
+        android:background="@android:color/black"/>
+
     <!-- Control Bar Container overlaid at the bottom (so GeckoView stays visible behind during animations) -->
     <FrameLayout
         android:id="@+id/controlBarContainer"
