@@ -42,6 +42,17 @@
         android:checked="true"
         android:paddingBottom="8dp"/>
 
+    <!-- Translate Page Toggle (mobile only; controls pill visibility) -->
+    <androidx.appcompat.widget.SwitchCompat
+        android:id="@+id/panelTranslateSwitch"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Translate Page"
+        android:textColor="@color/settings_panel_text"
+        app:thumbTint="@color/switch_thumb_tint"
+        app:trackTint="@color/switch_track_tint"
+        android:paddingBottom="16dp"/>
+
     <androidx.appcompat.widget.SwitchCompat
         android:id="@+id/panelAdBlockerSwitch"
         android:layout_width="match_parent"

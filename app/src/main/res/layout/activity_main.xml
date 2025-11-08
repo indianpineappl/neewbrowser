@@ -72,6 +72,12 @@
         android:layout_marginStart="1dp"
         android:layout_marginEnd="1dp"/>
 
+    <!-- Translate Pill (Initially Gone); runtime positions it 5dp above control bar in both states -->
+    <include
+        layout="@layout/translate_pill"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"/>
+
     <!-- Container for the Downloads Fragment (REMOVED) -->
     <!-- 
     <FrameLayout

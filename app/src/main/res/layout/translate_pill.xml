@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/translatePill"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:layout_gravity="bottom"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingStart="8dp"
+    android:paddingEnd="8dp"
+    android:paddingTop="8dp"
+    android:paddingBottom="8dp"
+    android:elevation="6dp"
+    android:visibility="gone"
+    android:background="@drawable/settings_panel_background_rounded">
+
+    <TextView
+        android:id="@+id/translatePillTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Translate"
+        android:textColor="@color/settings_panel_text"
+        android:layout_marginEnd="8dp"/>
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/translateFrom"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="From"
+            android:textColor="@color/settings_panel_text"
+            android:padding="6dp"
+            android:background="@drawable/settings_panel_background_rounded"
+            android:layout_marginEnd="8dp"/>
+
+        <TextView
+            android:id="@+id/translateTo"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="To"
+            android:textColor="@color/settings_panel_text"
+            android:padding="6dp"
+            android:background="@drawable/settings_panel_background_rounded"/>
+    </LinearLayout>
+
+    <ProgressBar
+        android:id="@+id/translateProgress"
+        style="?android:attr/progressBarStyleSmall"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:indeterminate="true"
+        android:visibility="gone"
+        android:layout_marginEnd="8dp"/>
+
+    <!-- Right-side action removed; translation will be triggered by language selection -->
+
+    <ImageButton
+        android:id="@+id/translateClose"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:background="@android:color/transparent"
+        android:scaleType="center"
+        android:src="@android:drawable/ic_menu_close_clear_cancel"
+        app:tint="@android:color/black"
+        android:contentDescription="Close"/>
+
+</LinearLayout>

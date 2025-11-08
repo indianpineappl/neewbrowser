@@ -195,6 +195,145 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         return false;
     }
 
+    // Poll translation state via reflection and log whatever fields/methods we can find
+    private void pollTranslationState(String tag) {
+        try {
+            if (sessionTranslationObj == null) return;
+            Object state = null;
+            try {
+                java.lang.reflect.Method getState = sessionTranslationObj.getClass().getMethod("getState");
+                state = getState.invoke(sessionTranslationObj);
+            } catch (Throwable t) {
+                Log.d(TAG, "[Translate][State] getState() not available", t);
+            }
+            if (state == null) return;
+            Log.d(TAG, "[Translate][State] (" + tag + ") stateObj=" + state);
+            try { // status or phase
+                for (String mName : new String[]{"getStatus","getPhase","getState"}) {
+                    try {
+                        java.lang.reflect.Method m = state.getClass().getMethod(mName);
+                        Object v = m.invoke(state);
+                        Log.d(TAG, "[Translate][State] " + mName + "=" + v);
+                    } catch (Throwable ignored) {}
+                }
+            } catch (Throwable ignored) {}
+            try { // progress
+                for (String mName : new String[]{"getProgress","getProgressPercent"}) {
+                    try {
+                        java.lang.reflect.Method m = state.getClass().getMethod(mName);
+                        Object v = m.invoke(state);
+                        Log.d(TAG, "[Translate][State] " + mName + "=" + v);
+                    } catch (Throwable ignored) {}
+                }
+            } catch (Throwable ignored) {}
+            try { // error info
+                for (String mName : new String[]{"getError","getFailureReason"}) {
+                    try {
+                        java.lang.reflect.Method m = state.getClass().getMethod(mName);
+                        Object v = m.invoke(state);
+                        Log.d(TAG, "[Translate][State] " + mName + "=" + v);
+                    } catch (Throwable ignored) {}
+                }
+            } catch (Throwable ignored) {}
+            try { // target and source
+                for (String mName : new String[]{"getFromLanguage","getPageLanguage","getToLanguage","getTargetLanguage"}) {
+                    try {
+                        java.lang.reflect.Method m = state.getClass().getMethod(mName);
+                        Object v = m.invoke(state);
+                        Log.d(TAG, "[Translate][State] " + mName + "=" + v);
+                    } catch (Throwable ignored) {}
+                }
+            } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            Log.d(TAG, "[Translate][State] poll failed", t);
+        }
+    }
+
+    private void probeTranslationsSupportOnce() {
+        if (isTvDevice()) return;
+        if (translationsEngineAvailable != null) return;
+        try {
+            Class<?> rtCls = Class.forName("org.mozilla.geckoview.TranslationsController$RuntimeTranslation");
+            java.lang.reflect.Method m = rtCls.getMethod("getTranslationSupport");
+            Object res = m.invoke(null);
+            Log.d(TAG, "[Translate][Support] getTranslationSupport invoked: " + res);
+            try { attachGeckoResultLogger(res, "Runtime.getTranslationSupport"); } catch (Throwable ignored) {}
+            translationsEngineAvailable = Boolean.TRUE; // Invocation available; actual support will be reflected in result
+        } catch (Throwable t) {
+            translationsEngineAvailable = Boolean.FALSE;
+            Log.w(TAG, "[Translate][Support] RuntimeTranslation.getTranslationSupport not available or failed", t);
+        }
+    }
+
+    // Try to build TranslationOptions via Builder and set downloadModel=true; return null if unavailable
+    private @Nullable Object buildTranslateOptionsWithDownload() {
+        try {
+            Class<?> builderCls = Class.forName("org.mozilla.geckoview.TranslationsController$SessionTranslation$TranslationOptions$Builder");
+            Object builder = builderCls.getDeclaredConstructor().newInstance();
+            try {
+                java.lang.reflect.Method m = builderCls.getMethod("setDownloadModel", boolean.class);
+                builder = m.invoke(builder, true);
+            } catch (Throwable ignored) {}
+            try {
+                java.lang.reflect.Method m2 = builderCls.getMethod("build");
+                Object options = m2.invoke(builder);
+                Log.d(TAG, "[Translate] Built TranslationOptions with downloadModel=true: " + options);
+                return options;
+            } catch (Throwable t) {
+                Log.d(TAG, "[Translate] TranslationOptions.Builder build() not available", t);
+                return null;
+            }
+        } catch (Throwable t) {
+            Log.d(TAG, "[Translate] TranslationOptions.Builder not available", t);
+            return null;
+        }
+    }
+
+    // Attach a .then(...) logger on GeckoResult via reflection if possible
+    private void attachGeckoResultLogger(Object result, String tag) {
+        if (result == null) return;
+        try {
+            Class<?> grCls = Class.forName("org.mozilla.geckoview.GeckoResult");
+            if (!grCls.isInstance(result)) return;
+            // Try then(Function)
+            try {
+                Class<?> funcCls = Class.forName("java.util.function.Function");
+                java.lang.reflect.Method thenFn = grCls.getMethod("then", funcCls);
+                Object fnProxy = java.lang.reflect.Proxy.newProxyInstance(
+                        funcCls.getClassLoader(), new Class<?>[]{funcCls},
+                        (p, m, a) -> {
+                            if ("apply".equals(m.getName())) {
+                                Object v = (a != null && a.length > 0) ? a[0] : null;
+                                Log.d(TAG, "[Translate][Result] " + tag + " then(Function) value=" + v);
+                                return null; // propagate null
+                            }
+                            return null;
+                        }
+                );
+                thenFn.invoke(result, fnProxy);
+                return;
+            } catch (Throwable ignored) {}
+            // Try then(Consumer)
+            try {
+                Class<?> consCls = Class.forName("java.util.function.Consumer");
+                java.lang.reflect.Method thenCons = grCls.getMethod("then", consCls);
+                Object consProxy = java.lang.reflect.Proxy.newProxyInstance(
+                        consCls.getClassLoader(), new Class<?>[]{consCls},
+                        (p, m, a) -> {
+                            if ("accept".equals(m.getName())) {
+                                Object v = (a != null && a.length > 0) ? a[0] : null;
+                                Log.d(TAG, "[Translate][Result] " + tag + " then(Consumer) value=" + v);
+                            }
+                            return null;
+                        }
+                );
+                thenCons.invoke(result, consProxy);
+            } catch (Throwable ignored2) {}
+        } catch (Throwable t) {
+            // ignore
+        }
+    }
+
     // Mark that we've seen navigation/progress soon after resume to suppress probe recovery
     private void markResumeProgressIfWithinWindow(GeckoSession session) {
         try {
@@ -303,9 +442,707 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private ImageButton minimizedRefreshButton;
     private ImageButton minimizedForwardButton;
 
-    // Scroll detection state
-    private boolean isControlBarExpanded = true; // Default to true as per existing logic for initial state
-    private boolean isUiFocused = false;
+    private View translatePill;
+    private TextView translatePillTitle;
+    private TextView translateFromView;
+    private TextView translateToView;
+    private ImageButton translateCloseButton;
+    private ProgressBar translateProgress;
+    private androidx.appcompat.widget.SwitchCompat panelTranslateSwitch;
+    private boolean translateEnabledPref = false;
+    private String translateToLangPref = null;
+    private String currentDetectedFromLang = null;
+    private boolean isPageTranslated = false;
+    private boolean updatingTranslateUi = false;
+
+    private void showTranslatePill(boolean show) {
+        if (translatePill == null) return;
+        translatePill.setVisibility(show ? View.VISIBLE : View.GONE);
+        if (panelTranslateSwitch != null) {
+            if (panelTranslateSwitch.isChecked() != show) {
+                updatingTranslateUi = true;
+                panelTranslateSwitch.setChecked(show);
+                updatingTranslateUi = false;
+            }
+        }
+    }
+
+    private void hideTranslatePill() {
+        showTranslatePill(false);
+    }
+
+    private void syncTranslateSwitch() {
+        if (panelTranslateSwitch != null) {
+            if (panelTranslateSwitch.isChecked() != translateEnabledPref) {
+                updatingTranslateUi = true;
+                panelTranslateSwitch.setChecked(translateEnabledPref);
+                updatingTranslateUi = false;
+            }
+        }
+    }
+
+    private void initTranslatePrefs() {
+        translateEnabledPref = prefs.getBoolean("translate_enabled", false);
+        translateToLangPref = prefs.getString("translate_to_lang", null);
+    }
+
+    private void saveTranslatePrefs() {
+        prefs.edit().putBoolean("translate_enabled", translateEnabledPref).apply();
+        prefs.edit().putString("translate_to_lang", translateToLangPref).apply();
+    }
+
+    private void closeTranslateHandler() {
+        translateEnabledPref = false;
+        saveTranslatePrefs();
+        hideTranslatePill();
+        if (isPageTranslated) {
+            performRestoreOriginal();
+            isPageTranslated = false;
+        }
+    }
+
+    // --- Translation impl (reflection for safety across GV versions) ---
+    private Object sessionTranslationObj = null; // org.mozilla.geckoview.TranslationsController$SessionTranslation
+    private GeckoSession sessionTranslationSession = null; // the session this SessionTranslation belongs to
+    private Object translationDelegateProxy = null; // cached Proxy for Delegate
+    private Boolean translationsEngineAvailable = null; // null=unknown
+
+    private void ensureSessionTranslation(GeckoSession session) {
+        if (isTvDevice()) return;
+        if (session == null) return;
+        try {
+            Log.d(TAG, "[Translate] ensureSessionTranslation: begin for session=" + session + ", hasExisting=" + (sessionTranslationObj != null));
+            // If cached object belongs to a different session, drop it so we only listen to the active tab
+            if (sessionTranslationObj != null && sessionTranslationSession != session) {
+                Log.d(TAG, "[Translate] Session changed; resetting cached SessionTranslation");
+                sessionTranslationObj = null;
+                sessionTranslationSession = null;
+            }
+            // Preferred path: via TranslationsController (v146+)
+            boolean gotViaController = false;
+            if (sessionTranslationObj == null) {
+                try {
+                    Class<?> controllerCls = Class.forName("org.mozilla.geckoview.TranslationsController");
+                    Object controller = null;
+                    try {
+                        java.lang.reflect.Method getCtrlFromSession = session.getClass().getMethod("getTranslationsController");
+                        controller = getCtrlFromSession.invoke(session);
+                        Log.d(TAG, "[Translate] TranslationsController from session: " + controller);
+                        if (controller != null && controllerCls.isInstance(controller)) {
+                            try {
+                                java.lang.reflect.Method getSessionTranslation = controllerCls.getMethod("getSessionTranslation");
+                                Object st = getSessionTranslation.invoke(controller);
+                                Log.d(TAG, "[Translate] SessionTranslation via controller.getSessionTranslation(): " + st);
+                                if (st != null) {
+                                    sessionTranslationObj = st;
+                                    gotViaController = true;
+                                }
+                            } catch (Throwable t0) {
+                                Log.d(TAG, "[Translate] controller.getSessionTranslation() not available", t0);
+                            }
+                        }
+                    } catch (Throwable tSess) {
+                        Log.d(TAG, "[Translate] session.getTranslationsController() not available", tSess);
+                    }
+                    if (!gotViaController) {
+                        // Older path via runtime (some builds)
+                        Class<?> runtimeCls = Class.forName("org.mozilla.geckoview.GeckoRuntime");
+                        Object runtime = null;
+                        try {
+                            java.lang.reflect.Method getRt = session.getClass().getMethod("getRuntime");
+                            runtime = getRt.invoke(session);
+                            Log.d(TAG, "[Translate] Got GeckoRuntime from session: " + runtime);
+                        } catch (Throwable t) {
+                            Log.d(TAG, "[Translate] session.getRuntime() not available", t);
+                        }
+                        if (runtime != null && runtimeCls.isInstance(runtime)) {
+                            try {
+                                java.lang.reflect.Method getCtrl = runtimeCls.getMethod("getTranslationsController");
+                                Object ctrl2 = getCtrl.invoke(runtime);
+                                Log.d(TAG, "[Translate] TranslationsController obtained: " + ctrl2);
+                                if (ctrl2 != null && controllerCls.isInstance(ctrl2)) {
+                                    Object st = null;
+                                    try {
+                                        java.lang.reflect.Method get = controllerCls.getMethod("get", GeckoSession.class);
+                                        st = get.invoke(ctrl2, session);
+                                        Log.d(TAG, "[Translate] SessionTranslation via controller.get(session): " + st);
+                                    } catch (Throwable t1) {
+                                        Log.d(TAG, "[Translate] controller.get(session) not available", t1);
+                                        try {
+                                            java.lang.reflect.Method getFor = controllerCls.getMethod("getForSession", GeckoSession.class);
+                                            st = getFor.invoke(ctrl2, session);
+                                            Log.d(TAG, "[Translate] SessionTranslation via controller.getForSession(session): " + st);
+                                        } catch (Throwable t2) {
+                                            Log.d(TAG, "[Translate] controller.getForSession(session) not available", t2);
+                                        }
+                                    }
+                                    if (st != null) {
+                                        sessionTranslationObj = st;
+                                        gotViaController = true;
+                                    }
+                                }
+                            } catch (Throwable t) {
+                                Log.d(TAG, "[Translate] GeckoRuntime.getTranslationsController() not available", t);
+                            }
+                        }
+                    }
+                } catch (Throwable t) {
+                    Log.d(TAG, "[Translate] Controller path not available", t);
+                }
+                if (!gotViaController) {
+                    // Fallback: direct constructor on SessionTranslation(session)
+                    Class<?> stCls = Class.forName("org.mozilla.geckoview.TranslationsController$SessionTranslation");
+                    java.lang.reflect.Constructor<?> ctor = stCls.getConstructor(GeckoSession.class);
+                    sessionTranslationObj = ctor.newInstance(session);
+                    Log.d(TAG, "[Translate] SessionTranslation created via ctor: " + sessionTranslationObj);
+                }
+            } else {
+                Log.d(TAG, "[Translate] Reusing existing SessionTranslation: " + sessionTranslationObj);
+            }
+            Log.d(TAG, "[Translate] SessionTranslation ready: " + sessionTranslationObj);
+            sessionTranslationSession = session;
+            // Attach delegate/handler to receive offers and state updates
+            try {
+                // First try Delegate API
+                try {
+                    Class<?> delegateCls = Class.forName("org.mozilla.geckoview.TranslationsController$SessionTranslation$Delegate");
+                    if (translationDelegateProxy == null) {
+                        translationDelegateProxy = java.lang.reflect.Proxy.newProxyInstance(
+                                delegateCls.getClassLoader(),
+                                new Class<?>[]{delegateCls},
+                                (proxy, method, args) -> delegateInvocation(method, args)
+                        );
+                    }
+                    java.lang.reflect.Method setDelegate = sessionTranslationObj.getClass().getMethod("setDelegate", delegateCls);
+                    setDelegate.invoke(sessionTranslationObj, translationDelegateProxy);
+                    Log.d(TAG, "[Translate] Delegate attached");
+                } catch (Throwable noDelegate) {
+                    Log.d(TAG, "[Translate] Delegate API not available, trying Handler API", noDelegate);
+                    // Try Handler API (v146+)
+                    try {
+                        Class<?> handlerCls = Class.forName("org.mozilla.geckoview.TranslationsController$SessionTranslation$Handler");
+                        Object handlerProxy = null;
+                        if (handlerCls.isInterface()) {
+                            handlerProxy = java.lang.reflect.Proxy.newProxyInstance(
+                                    handlerCls.getClassLoader(),
+                                    new Class<?>[]{handlerCls},
+                                    (proxy, method, args) -> delegateInvocation(method, args)
+                            );
+                        }
+                        try {
+                            java.lang.reflect.Method setHandler = sessionTranslationObj.getClass().getMethod("setHandler", handlerCls);
+                            if (handlerProxy != null) {
+                                setHandler.invoke(sessionTranslationObj, handlerProxy);
+                                Log.d(TAG, "[Translate] Handler attached via setHandler (proxy)");
+                            } else {
+                                Log.d(TAG, "[Translate] Handler is a class, skipping proxy; inspecting getHandler() for registration methods");
+                                // Fall through to getHandler() inspection below
+                                throw new NoSuchMethodException("Proxy not possible for class Handler; use getHandler()");
+                            }
+                        } catch (Throwable noSet) {
+                            Log.d(TAG, "[Translate] setHandler not available; trying getHandler()", noSet);
+                            try {
+                                java.lang.reflect.Method getHandler = sessionTranslationObj.getClass().getMethod("getHandler");
+                                Object handlerObj = getHandler.invoke(sessionTranslationObj);
+                                Log.d(TAG, "[Translate] getHandler() returned: " + handlerObj);
+                                if (handlerObj != null) {
+                                    // Try setDelegate using declared methods (include non-public), and support 0-arg/1-arg variants
+                                    boolean attached = false;
+                                    Class<?> hCls = handlerObj.getClass();
+                                    // Collect methods from full class hierarchy (public + declared on each)
+                                    java.util.LinkedHashSet<java.lang.reflect.Method> allMethods = new java.util.LinkedHashSet<>();
+                                    for (Class<?> c = hCls; c != null && c != Object.class; c = c.getSuperclass()) {
+                                        try { for (java.lang.reflect.Method dm : c.getDeclaredMethods()) allMethods.add(dm); } catch (Throwable ignored) {}
+                                        try { for (java.lang.reflect.Method pm : c.getMethods()) allMethods.add(pm); } catch (Throwable ignored) {}
+                                    }
+                                    String[] setterNames = new String[]{"setDelegate", "addDelegate", "registerDelegate"};
+                                    for (java.lang.reflect.Method m : allMethods) {
+                                        String n = m.getName();
+                                        boolean nameMatch = false;
+                                        for (String nm : setterNames) { if (nm.equals(n)) { nameMatch = true; break; } }
+                                        if (!nameMatch) continue;
+                                        try { m.setAccessible(true); } catch (Throwable ignored) {}
+                                        Class<?>[] pts = m.getParameterTypes();
+                                        try {
+                                            // Log signature details for diagnostics
+                                            StringBuilder sig = new StringBuilder();
+                                            for (Class<?> pt : pts) sig.append(pt.getName()).append(',');
+                                            Log.d(TAG, "[Translate] found setDelegate with " + pts.length + " param(s): " + sig);
+                                            if (pts.length == 0) {
+                                                // Try calling parameterless setDelegate (may install default wiring)
+                                                m.invoke(handlerObj);
+                                                Log.d(TAG, "[Translate] Handler.setDelegate() 0-arg invoked");
+                                                attached = true; // not guaranteed but try to proceed
+                                                break;
+                                            } else if (pts.length >= 1) {
+                                                Class<?> paramIf = pts[0];
+                                                Log.d(TAG, "[Translate] setDelegate param type=" + paramIf.getName() + ", isInterface=" + paramIf.isInterface());
+                                                try {
+                                                    Class<?>[] implIfaces = paramIf.getInterfaces();
+                                                    StringBuilder sbI = new StringBuilder();
+                                                    for (Class<?> ci : implIfaces) sbI.append(ci.getName()).append(',');
+                                                    Log.d(TAG, "[Translate] setDelegate param interfaces=" + sbI);
+                                                } catch (Throwable ignored) {}
+
+                                                // Known delegate interfaces to try if parameter is not directly proxyable
+                                                String[] candidateIfNames = new String[]{
+                                                        "org.mozilla.geckoview.TranslationsController$SessionTranslation$Handler$Delegate",
+                                                        "org.mozilla.geckoview.TranslationsController$SessionTranslation$Delegate"
+                                                };
+
+                                                Object firstArgProxy = null;
+                                                if (paramIf.isInterface()) {
+                                                    firstArgProxy = java.lang.reflect.Proxy.newProxyInstance(
+                                                            hCls.getClassLoader(), new Class<?>[]{paramIf},
+                                                            (proxy1, method, args1) -> delegateInvocation(method, args1)
+                                                    );
+                                                } else {
+                                                    // If parameter is Object, we can still try passing a multi-interface proxy
+                                                    boolean triedObject = false;
+                                                    if (Object.class.equals(paramIf)) {
+                                                        java.util.ArrayList<Class<?>> ifaces = new java.util.ArrayList<>();
+                                                        for (String ifn : candidateIfNames) {
+                                                            try {
+                                                                Class<?> cand = Class.forName(ifn);
+                                                                if (cand.isInterface()) ifaces.add(cand);
+                                                            } catch (Throwable ignoredX) {}
+                                                        }
+                                                        if (!ifaces.isEmpty()) {
+                                                            firstArgProxy = java.lang.reflect.Proxy.newProxyInstance(
+                                                                    hCls.getClassLoader(), ifaces.toArray(new Class<?>[0]),
+                                                                    (proxy1, method, args1) -> delegateInvocation(method, args1)
+                                                            );
+                                                            triedObject = true;
+                                                        }
+                                                    }
+                                                    for (String ifn : candidateIfNames) {
+                                                        try {
+                                                            Class<?> cand = Class.forName(ifn);
+                                                            if (cand.isInterface() && (paramIf.isAssignableFrom(cand) || cand.isAssignableFrom(paramIf))) {
+                                                                firstArgProxy = java.lang.reflect.Proxy.newProxyInstance(
+                                                                        hCls.getClassLoader(), new Class<?>[]{cand},
+                                                                        (proxy1, method, args1) -> delegateInvocation(method, args1)
+                                                                );
+                                                                break;
+                                                            }
+                                                        } catch (Throwable ignored2) { }
+                                                    }
+                                                }
+
+                                                // Build full argument list with sensible defaults for remaining params
+                                                if (firstArgProxy != null || pts.length == 1) {
+                                                    Object[] callArgs = new Object[pts.length];
+                                                    for (int i = 0; i < pts.length; i++) {
+                                                        Class<?> pt = pts[i];
+                                                        if (i == 0 && firstArgProxy != null) {
+                                                            callArgs[i] = firstArgProxy;
+                                                        } else if ("org.mozilla.geckoview.GeckoSession".equals(pt.getName())) {
+                                                            // Supply the current session to avoid NPE inside GeckoSessionHandler.setDelegate
+                                                            callArgs[i] = session;
+                                                        } else if (!pt.isPrimitive()) {
+                                                            callArgs[i] = null;
+                                                        } else if (pt == boolean.class) {
+                                                            callArgs[i] = false;
+                                                        } else if (pt == byte.class) {
+                                                            callArgs[i] = (byte)0;
+                                                        } else if (pt == short.class) {
+                                                            callArgs[i] = (short)0;
+                                                        } else if (pt == int.class) {
+                                                            callArgs[i] = 0;
+                                                        } else if (pt == long.class) {
+                                                            callArgs[i] = 0L;
+                                                        } else if (pt == float.class) {
+                                                            callArgs[i] = 0f;
+                                                        } else if (pt == double.class) {
+                                                            callArgs[i] = 0d;
+                                                        } else if (pt == char.class) {
+                                                            callArgs[i] = '\0';
+                                                        } else {
+                                                            callArgs[i] = null;
+                                                        }
+                                                    }
+                                                    m.invoke(handlerObj, callArgs);
+                                                    Log.d(TAG, "[Translate] Handler." + n + " attached via hierarchy with args count=" + callArgs.length);
+                                                    attached = true;
+                                                    break;
+                                                }
+                                            }
+                                        } catch (Throwable tAttach) {
+                                            Log.d(TAG, "[Translate] Failed to attach via handler.setDelegate (declared)", tAttach);
+                                        }
+                                    }
+                                    if (!attached) {
+                                        // Try to inspect getDelegate() type for further hints
+                                        try {
+                                            Object curDel = null;
+                                            for (java.lang.reflect.Method gm : allMethods) {
+                                                if ("getDelegate".equals(gm.getName()) && gm.getParameterCount() == 0) {
+                                                    try { gm.setAccessible(true); } catch (Throwable ignored) {}
+                                                    curDel = gm.invoke(handlerObj);
+                                                    break;
+                                                }
+                                            }
+                                            Log.d(TAG, "[Translate] getDelegate() returned=" + (curDel == null ? "null" : curDel.getClass().getName()));
+                                        } catch (Throwable t) {
+                                            Log.d(TAG, "[Translate] getDelegate() inspect failed", t);
+                                        }
+                                        // Enumerate methods for diagnostics (public + declared)
+                                        StringBuilder sb = new StringBuilder("handler methods=");
+                                        for (java.lang.reflect.Method m2 : allMethods) sb.append(m2.getName()).append(',');
+                                        Log.d(TAG, "[Translate] Unable to attach handler; " + sb);
+                                    }
+                                } else {
+                                    Log.d(TAG, "[Translate] getHandler() returned null");
+                                }
+                            } catch (Throwable gh) {
+                                Log.d(TAG, "[Translate] getHandler() path not available", gh);
+                            }
+                        }
+                    } catch (Throwable noHandler) {
+                        Log.d(TAG, "[Translate] Handler API not available", noHandler);
+                        try {
+                            // As last resort, enumerate SessionTranslation methods for diagnostics
+                            java.lang.reflect.Method[] ms = sessionTranslationObj.getClass().getMethods();
+                            StringBuilder sb = new StringBuilder("sessionTranslation methods=");
+                            for (java.lang.reflect.Method m : ms) sb.append(m.getName()).append(',');
+                            Log.d(TAG, "[Translate] " + sb);
+                        } catch (Throwable ignored) {}
+                    }
+                }
+            } catch (Throwable td) {
+                Log.w(TAG, "TranslationsDelegate not available", td);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "Translations not available in this GeckoView build", t);
+        }
+    }
+
+    private Object delegateInvocation(java.lang.reflect.Method method, Object[] args) {
+        String name = method.getName();
+        try {
+            Log.d(TAG, "[Translate][Delegate] callback: " + name + ", args=" + (args == null ? 0 : args.length));
+            // If a GeckoSession argument is present and it's not the active session, ignore this callback
+            try {
+                GeckoSession active = getActiveSession();
+                if (args != null && active != null) {
+                    for (Object a : args) {
+                        if (a instanceof GeckoSession) {
+                            if (a != active) {
+                                Log.d(TAG, "[Translate][Delegate] Ignoring callback for non-active session");
+                                return null;
+                            }
+                            break;
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
+            // Introspect TranslationState if present in args (since getState() is unavailable on this GV)
+            if (args != null) {
+                for (Object a : args) {
+                    if (a == null) continue;
+                    Class<?> ac = a.getClass();
+                    String cn = ac.getName();
+                    if (cn.endsWith("TranslationsController$SessionTranslation$TranslationState")) {
+                        try {
+                            Object requestedPair = null;
+                            Object detectedLanguages = null;
+                            Object error = null;
+                            Object isEngineReady = null;
+                            Object hasVisibleChange = null;
+
+                            try { java.lang.reflect.Field f = ac.getField("requestedTranslationPair"); requestedPair = f.get(a); } catch (Throwable ignored) {}
+                            try { java.lang.reflect.Field f = ac.getField("detectedLanguages"); detectedLanguages = f.get(a); } catch (Throwable ignored) {}
+                            try { java.lang.reflect.Field f = ac.getField("error"); error = f.get(a); } catch (Throwable ignored) {}
+                            try { java.lang.reflect.Field f = ac.getField("isEngineReady"); isEngineReady = f.get(a); } catch (Throwable ignored) {}
+                            try { java.lang.reflect.Field f = ac.getField("hasVisibleChange"); hasVisibleChange = f.get(a); } catch (Throwable ignored) {}
+
+                            Log.d(TAG, "[Translate][State] requestedPair=" + requestedPair + ", error=" + error
+                                    + ", isEngineReady=" + isEngineReady + ", hasVisibleChange=" + hasVisibleChange
+                                    + ", detectedLanguages=" + (detectedLanguages == null ? null : detectedLanguages.toString()));
+
+                            // Update progress indicator based on engine readiness and visible change
+                            boolean engReady = false;
+                            boolean visChange = false;
+                            try { if (isEngineReady instanceof Boolean) engReady = (Boolean) isEngineReady; } catch (Throwable ignored) {}
+                            try { if (hasVisibleChange instanceof Boolean) visChange = (Boolean) hasVisibleChange; } catch (Throwable ignored) {}
+                            final boolean showProgress = !engReady && !visChange;
+                            runOnUiThread(() -> {
+                                if (translateProgress != null) translateProgress.setVisibility(showProgress ? View.VISIBLE : View.GONE);
+                            });
+
+                            // Extract detected doc language to resolve 'auto' into a concrete language for translate()
+                            if (detectedLanguages != null) {
+                                try {
+                                    Class<?> dlCls = detectedLanguages.getClass();
+                                    String doc = null;
+                                    try { java.lang.reflect.Field f = dlCls.getField("docLangTag"); Object v = f.get(detectedLanguages); if (v != null) doc = String.valueOf(v); } catch (Throwable ignored) {}
+                                    Boolean docSupported = null;
+                                    try { java.lang.reflect.Field f2 = dlCls.getField("isDocLangTagSupported"); Object v2 = f2.get(detectedLanguages); if (v2 instanceof Boolean) docSupported = (Boolean) v2; } catch (Throwable ignored) {}
+                                    if (doc == null || doc.isEmpty()) {
+                                        // Older builds may expose getters; best-effort fallbacks
+                                        try { java.lang.reflect.Method gm = dlCls.getMethod("getDocLangTag"); Object v = gm.invoke(detectedLanguages); if (v != null) doc = String.valueOf(v); } catch (Throwable ignored) {}
+                                        if (doc == null || doc.isEmpty()) {
+                                            try { java.lang.reflect.Method gm2 = dlCls.getMethod("getPageLanguage"); Object v = gm2.invoke(detectedLanguages); if (v != null) doc = String.valueOf(v); } catch (Throwable ignored) {}
+                                        }
+                                    }
+                                    if (doc != null && !doc.isEmpty()) {
+                                        currentDetectedFromLang = doc;
+                                        Log.d(TAG, "[Translate][State] currentDetectedFromLang=" + currentDetectedFromLang);
+                                        final String docFinal = doc;
+                                        runOnUiThread(() -> {
+                                            if (translateFromView != null) translateFromView.setText("From: " + langCodeToName(baseLang(docFinal)));
+                                            // Auto show/hide pill: show only if page language differs from system language
+                                            String sys = baseLang(getSystemLangTag());
+                                            String page = baseLang(docFinal);
+                                            boolean mismatch = (sys == null || page == null) ? false : !sys.equalsIgnoreCase(page);
+                                            showTranslatePill(translateEnabledPref && mismatch);
+                                        });
+                                        // Show unsupported message if engine doesn't support detected source language
+                                        if (docSupported != null && !docSupported) {
+                                            runOnUiThread(() -> Toast.makeText(MainActivity.this, "Translation engine doesn't support this page language", Toast.LENGTH_SHORT).show());
+                                        }
+                                    }
+                                } catch (Throwable ignored) { }
+                            }
+                            // Show unsupported message on explicit errors mentioning unsupported target/source
+                            if (error != null) {
+                                String err = String.valueOf(error).toLowerCase();
+                                if (err.contains("unsupported")) {
+                                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "Unsupported translation for selected language pair", Toast.LENGTH_SHORT).show());
+                                }
+                            }
+                        } catch (Throwable t) {
+                            Log.d(TAG, "[Translate][State] failed to introspect TranslationState", t);
+                        }
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            Log.d(TAG, "[Translate][Delegate] error dispatching callback: " + name, t);
+        }
+        return null;
+    }
+
+    private void performRestoreOriginal() {
+        if (isTvDevice()) return;
+        if (sessionTranslationObj == null) return;
+        try {
+            java.lang.reflect.Method m = sessionTranslationObj.getClass().getMethod("restoreOriginalPage");
+            Object res = m.invoke(sessionTranslationObj);
+            Log.d(TAG, "restoreOriginalPage invoked: " + res);
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed to restoreOriginalPage", t);
+        }
+    }
+
+    private void performTranslate(String fromLang, String toLang) {
+        if (isTvDevice()) return;
+        Log.d(TAG, "[Translate] performTranslate called with from=" + fromLang + ", to=" + toLang + ", detectedFrom=" + currentDetectedFromLang);
+        // Probe engine support once
+        probeTranslationsSupportOnce();
+        // If user chose 'auto', prefer using detected docLangTag when available; only use null-from while detection hasn't arrived yet
+        String fallbackFrom = fromLang;
+        boolean isAuto = (fromLang == null || fromLang.isEmpty() || "auto".equalsIgnoreCase(fromLang));
+        boolean tryNullFromFirst;
+        if (isAuto && currentDetectedFromLang != null && !currentDetectedFromLang.isEmpty()) {
+            fallbackFrom = currentDetectedFromLang;
+            tryNullFromFirst = false;
+        } else {
+            tryNullFromFirst = isAuto;
+        }
+        if (toLang == null || toLang.isEmpty()) return;
+        GeckoSession active = getActiveSession();
+        ensureSessionTranslation(active);
+        if (sessionTranslationObj == null) {
+            Toast.makeText(this, "Translation not supported on this build", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            boolean done = false;
+            if (tryNullFromFirst) {
+                Log.d(TAG, "[Translate] Attempting auto-detected from (null-from)");
+                // Try 3-arg null-from
+                try {
+                    Class<?> optionsCls = Class.forName("org.mozilla.geckoview.TranslationsController$SessionTranslation$TranslationOptions");
+                    java.lang.reflect.Method translate3 = sessionTranslationObj.getClass()
+                            .getMethod("translate", String.class, String.class, optionsCls);
+                    Object options = buildTranslateOptionsWithDownload();
+                    Object res = translate3.invoke(sessionTranslationObj, null, toLang, options);
+                    Log.d(TAG, "[Translate] translate 3-arg (null-from) OK: " + res);
+                    attachGeckoResultLogger(res, "3-arg null-from");
+                    pollTranslationState("after 3-arg null-from");
+                    try { new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> pollTranslationState("+500ms"), 500); } catch (Throwable ignored) {}
+                    try { new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> pollTranslationState("+1500ms"), 1500); } catch (Throwable ignored) {}
+                    done = true;
+                } catch (Throwable t) {
+                    Log.d(TAG, "[Translate] translate 3-arg (null-from) not available", t);
+                }
+                // Try 2-arg null-from if not done
+                if (!done) {
+                    try {
+                        java.lang.reflect.Method translate2 = sessionTranslationObj.getClass()
+                                .getMethod("translate", String.class, String.class);
+                        Object res = translate2.invoke(sessionTranslationObj, null, toLang);
+                        Log.d(TAG, "[Translate] translate 2-arg (null-from) OK: " + res);
+                        attachGeckoResultLogger(res, "2-arg null-from");
+                        pollTranslationState("after 2-arg null-from");
+                        try { new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> pollTranslationState("+500ms"), 500); } catch (Throwable ignored) {}
+                        try { new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> pollTranslationState("+1500ms"), 1500); } catch (Throwable ignored) {}
+                        done = true;
+                    } catch (Throwable t) {
+                        Log.d(TAG, "[Translate] translate 2-arg (null-from) not available", t);
+                    }
+                }
+            }
+            if (!done) {
+                // If we didn't try null, or it failed, try with a concrete from
+                String effFrom = fallbackFrom;
+                if (effFrom == null || effFrom.isEmpty() || "auto".equalsIgnoreCase(effFrom)) {
+                    if (currentDetectedFromLang != null && !currentDetectedFromLang.isEmpty()) {
+                        effFrom = currentDetectedFromLang;
+                    }
+                }
+                if (effFrom != null && !effFrom.isEmpty() && !"auto".equalsIgnoreCase(effFrom)) {
+                    Log.d(TAG, "[Translate] Attempting with-from=" + effFrom);
+                    // Try 3-arg with-from
+                    try {
+                        Class<?> optionsCls = Class.forName("org.mozilla.geckoview.TranslationsController$SessionTranslation$TranslationOptions");
+                        java.lang.reflect.Method translate3 = sessionTranslationObj.getClass()
+                                .getMethod("translate", String.class, String.class, optionsCls);
+                        Object options = buildTranslateOptionsWithDownload();
+                        Object res = translate3.invoke(sessionTranslationObj, effFrom, toLang, options);
+                        Log.d(TAG, "[Translate] translate 3-arg (with-from) OK: " + res);
+                        attachGeckoResultLogger(res, "3-arg with-from");
+                        pollTranslationState("after 3-arg with-from");
+                        try { new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> pollTranslationState("+500ms"), 500); } catch (Throwable ignored) {}
+                        try { new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> pollTranslationState("+1500ms"), 1500); } catch (Throwable ignored) {}
+                        done = true;
+                    } catch (Throwable t) {
+                        Log.d(TAG, "[Translate] translate 3-arg (with-from) not available", t);
+                    }
+                    // Try 2-arg with-from if not done
+                    if (!done) {
+                        try {
+                            java.lang.reflect.Method translate2 = sessionTranslationObj.getClass()
+                                    .getMethod("translate", String.class, String.class);
+                            Object res = translate2.invoke(sessionTranslationObj, effFrom, toLang);
+                            Log.d(TAG, "[Translate] translate 2-arg (with-from) OK: " + res);
+                            attachGeckoResultLogger(res, "2-arg with-from");
+                            pollTranslationState("after 2-arg with-from");
+                            try { new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> pollTranslationState("+500ms"), 500); } catch (Throwable ignored) {}
+                            try { new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> pollTranslationState("+1500ms"), 1500); } catch (Throwable ignored) {}
+                            done = true;
+                        } catch (Throwable t) {
+                            Log.d(TAG, "[Translate] translate 2-arg (with-from) not available", t);
+                        }
+                    }
+                }
+            }
+            if (done) {
+                isPageTranslated = true;
+                return;
+            }
+            throw new RuntimeException("No compatible translate() method succeeded");
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed to call translate", t);
+            Toast.makeText(this, "Couldn’t translate this page", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private String getSystemLangTag() {
+        java.util.Locale loc = java.util.Locale.getDefault();
+        String tag = loc.toLanguageTag();
+        if (tag == null || tag.isEmpty()) return loc.getLanguage();
+        return tag;
+    }
+
+    // Return the base language code (strip region), e.g., en-US -> en
+    private static String baseLang(String tag) {
+        if (tag == null) return null;
+        int i = tag.indexOf('-');
+        if (i > 0) return tag.substring(0, i);
+        i = tag.indexOf('_');
+        if (i > 0) return tag.substring(0, i);
+        return tag;
+    }
+
+    // Map language code to a human-readable English name for UI
+    private static String langCodeToName(String code) {
+        if (code == null || code.isEmpty()) return "Unknown";
+        switch (code.toLowerCase(java.util.Locale.ROOT)) {
+            case "auto": return "Auto";
+            case "en": return "English";
+            case "es": return "Spanish";
+            case "fr": return "French";
+            case "de": return "German";
+            case "hi": return "Hindi";
+            case "zh": return "Chinese";
+            case "ja": return "Japanese";
+            case "ru": return "Russian";
+            default:
+                try {
+                    java.util.Locale l = new java.util.Locale(code);
+                    String dn = l.getDisplayLanguage(java.util.Locale.ENGLISH);
+                    if (dn != null && !dn.isEmpty()) return dn;
+                } catch (Throwable ignored) {}
+                return code;
+        }
+    }
+
+    // Very simple best-effort language heuristic based on URL. Real detection should come from API delegate later.
+    private @Nullable String detectPageLanguageHeuristic(@Nullable String url) {
+        if (url == null) return null;
+        try {
+            String lower = url.toLowerCase(java.util.Locale.ROOT);
+            if (lower.contains("/fr/") || lower.endsWith("/fr") || lower.contains(".fr")) return "fr";
+            if (lower.contains("/de/") || lower.endsWith("/de") || lower.contains(".de")) return "de";
+            if (lower.contains("/es/") || lower.endsWith("/es") || lower.contains(".es")) return "es";
+            if (lower.contains("/ru/") || lower.endsWith("/ru") || lower.contains(".ru")) return "ru";
+            if (lower.contains("/hi/") || lower.endsWith("/hi")) return "hi";
+            if (lower.contains("/ja/") || lower.endsWith("/ja")) return "ja";
+            if (lower.contains("/zh/") || lower.endsWith("/zh") || lower.contains(".cn") || lower.contains(".tw")) return "zh";
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    private void showLanguagePicker(boolean isFrom) {
+        if (isTvDevice()) return;
+        // Supported codes (keep codes internally)
+        final String[] langs = new String[]{"auto","en","es","fr","de","hi","zh","ja","ru"};
+        final String[] names = new String[langs.length];
+        for (int i = 0; i < langs.length; i++) {
+            names[i] = langCodeToName(baseLang(langs[i]));
+        }
+        int checked = 0;
+        String current = isFrom ? (currentDetectedFromLang == null ? "auto" : baseLang(currentDetectedFromLang))
+                                 : (translateToLangPref == null ? baseLang(getSystemLangTag()) : baseLang(translateToLangPref));
+        for (int i = 0; i < langs.length; i++) {
+            if (langs[i].equalsIgnoreCase(current)) { checked = i; break; }
+        }
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(isFrom ? "From language" : "To language")
+            .setSingleChoiceItems(names, checked, (dlg, which) -> {
+                String selCode = langs[which];
+                String selName = names[which];
+                if (isFrom) {
+                    currentDetectedFromLang = selCode.equals("auto") ? null : selCode;
+                    if (translateFromView != null) translateFromView.setText("From: " + selName);
+                } else {
+                    translateToLangPref = selCode;
+                    saveTranslatePrefs();
+                    if (translateToView != null) translateToView.setText("To: " + selName);
+                    // Trigger translation immediately on selecting target
+                    String from = currentDetectedFromLang != null ? currentDetectedFromLang : "auto";
+                    String to = translateToLangPref != null ? translateToLangPref : getSystemLangTag();
+                    Toast.makeText(MainActivity.this, "Translating…", Toast.LENGTH_SHORT).show();
+                    performTranslate(from, to);
+                }
+                dlg.dismiss();
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
     private volatile boolean isUiReady = false; // New flag to prevent UI updates before initialization
     private boolean isControlBarHidden = false; // New: true if both bars are GONE
     // Only allow hide when initiated from a scroll event on the active page
@@ -337,6 +1174,22 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     // --- End Ad Blocker Key ---
 
     private View decorView; // To control system UI visibility
+    // TV/UI state and input fields (restored)
+    private boolean isUiFocused = false;
+    private List<Rect> focusableRects = new ArrayList<>();
+    // Scroll and UI state
+    private int mLastScrollY = 0;
+    private boolean mCanScrollUp = true;
+    private String mLastValidUrl = "";
+    private boolean isControlBarExpanded = true;
+    // Cursor acceleration
+    private int currentStepSize = 30; // base step size in px
+    private static final int MAX_STEP_SIZE = 60;
+    private static final int STEP_INCREMENT = 10;
+    private static final long ACCELERATION_INTERVAL = 100L; // ms
+    private long accelerationStartTime = 0L;
+    // Gesture timing for simulated touch
+    private long mGestureDownTime = 0L;
 
     // --- Tab Management --- 
     private List<GeckoSession> geckoSessionList = new ArrayList<>();
@@ -533,21 +1386,6 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private List<View> settingsPanelElements;
     private static final int CURSOR_STEP_SIZE = 20; // Pixels to move cursor per key press
     private static final int SCROLL_AMOUNT_PER_PRESS = 100; // Increased scroll amount for more noticeable scrolling
-    private long mGestureDownTime = 0; // To track gesture start time for reliable clicks
-    private boolean mUrlBarHasInitialTvFocus = true; // To manage TV URL bar click behavior
-    private boolean mIsScrollingUp = false; // Track if we're currently scrolling up
-    private boolean mWaitingForScrollComplete = false; // Track if we're waiting for a scroll to complete
-    private int mLastScrollY = 0; // Track last scroll position
-    private boolean mCanScrollUp = true; // Track if we can scroll up
-    private String mLastValidUrl = ""; // Store the last valid URL
-    private List<Rect> focusableRects = new ArrayList<>(); // For TV cursor focus
-
-    // Declare acceleration variables at the class level
-    private int currentStepSize = 20; // Base step size
-    private final int MAX_STEP_SIZE = 60;
-    private final int STEP_INCREMENT = 10;
-    private final long ACCELERATION_INTERVAL = 100; // 100ms
-    private long accelerationStartTime;
     private boolean isKeyPressed = false;
 
     @Override
@@ -648,6 +1486,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         // Initialize Settings Panel components
         settingsPanelLayout = findViewById(R.id.settingsPanelLayout);
         panelCookieSwitch = findViewById(R.id.panelCookieSwitch);
+        panelTranslateSwitch = findViewById(R.id.panelTranslateSwitch);
         panelAdBlockerSwitch = findViewById(R.id.panelAdBlockerSwitch);
         panelUBlockSwitch = findViewById(R.id.panelUBlockSwitch);
         panelUBlockLayout = findViewById(R.id.panelUBlockLayout); // Initialize the layout
@@ -703,6 +1542,113 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             });
         } else {
             Log.w(TAG, "panelFullDesktopModelSwitch is null. Please add it to your layout XML with ID 'panelFullDesktopModelSwitch'.");
+        }
+
+        // Initialize translation pill (mobile only)
+        if (!isTvDevice()) {
+            initTranslatePrefs();
+            translatePill = findViewById(R.id.translatePill);
+            translateFromView = findViewById(R.id.translateFrom);
+            translateToView = findViewById(R.id.translateTo);
+            translateCloseButton = findViewById(R.id.translateClose);
+            translatePillTitle = findViewById(R.id.translatePillTitle);
+            translateProgress = findViewById(R.id.translateProgress);
+
+            if (panelTranslateSwitch != null) {
+                panelTranslateSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                    if (updatingTranslateUi) return;
+                    translateEnabledPref = isChecked;
+                    saveTranslatePrefs();
+                    // Only show if page language differs from system and we have a detection; otherwise keep hidden until detected
+                    String sys = baseLang(getSystemLangTag());
+                    String page = baseLang(currentDetectedFromLang);
+                    boolean mismatch = (sys != null && page != null && !sys.equalsIgnoreCase(page));
+                    if (isChecked) {
+                        if (page == null) {
+                            // Detection not available yet: tentatively show so user can interact; detection will re-evaluate
+                            showTranslatePill(true);
+                            if (translateFromView != null) {
+                                translateFromView.setText("From: " + langCodeToName("auto"));
+                            }
+                            if (translateToView != null) {
+                                String toInit = (translateToLangPref != null) ? translateToLangPref : getSystemLangTag();
+                                translateToView.setText("To: " + langCodeToName(baseLang(toInit)));
+                            }
+                        } else {
+                            showTranslatePill(mismatch);
+                            if (translateFromView != null) {
+                                translateFromView.setText("From: " + langCodeToName(baseLang(page)));
+                            }
+                            if (translateToView != null) {
+                                String toInit = (translateToLangPref != null) ? translateToLangPref : getSystemLangTag();
+                                translateToView.setText("To: " + langCodeToName(baseLang(toInit)));
+                            }
+                        }
+                    } else {
+                        showTranslatePill(false);
+                    }
+                });
+                // Sync initial state without forcing visibility; detection callback will handle showing
+                syncTranslateSwitch();
+            }
+
+            if (translateFromView != null) {
+                translateFromView.setOnClickListener(v -> showLanguagePicker(true));
+            }
+            if (translateToView != null) {
+                translateToView.setOnClickListener(v -> showLanguagePicker(false));
+                // Initialize label from saved preference (show human-readable name)
+                String toInit = (translateToLangPref != null) ? translateToLangPref : getSystemLangTag();
+                translateToView.setText("To: " + langCodeToName(baseLang(toInit)));
+            }
+            // Leave translatePillTitle as a non-clickable label to avoid duplicate translate actions
+            if (translateCloseButton != null) {
+                translateCloseButton.setOnClickListener(v -> {
+                    showTranslatePill(false);
+                    if (isPageTranslated) {
+                        performRestoreOriginal();
+                        isPageTranslated = false;
+                        Toast.makeText(MainActivity.this, "Showing original", Toast.LENGTH_SHORT).show();
+                    }
+                });
+            }
+
+            // Ensure pill stays 5dp above the control bar in both expanded/minimized states
+            final View controlContainer = findViewById(R.id.controlBarContainer);
+            if (translatePill != null && controlContainer != null) {
+                final View root = (View) controlContainer.getParent();
+                final int dp5 = (int) (5 * getResources().getDisplayMetrics().density);
+                final Runnable adjustPill = () -> {
+                    if (root.getWidth() == 0) return;
+                    // Ensure pill measured
+                    if (translatePill.getWidth() == 0 || translatePill.getHeight() == 0) {
+                        translatePill.measure(
+                            View.MeasureSpec.makeMeasureSpec(root.getWidth(), View.MeasureSpec.AT_MOST),
+                            View.MeasureSpec.makeMeasureSpec(root.getHeight(), View.MeasureSpec.AT_MOST));
+                    }
+                    if (translatePill.getMeasuredWidth() == 0 || translatePill.getMeasuredHeight() == 0) return;
+                    // Anchor strictly to the overall control bar container top to stay above the entire panel
+                    int[] anchorLoc = new int[2];
+                    int[] rootLoc = new int[2];
+                    controlContainer.getLocationOnScreen(anchorLoc);
+                    root.getLocationOnScreen(rootLoc);
+                    int anchorTopInRoot = anchorLoc[1] - rootLoc[1];
+
+                    int newY = anchorTopInRoot - translatePill.getMeasuredHeight() - dp5;
+                    int newX = (root.getWidth() - translatePill.getMeasuredWidth()) / 2;
+                    translatePill.setX(newX);
+                    translatePill.setY(newY);
+                };
+                // Adjust on first layout and whenever the control bar layout changes
+                translatePill.post(adjustPill);
+                controlContainer.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> translatePill.post(adjustPill));
+                // Also adjust when the pill's own size changes
+                translatePill.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> translatePill.post(adjustPill));
+                // And after a short delay to cover post-animation/layout passes
+                try { new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> translatePill.post(adjustPill), 200); } catch (Throwable ignored) {}
+                // Global layout to react to any other UI changes (e.g., address bar animations)
+                root.getViewTreeObserver().addOnGlobalLayoutListener(() -> translatePill.post(adjustPill));
+            }
         }
 
         // Initialize context menu
@@ -1980,6 +2926,28 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             @Override
             public void onPageStart(@NonNull GeckoSession session, @NonNull String url) {
                 Log.d(TAG, "ProgressDelegate: onPageStart called for session: " + session.hashCode() + ", URL: " + url);
+                if (!isTvDevice()) {
+                    // Attach translation callbacks only for the ACTIVE session to prevent
+                    // background/restored tabs from driving the pill state.
+                    if (session == getActiveSession()) {
+                        ensureSessionTranslation(session);
+                    }
+                    // Reset translated state on navigation start
+                    isPageTranslated = false;
+                    // Clear detected language to avoid stale state and reset pill UI
+                    currentDetectedFromLang = null;
+                    // Hide pill until detection determines mismatch with system language and reset labels
+                    runOnUiThread(() -> {
+                        showTranslatePill(false);
+                        if (translateFromView != null) {
+                            translateFromView.setText("From: " + langCodeToName("auto"));
+                        }
+                        if (translateToView != null) {
+                            String toInit = (translateToLangPref != null) ? translateToLangPref : getSystemLangTag();
+                            translateToView.setText("To: " + langCodeToName(baseLang(toInit)));
+                        }
+                    });
+                }
                 // Fade out snapshot overlay on first real navigation of the ACTIVE tab
                 if (session == getActiveSession()) {
                     if (snapshotOverlay != null && snapshotOverlay.getVisibility() == View.VISIBLE) {
@@ -2032,6 +3000,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                     if (success && geckoView.getSession() == session) {
                         Log.d(TAG, "MainTab ProgressDelegate: onPageStop for active session. Capturing snapshot for previews.");
                         captureSnapshot(session);
+                        // Do not alter translate pill visibility here; detection callback will decide based on language mismatch
                     }
                 }
             }
@@ -2126,6 +3095,19 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             public void onLocationChange(GeckoSession session, @Nullable String newUri, @NonNull List<GeckoSession.PermissionDelegate.ContentPermission> perms, @NonNull Boolean hasUserGesture) {
                 Log.d(TAG, "NavDelegate: onLocationChange for session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A") + " to URI: " + newUri +
                            " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
+                if (!isTvDevice()) {
+                    // Track URL
+                    if (newUri != null) {
+                        sessionUrlMap.put(session, newUri);
+                    }
+                    // If previously translated, attempt to re-translate after in-page navs
+                    if (isPageTranslated) {
+                        String from = currentDetectedFromLang != null ? currentDetectedFromLang : "auto";
+                        String to = (translateToLangPref != null) ? translateToLangPref : getSystemLangTag();
+                        Toast.makeText(MainActivity.this, "Translating…", Toast.LENGTH_SHORT).show();
+                        performTranslate(from, to);
+                    }
+                }
 
                 if (newUri == null) {
                     return;
