@@ -77,8 +77,8 @@ function shouldDebug(details) {
 /******************************************************************************/
 
 builtinScriptlets.push({
-    name: 'abort-current-script-core.fn',
-    fn: abortCurrentScriptCore,
+    name: 'abort-current-script.fn',
+    fn: abortCurrentScriptFn,
     dependencies: [
         'get-exception-token.fn',
         'safe-self.fn',
@@ -87,7 +87,7 @@ builtinScriptlets.push({
 });
 // Issues to mind before changing anything:
 //  https://github.com/uBlockOrigin/uBlock-issues/issues/2154
-function abortCurrentScriptCore(
+function abortCurrentScriptFn(
     target = '',
     needle = '',
     context = ''
@@ -122,8 +122,9 @@ function abortCurrentScriptCore(
     const debug = shouldDebug(extraArgs);
     const exceptionToken = getExceptionTokenFn();
     const scriptTexts = new WeakMap();
+    const textContentGetter = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent').get;
     const getScriptText = elem => {
-        let text = elem.textContent;
+        let text = textContentGetter.call(elem);
         if ( text.trim() !== '' ) { return text; }
         if ( scriptTexts.has(elem) ) { return scriptTexts.get(elem); }
         const [ , mime, content ] =
@@ -596,7 +597,7 @@ builtinScriptlets.push({
     ],
     fn: abortCurrentScript,
     dependencies: [
-        'abort-current-script-core.fn',
+        'abort-current-script.fn',
         'run-at-html-element.fn',
     ],
 });
@@ -604,7 +605,7 @@ builtinScriptlets.push({
 //  https://github.com/uBlockOrigin/uBlock-issues/issues/2154
 function abortCurrentScript(...args) {
     runAtHtmlElementFn(( ) => {
-        abortCurrentScriptCore(...args);
+        abortCurrentScriptFn(...args);
     });
 }
 
@@ -1588,6 +1589,7 @@ builtinScriptlets.push({
     name: 'm3u-prune.js',
     fn: m3uPrune,
     dependencies: [
+        'proxy-apply.fn',
         'safe-self.fn',
     ],
 });
@@ -1703,28 +1705,30 @@ function m3uPrune(
         if ( arg instanceof Request ) { return arg.url; }
         return String(arg);
     };
-    const realFetch = self.fetch;
-    self.fetch = new Proxy(self.fetch, {
-        apply: function(target, thisArg, args) {
-            if ( reUrl.test(urlFromArg(args[0])) === false ) {
-                return Reflect.apply(target, thisArg, args);
-            }
-            return realFetch(...args).then(realResponse =>
-                realResponse.text().then(text => {
-                    const response = new Response(pruner(text), {
-                        status: realResponse.status,
-                        statusText: realResponse.statusText,
-                        headers: realResponse.headers,
-                    });
-                    if ( toLog.length !== 0 ) {
-                        toLog.unshift(logPrefix);
-                        safe.uboLog(toLog.join('\n'));
-                    }
-                    return response;
-                })
-            );
+    proxyApplyFn('fetch', async function fetch(context) {
+        const args = context.callArgs;
+        const fetchPromise = context.reflect();
+        if ( reUrl.test(urlFromArg(args[0])) === false ) { return fetchPromise; }
+        const responseBefore = await fetchPromise;
+        const responseClone = responseBefore.clone();
+        const textBefore = await responseClone.text();
+        const textAfter = pruner(textBefore);
+        if ( textAfter === textBefore ) { return responseBefore; }
+        const responseAfter = new Response(textAfter, {
+            status: responseBefore.status,
+            statusText: responseBefore.statusText,
+            headers: responseBefore.headers,
+        });
+        Object.defineProperties(responseAfter, {
+            url: { value: responseBefore.url },
+            type: { value: responseBefore.type },
+        });
+        if ( toLog.length !== 0 ) {
+            toLog.unshift(logPrefix);
+            safe.uboLog(toLog.join('\n'));
         }
-    });
+        return responseAfter;
+    })
     self.XMLHttpRequest.prototype.open = new Proxy(self.XMLHttpRequest.prototype.open, {
         apply: async (target, thisArg, args) => {
             if ( reUrl.test(urlFromArg(args[1])) === false ) {
@@ -2185,92 +2189,106 @@ function trustedClickElement(
         return shadowRoot && querySelectorEx(inside, shadowRoot);
     };
 
-    const selectorList = safe.String_split.call(selectors, /\s*,\s*/)
-        .filter(s => {
-            try {
-                void querySelectorEx(s);
-            } catch {
-                return false;
-            }
-            return true;
-        });
-    if ( selectorList.length === 0 ) { return; }
-
+    const steps = safe.String_split.call(selectors, /\s*,\s*/).map(a => {
+        if ( /^\d+$/.test(a) ) { return parseInt(a, 10); }
+        return a;
+    });
+    if ( steps.length === 0 ) { return; }
     const clickDelay = parseInt(delay, 10) || 1;
-    const t0 = Date.now();
-    const tbye = t0 + 10000;
-    let tnext = selectorList.length !== 1 ? t0 : t0 + clickDelay;
+    for ( let i = steps.length-1; i > 0; i-- ) {
+        if ( typeof steps[i] !== 'string' ) { continue; }
+        if ( typeof steps[i-1] !== 'string' ) { continue; }
+        steps.splice(i, 0, clickDelay);
+    }
+    if ( steps.length === 1 && delay !== '' ) {
+        steps.unshift(clickDelay);
+    }
+    if ( typeof steps.at(-1) !== 'number' ) {
+        steps.push(10000);
+    }
+
+    const waitForTime = ms => {
+        return new Promise(resolve => {
+            safe.uboLog(logPrefix, `Waiting for ${ms} ms`);
+            waitForTime.timer = setTimeout(( ) => {
+                waitForTime.timer = undefined;
+                resolve();
+            }, ms);
+        });
+    };
+    waitForTime.cancel = ( ) => {
+        const { timer } = waitForTime;
+        if ( timer === undefined ) { return; }
+        clearTimeout(timer);
+        waitForTime.timer = undefined;
+    };
+
+    const waitForElement = selector => {
+        return new Promise(resolve => {
+            const elem = querySelectorEx(selector);
+            if ( elem !== null ) {
+                elem.click();
+                resolve();
+                return;
+            }
+            safe.uboLog(logPrefix, `Waiting for ${selector}`);
+            const observer = new MutationObserver(( ) => {
+                const elem = querySelectorEx(selector);
+                if ( elem === null ) { return; }
+                waitForElement.cancel();
+                elem.click();
+                resolve();
+            });
+            observer.observe(document, {
+                attributes: true,
+                childList: true,
+                subtree: true,
+            });
+            waitForElement.observer = observer;
+        });
+    };
+    waitForElement.cancel = ( ) => {
+        const { observer } = waitForElement;
+        if ( observer === undefined ) { return; }
+        waitForElement.observer = undefined;
+        observer.disconnect();
+    };
+
+    const waitForTimeout = ms => {
+        waitForTimeout.cancel();
+        waitForTimeout.timer = setTimeout(( ) => {
+            waitForTimeout.timer = undefined;
+            terminate();
+            safe.uboLog(logPrefix, `Timed out after ${ms} ms`);
+        }, ms);
+    };
+    waitForTimeout.cancel = ( ) => {
+        if ( waitForTimeout.timer === undefined ) { return; }
+        clearTimeout(waitForTimeout.timer);
+        waitForTimeout.timer = undefined;
+    };
 
     const terminate = ( ) => {
-        selectorList.length = 0;
-        next.stop();
-        observe.stop();
+        waitForTime.cancel();
+        waitForElement.cancel();
+        waitForTimeout.cancel();
     };
 
-    const next = notFound => {
-        if ( selectorList.length === 0 ) {
-            safe.uboLog(logPrefix, 'Completed');
-            return terminate();
+    const process = async ( ) => {
+        waitForTimeout(steps.pop());
+        while ( steps.length !== 0 ) {
+            const step = steps.shift();
+            if ( step === undefined ) { break; }
+            if ( typeof step === 'number' ) {
+                await waitForTime(step);
+                if ( step === 1 ) { continue; }
+                continue;
+            }
+            if ( step.startsWith('!') ) { continue; }
+            await waitForElement(step);
+            safe.uboLog(logPrefix, `Clicked ${step}`);
         }
-        const tnow = Date.now();
-        if ( tnow >= tbye ) {
-            safe.uboLog(logPrefix, 'Timed out');
-            return terminate();
-        }
-        if ( notFound ) { observe(); }
-        const delay = Math.max(notFound ? tbye - tnow : tnext - tnow, 1);
-        next.timer = setTimeout(( ) => {
-            next.timer = undefined;
-            process();
-        }, delay);
-        safe.uboLog(logPrefix, `Waiting for ${selectorList[0]}...`);
-    };
-    next.stop = ( ) => {
-        if ( next.timer === undefined ) { return; }
-        clearTimeout(next.timer);
-        next.timer = undefined;
-    };
-
-    const observe = ( ) => {
-        if ( observe.observer !== undefined ) { return; }
-        observe.observer = new MutationObserver(( ) => {
-            if ( observe.timer !== undefined ) { return; }
-            observe.timer = setTimeout(( ) => {
-                observe.timer = undefined;
-                process();
-            }, 20);
-        });
-        observe.observer.observe(document, {
-            attributes: true,
-            childList: true,
-            subtree: true,
-        });
-    };
-    observe.stop = ( ) => {
-        if ( observe.timer !== undefined ) {
-            clearTimeout(observe.timer);
-            observe.timer = undefined;
-        }
-        if ( observe.observer ) {
-            observe.observer.disconnect();
-            observe.observer = undefined;
-        }
-    };
-
-    const process = ( ) => {
-        next.stop();
-        if ( Date.now() < tnext ) { return next(); }
-        const selector = selectorList.shift();
-        if ( selector === undefined ) { return terminate(); }
-        const elem = querySelectorEx(selector);
-        if ( elem === null ) {
-            selectorList.unshift(selector);
-            return next(true);
-        }
-        safe.uboLog(logPrefix, `Clicked ${selector}`);
-        elem.click();
-        tnext += clickDelay;
-        next();
+        terminate();
     };
 
     runAtHtmlElementFn(process);

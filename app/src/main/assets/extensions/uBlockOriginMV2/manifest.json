@@ -16,6 +16,11 @@
   },
   "browser_specific_settings": {
     "gecko": {
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ]
+      },
       "id": "uBlock0@raymondhill.net",
       "strict_min_version": "92.0"
     },
@@ -121,7 +126,7 @@
     "<all_urls>"
   ],
   "short_name": "uBlock\u2080",
-  "version": "1.65.0",
+  "version": "1.68.0",
   "web_accessible_resources": [
     "/web_accessible_resources/*"
   ]

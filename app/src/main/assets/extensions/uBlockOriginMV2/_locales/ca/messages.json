@@ -32,11 +32,11 @@
     "description": "appears as tab name in dashboard"
   },
   "1pPageName": {
-    "message": "Els vostres filtres",
+    "message": "Filtres personalitzats",
     "description": "appears as tab name in dashboard"
   },
   "rulesPageName": {
-    "message": "Les meves regles",
+    "message": "Regles personalitzades",
     "description": "appears as tab name in dashboard"
   },
   "whitelistPageName": {
@@ -540,7 +540,7 @@
     "description": "Warning against copy-pasting filters from random sources"
   },
   "1pEnableMyFiltersLabel": {
-    "message": "Habilita els meus filtres personalitzats",
+    "message": "Habilita els filtres personalitzats",
     "description": "Label for the checkbox use to enable/disable 'My filters' list"
   },
   "1pTrustMyFiltersLabel": {
@@ -1200,7 +1200,7 @@
     "description": "The label which prepend the actual reason why a page was blocked"
   },
   "docblockedReasonMalicious": {
-    "message": "Maliciós",
+    "message": "Perjudicial",
     "description": "An actual reason why a page was blocked"
   },
   "docblockedReasonTracker": {
@@ -1208,7 +1208,7 @@
     "description": "An actual reason why a page was blocked"
   },
   "docblockedReasonDisreputable": {
-    "message": "De mala reputació",
+    "message": "Mala reputació",
     "description": "An actual reason why a page was blocked"
   },
   "cloudPush": {

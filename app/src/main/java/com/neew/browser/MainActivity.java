@@ -110,6 +110,10 @@ import org.mozilla.geckoview.GeckoSession.PromptDelegate.FilePrompt;
 import org.mozilla.geckoview.GeckoSession.PromptDelegate.ChoicePrompt;
 import org.mozilla.geckoview.GeckoSession.PromptDelegate.ChoicePrompt.Choice;
 import org.mozilla.geckoview.GeckoSession.PromptDelegate.TextPrompt;
+import org.mozilla.geckoview.GeckoSession.PermissionDelegate;
+import org.mozilla.geckoview.GeckoSession.PermissionDelegate.ContentPermission;
+import org.mozilla.geckoview.GeckoSession.PermissionDelegate.MediaSource;
+import org.mozilla.geckoview.GeckoSession.PermissionDelegate.MediaCallback;
 import java.util.Arrays; // Added for Arrays.toString
 import android.content.ClipData; // Added for file picker multiple selection
 import java.io.File;
@@ -246,6 +250,44 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             } catch (Throwable ignored) {}
         } catch (Throwable t) {
             Log.d(TAG, "[Translate][State] poll failed", t);
+        }
+    }
+
+    // --- Persist per-origin content permission decisions ---
+    private void loadSavedContentPermissions() {
+        if (prefs == null) return;
+        String json = prefs.getString(PREF_SAVED_CONTENT_PERMISSIONS, null);
+        savedContentPermissions.clear();
+        if (json == null || json.isEmpty()) return;
+        try {
+            org.json.JSONObject obj = new org.json.JSONObject(json);
+            java.util.Iterator<String> it = obj.keys();
+            while (it.hasNext()) {
+                String key = it.next();
+                int val = obj.optInt(key, ContentPermission.VALUE_PROMPT);
+                if (val == ContentPermission.VALUE_ALLOW || val == ContentPermission.VALUE_DENY) {
+                    savedContentPermissions.put(key, val);
+                }
+            }
+            Log.d(TAG, "[Perm] Loaded " + savedContentPermissions.size() + " saved content permissions from prefs");
+        } catch (Exception e) {
+            Log.w(TAG, "[Perm] Failed to parse saved content permissions JSON", e);
+        }
+    }
+
+    private void saveSavedContentPermissions() {
+        if (prefs == null) return;
+        try {
+            org.json.JSONObject obj = new org.json.JSONObject();
+            for (java.util.Map.Entry<String, Integer> e : savedContentPermissions.entrySet()) {
+                int v = e.getValue();
+                if (v == ContentPermission.VALUE_ALLOW || v == ContentPermission.VALUE_DENY) {
+                    obj.put(e.getKey(), v);
+                }
+            }
+            prefs.edit().putString(PREF_SAVED_CONTENT_PERMISSIONS, obj.toString()).apply();
+        } catch (Exception e) {
+            Log.w(TAG, "[Perm] Failed to persist saved content permissions", e);
         }
     }
 
@@ -617,197 +659,8 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                     setDelegate.invoke(sessionTranslationObj, translationDelegateProxy);
                     Log.d(TAG, "[Translate] Delegate attached");
                 } catch (Throwable noDelegate) {
-                    Log.d(TAG, "[Translate] Delegate API not available, trying Handler API", noDelegate);
-                    // Try Handler API (v146+)
-                    try {
-                        Class<?> handlerCls = Class.forName("org.mozilla.geckoview.TranslationsController$SessionTranslation$Handler");
-                        Object handlerProxy = null;
-                        if (handlerCls.isInterface()) {
-                            handlerProxy = java.lang.reflect.Proxy.newProxyInstance(
-                                    handlerCls.getClassLoader(),
-                                    new Class<?>[]{handlerCls},
-                                    (proxy, method, args) -> delegateInvocation(method, args)
-                            );
-                        }
-                        try {
-                            java.lang.reflect.Method setHandler = sessionTranslationObj.getClass().getMethod("setHandler", handlerCls);
-                            if (handlerProxy != null) {
-                                setHandler.invoke(sessionTranslationObj, handlerProxy);
-                                Log.d(TAG, "[Translate] Handler attached via setHandler (proxy)");
-                            } else {
-                                Log.d(TAG, "[Translate] Handler is a class, skipping proxy; inspecting getHandler() for registration methods");
-                                // Fall through to getHandler() inspection below
-                                throw new NoSuchMethodException("Proxy not possible for class Handler; use getHandler()");
-                            }
-                        } catch (Throwable noSet) {
-                            Log.d(TAG, "[Translate] setHandler not available; trying getHandler()", noSet);
-                            try {
-                                java.lang.reflect.Method getHandler = sessionTranslationObj.getClass().getMethod("getHandler");
-                                Object handlerObj = getHandler.invoke(sessionTranslationObj);
-                                Log.d(TAG, "[Translate] getHandler() returned: " + handlerObj);
-                                if (handlerObj != null) {
-                                    // Try setDelegate using declared methods (include non-public), and support 0-arg/1-arg variants
-                                    boolean attached = false;
-                                    Class<?> hCls = handlerObj.getClass();
-                                    // Collect methods from full class hierarchy (public + declared on each)
-                                    java.util.LinkedHashSet<java.lang.reflect.Method> allMethods = new java.util.LinkedHashSet<>();
-                                    for (Class<?> c = hCls; c != null && c != Object.class; c = c.getSuperclass()) {
-                                        try { for (java.lang.reflect.Method dm : c.getDeclaredMethods()) allMethods.add(dm); } catch (Throwable ignored) {}
-                                        try { for (java.lang.reflect.Method pm : c.getMethods()) allMethods.add(pm); } catch (Throwable ignored) {}
-                                    }
-                                    String[] setterNames = new String[]{"setDelegate", "addDelegate", "registerDelegate"};
-                                    for (java.lang.reflect.Method m : allMethods) {
-                                        String n = m.getName();
-                                        boolean nameMatch = false;
-                                        for (String nm : setterNames) { if (nm.equals(n)) { nameMatch = true; break; } }
-                                        if (!nameMatch) continue;
-                                        try { m.setAccessible(true); } catch (Throwable ignored) {}
-                                        Class<?>[] pts = m.getParameterTypes();
-                                        try {
-                                            // Log signature details for diagnostics
-                                            StringBuilder sig = new StringBuilder();
-                                            for (Class<?> pt : pts) sig.append(pt.getName()).append(',');
-                                            Log.d(TAG, "[Translate] found setDelegate with " + pts.length + " param(s): " + sig);
-                                            if (pts.length == 0) {
-                                                // Try calling parameterless setDelegate (may install default wiring)
-                                                m.invoke(handlerObj);
-                                                Log.d(TAG, "[Translate] Handler.setDelegate() 0-arg invoked");
-                                                attached = true; // not guaranteed but try to proceed
-                                                break;
-                                            } else if (pts.length >= 1) {
-                                                Class<?> paramIf = pts[0];
-                                                Log.d(TAG, "[Translate] setDelegate param type=" + paramIf.getName() + ", isInterface=" + paramIf.isInterface());
-                                                try {
-                                                    Class<?>[] implIfaces = paramIf.getInterfaces();
-                                                    StringBuilder sbI = new StringBuilder();
-                                                    for (Class<?> ci : implIfaces) sbI.append(ci.getName()).append(',');
-                                                    Log.d(TAG, "[Translate] setDelegate param interfaces=" + sbI);
-                                                } catch (Throwable ignored) {}
-
-                                                // Known delegate interfaces to try if parameter is not directly proxyable
-                                                String[] candidateIfNames = new String[]{
-                                                        "org.mozilla.geckoview.TranslationsController$SessionTranslation$Handler$Delegate",
-                                                        "org.mozilla.geckoview.TranslationsController$SessionTranslation$Delegate"
-                                                };
-
-                                                Object firstArgProxy = null;
-                                                if (paramIf.isInterface()) {
-                                                    firstArgProxy = java.lang.reflect.Proxy.newProxyInstance(
-                                                            hCls.getClassLoader(), new Class<?>[]{paramIf},
-                                                            (proxy1, method, args1) -> delegateInvocation(method, args1)
-                                                    );
-                                                } else {
-                                                    // If parameter is Object, we can still try passing a multi-interface proxy
-                                                    boolean triedObject = false;
-                                                    if (Object.class.equals(paramIf)) {
-                                                        java.util.ArrayList<Class<?>> ifaces = new java.util.ArrayList<>();
-                                                        for (String ifn : candidateIfNames) {
-                                                            try {
-                                                                Class<?> cand = Class.forName(ifn);
-                                                                if (cand.isInterface()) ifaces.add(cand);
-                                                            } catch (Throwable ignoredX) {}
-                                                        }
-                                                        if (!ifaces.isEmpty()) {
-                                                            firstArgProxy = java.lang.reflect.Proxy.newProxyInstance(
-                                                                    hCls.getClassLoader(), ifaces.toArray(new Class<?>[0]),
-                                                                    (proxy1, method, args1) -> delegateInvocation(method, args1)
-                                                            );
-                                                            triedObject = true;
-                                                        }
-                                                    }
-                                                    for (String ifn : candidateIfNames) {
-                                                        try {
-                                                            Class<?> cand = Class.forName(ifn);
-                                                            if (cand.isInterface() && (paramIf.isAssignableFrom(cand) || cand.isAssignableFrom(paramIf))) {
-                                                                firstArgProxy = java.lang.reflect.Proxy.newProxyInstance(
-                                                                        hCls.getClassLoader(), new Class<?>[]{cand},
-                                                                        (proxy1, method, args1) -> delegateInvocation(method, args1)
-                                                                );
-                                                                break;
-                                                            }
-                                                        } catch (Throwable ignored2) { }
-                                                    }
-                                                }
-
-                                                // Build full argument list with sensible defaults for remaining params
-                                                if (firstArgProxy != null || pts.length == 1) {
-                                                    Object[] callArgs = new Object[pts.length];
-                                                    for (int i = 0; i < pts.length; i++) {
-                                                        Class<?> pt = pts[i];
-                                                        if (i == 0 && firstArgProxy != null) {
-                                                            callArgs[i] = firstArgProxy;
-                                                        } else if ("org.mozilla.geckoview.GeckoSession".equals(pt.getName())) {
-                                                            // Supply the current session to avoid NPE inside GeckoSessionHandler.setDelegate
-                                                            callArgs[i] = session;
-                                                        } else if (!pt.isPrimitive()) {
-                                                            callArgs[i] = null;
-                                                        } else if (pt == boolean.class) {
-                                                            callArgs[i] = false;
-                                                        } else if (pt == byte.class) {
-                                                            callArgs[i] = (byte)0;
-                                                        } else if (pt == short.class) {
-                                                            callArgs[i] = (short)0;
-                                                        } else if (pt == int.class) {
-                                                            callArgs[i] = 0;
-                                                        } else if (pt == long.class) {
-                                                            callArgs[i] = 0L;
-                                                        } else if (pt == float.class) {
-                                                            callArgs[i] = 0f;
-                                                        } else if (pt == double.class) {
-                                                            callArgs[i] = 0d;
-                                                        } else if (pt == char.class) {
-                                                            callArgs[i] = '\0';
-                                                        } else {
-                                                            callArgs[i] = null;
-                                                        }
-                                                    }
-                                                    m.invoke(handlerObj, callArgs);
-                                                    Log.d(TAG, "[Translate] Handler." + n + " attached via hierarchy with args count=" + callArgs.length);
-                                                    attached = true;
-                                                    break;
-                                                }
-                                            }
-                                        } catch (Throwable tAttach) {
-                                            Log.d(TAG, "[Translate] Failed to attach via handler.setDelegate (declared)", tAttach);
-                                        }
-                                    }
-                                    if (!attached) {
-                                        // Try to inspect getDelegate() type for further hints
-                                        try {
-                                            Object curDel = null;
-                                            for (java.lang.reflect.Method gm : allMethods) {
-                                                if ("getDelegate".equals(gm.getName()) && gm.getParameterCount() == 0) {
-                                                    try { gm.setAccessible(true); } catch (Throwable ignored) {}
-                                                    curDel = gm.invoke(handlerObj);
-                                                    break;
-                                                }
-                                            }
-                                            Log.d(TAG, "[Translate] getDelegate() returned=" + (curDel == null ? "null" : curDel.getClass().getName()));
-                                        } catch (Throwable t) {
-                                            Log.d(TAG, "[Translate] getDelegate() inspect failed", t);
-                                        }
-                                        // Enumerate methods for diagnostics (public + declared)
-                                        StringBuilder sb = new StringBuilder("handler methods=");
-                                        for (java.lang.reflect.Method m2 : allMethods) sb.append(m2.getName()).append(',');
-                                        Log.d(TAG, "[Translate] Unable to attach handler; " + sb);
-                                    }
-                                } else {
-                                    Log.d(TAG, "[Translate] getHandler() returned null");
-                                }
-                            } catch (Throwable gh) {
-                                Log.d(TAG, "[Translate] getHandler() path not available", gh);
-                            }
-                        }
-                    } catch (Throwable noHandler) {
-                        Log.d(TAG, "[Translate] Handler API not available", noHandler);
-                        try {
-                            // As last resort, enumerate SessionTranslation methods for diagnostics
-                            java.lang.reflect.Method[] ms = sessionTranslationObj.getClass().getMethods();
-                            StringBuilder sb = new StringBuilder("sessionTranslation methods=");
-                            for (java.lang.reflect.Method m : ms) sb.append(m.getName()).append(',');
-                            Log.d(TAG, "[Translate] " + sb);
-                        } catch (Throwable ignored) {}
-                    }
+                    // If Delegate API is not available, just log; Handler fallback is optional and complex.
+                    Log.d(TAG, "[Translate] Delegate API not available; skipping Handler fallback", noDelegate);
                 }
             } catch (Throwable td) {
                 Log.w(TAG, "TranslationsDelegate not available", td);
@@ -1320,6 +1173,14 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
     private GeckoSession geckoSession;
     private static GeckoRuntime runtime; // Make GeckoRuntime a singleton
+
+    // --- GeckoView Permission handling ---
+    private static final int REQUEST_CODE_GV_ANDROID_PERMS = 2001;
+    private static final String PREF_SAVED_CONTENT_PERMISSIONS = "saved_content_permissions_v1";
+    private GeckoSession.PermissionDelegate.Callback pendingAndroidPermCallback;
+    private String[] pendingAndroidPerms;
+    // Per-origin content permission decisions: key = host + "|" + type, value = ContentPermission.VALUE_*
+    private final java.util.Map<String, Integer> savedContentPermissions = new java.util.HashMap<>();
     private volatile boolean extensionsInitialized = false; // ensure uBO/TV ext init happens once, ASAP after first paint
     private EditText urlBar;
     private ProgressBar progressBar;
@@ -1430,6 +1291,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
         // Initialize SharedPreferences
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        loadSavedContentPermissions();
 
         // Initialize UI components
         geckoView = findViewById(R.id.geckoView);
@@ -1506,13 +1368,6 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             prefs.edit().putBoolean(PREF_IMMERSIVE_MODE_ENABLED, isChecked).apply();
             applyImmersiveMode(isChecked);
         });
-
-        // --- GeckoRuntime Singleton Fix ---
-        if (runtime == null) {
-            runtime = GeckoRuntime.create(getApplicationContext());
-        }
-        // Apply immersive mode on startup - This will be re-asserted in onWindowFocusChanged too
-        applyImmersiveMode(panelImmersiveSwitch.isChecked());
 
         // Initialize Desktop Mode Switch
         panelDesktopModeSwitch = findViewById(R.id.panelDesktopModeSwitch);
@@ -1742,6 +1597,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             });
 
         // Register ActivityResultLauncher for file picking
+        handleTorrentIntent(getIntent());
         filePickerLauncher = registerForActivityResult(
             new ActivityResultContracts.StartActivityForResult(),
             result -> {
@@ -2753,6 +2609,14 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                     return true; // Consume the action regardless
                 }
 
+                // Intercept Magnet Links
+                if (input.startsWith("magnet:")) {
+                    showTorrentDecisionDialog(input);
+                    hideKeyboard();
+                    urlBar.clearFocus();
+                    return true;
+                }
+
                 String urlToLoad = processUrlInput(input);
                 GeckoSession activeSession = getActiveSession();
 
@@ -2811,6 +2675,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
     // Helper method to process URL input (search or direct URL)
     private String processUrlInput(String input) {
+         // Respect special schemes immediately
+         if (input.startsWith("magnet:") || input.startsWith("about:") || input.startsWith("file:") || input.startsWith("intent:")) {
+             return input;
+         }
+
          String urlToLoad;
          boolean isUrl = Patterns.WEB_URL.matcher(input).matches() || 
                          Patterns.IP_ADDRESS.matcher(input).matches() ||
@@ -2920,6 +2789,173 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         Log.d(TAG, "Opened new GeckoSession");
         
         newSession.setMediaSessionDelegate(this); // Set MediaSession delegate
+
+        // Handle Android and content permissions (mic, location, etc.)
+        newSession.setPermissionDelegate(new GeckoSession.PermissionDelegate() {
+            @Override
+            public void onAndroidPermissionsRequest(@NonNull GeckoSession session,
+                                                    @NonNull String[] permissions,
+                                                    @NonNull Callback callback) {
+                Log.d(TAG, "[Perm] onAndroidPermissionsRequest perms=" + java.util.Arrays.toString(permissions));
+
+                // If everything is already granted, shortcut.
+                boolean allGranted = true;
+                for (String p : permissions) {
+                    if (ContextCompat.checkSelfPermission(MainActivity.this, p) != PackageManager.PERMISSION_GRANTED) {
+                        allGranted = false;
+                        break;
+                    }
+                }
+                if (allGranted) {
+                    Log.d(TAG, "[Perm] All Android permissions already granted; calling callback.grant()");
+                    callback.grant();
+                    return;
+                }
+
+                // Otherwise request them from Android and remember the callback.
+                pendingAndroidPermCallback = callback;
+                pendingAndroidPerms = permissions;
+                ActivityCompat.requestPermissions(MainActivity.this, permissions, REQUEST_CODE_GV_ANDROID_PERMS);
+            }
+
+            @Override
+            @NonNull
+            public GeckoResult<Integer> onContentPermissionRequest(@NonNull GeckoSession session,
+                                                                   @NonNull ContentPermission perm) {
+                Log.d(TAG, "[Perm] onContentPermissionRequest permission=" + perm.permission + ", uri=" + perm.uri);
+
+                final GeckoResult<Integer> result = new GeckoResult<>();
+
+                // Handle less sensitive, noisy permissions without prompting the user.
+                // We currently auto-allow these to avoid UX spam while not blocking sites.
+                if (perm.permission == PermissionDelegate.PERMISSION_AUTOPLAY_INAUDIBLE ||
+                        perm.permission == PermissionDelegate.PERMISSION_AUTOPLAY_AUDIBLE ||
+                        perm.permission == PermissionDelegate.PERMISSION_TRACKING ||
+                        perm.permission == PermissionDelegate.PERMISSION_XR ||
+                        perm.permission == PermissionDelegate.PERMISSION_MEDIA_KEY_SYSTEM_ACCESS ||
+                        perm.permission == PermissionDelegate.PERMISSION_STORAGE_ACCESS ||
+                        perm.permission == PermissionDelegate.PERMISSION_LOCAL_DEVICE_ACCESS ||
+                        perm.permission == PermissionDelegate.PERMISSION_LOCAL_NETWORK_ACCESS) {
+                    Log.d(TAG, "[Perm] Auto-allowing non-sensitive content permission " + perm.permission + " for uri=" + perm.uri);
+                    result.complete(ContentPermission.VALUE_ALLOW);
+                    return result;
+                }
+
+                // If we have a saved decision for this origin+type, reuse it.
+                final String origin = perm.uri;
+                String host;
+                try {
+                    java.net.URI u = origin != null ? new java.net.URI(origin) : null;
+                    host = (u != null && u.getHost() != null) ? u.getHost() : origin;
+                } catch (Exception e) {
+                    Log.w(TAG, "[Perm] Failed to parse origin URI: " + origin, e);
+                    host = origin;
+                }
+                final int type = perm.permission;
+                final String hostForUi = host; // must be effectively final inside lambda
+                final String key = hostForUi + "|" + type;
+
+                Integer saved = savedContentPermissions.get(key);
+                if (saved != null && (saved == ContentPermission.VALUE_ALLOW || saved == ContentPermission.VALUE_DENY)) {
+                    Log.d(TAG, "[Perm] Using saved decision for " + key + " -> " + saved);
+                    result.complete(saved);
+                    return result;
+                }
+
+                // Otherwise, prompt the user.
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) {
+                        Log.w(TAG, "[Perm] Activity finishing/destroyed; defaulting to DENY for " + key);
+                        result.complete(ContentPermission.VALUE_DENY);
+                        return;
+                    }
+
+                    // This GeckoView version does not expose symbolic PERMISSION_* constants,
+                    // so we fall back to a generic label that still surfaces the numeric code.
+                    String permLabel = "special access (code " + type + ")";
+
+                    String displayHost = (hostForUi == null || hostForUi.isEmpty()) ? "this site" : hostForUi;
+                    String message = "Allow " + displayHost + " to access your " + permLabel + "?";
+
+                    final android.widget.CheckBox rememberCheck = new android.widget.CheckBox(MainActivity.this);
+                    rememberCheck.setText("Remember my choice for this site");
+
+                    new AlertDialog.Builder(MainActivity.this)
+                            .setTitle("Site permission request")
+                            .setMessage(message)
+                            .setView(rememberCheck)
+                            .setPositiveButton("Allow", (dialog, which) -> {
+                                if (rememberCheck.isChecked()) {
+                                    savedContentPermissions.put(key, ContentPermission.VALUE_ALLOW);
+                                    saveSavedContentPermissions();
+                                }
+                                result.complete(ContentPermission.VALUE_ALLOW);
+                            })
+                            .setNegativeButton("Deny", (dialog, which) -> {
+                                if (rememberCheck.isChecked()) {
+                                    savedContentPermissions.put(key, ContentPermission.VALUE_DENY);
+                                    saveSavedContentPermissions();
+                                }
+                                result.complete(ContentPermission.VALUE_DENY);
+                            })
+                            .setOnCancelListener(dialog -> {
+                                // Treat cancel as deny without remembering.
+                                result.complete(ContentPermission.VALUE_DENY);
+                            })
+                            .show();
+                });
+
+                return result;
+            }
+
+            public void onMediaPermissionRequest(@NonNull GeckoSession session,
+                                                 @Nullable String uri,
+                                                 @Nullable MediaSource video,
+                                                 @Nullable MediaSource audio,
+                                                 @NonNull MediaCallback callback) {
+                Log.d(TAG, "[Perm] onMediaPermissionRequest uri=" + uri + ", video=" + (video != null) + ", audio=" + (audio != null));
+
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) {
+                        Log.w(TAG, "[Perm] Activity finishing/destroyed; rejecting media permission");
+                        callback.reject();
+                        return;
+                    }
+
+                    String host = uri;
+                    try {
+                        java.net.URI u = uri != null ? new java.net.URI(uri) : null;
+                        if (u != null && u.getHost() != null) {
+                            host = u.getHost();
+                        }
+                    } catch (Exception e) {
+                        Log.w(TAG, "[Perm] Failed to parse media permission URI: " + uri, e);
+                    }
+
+                    String deviceLabel;
+                    if (video != null && audio != null) {
+                        deviceLabel = "camera and microphone";
+                    } else if (video != null) {
+                        deviceLabel = "camera";
+                    } else if (audio != null) {
+                        deviceLabel = "microphone";
+                    } else {
+                        deviceLabel = "media devices";
+                    }
+
+                    String displayHost = (host == null || host.isEmpty()) ? "this site" : host;
+                    String message = "Allow " + displayHost + " to access your " + deviceLabel + "?";
+
+                    new AlertDialog.Builder(MainActivity.this)
+                            .setTitle("Site wants to use media devices")
+                            .setMessage(message)
+                            .setPositiveButton("Allow", (dialog, which) -> callback.grant(video, audio))
+                            .setNegativeButton("Deny", (dialog, which) -> callback.reject())
+                            .setOnCancelListener(dialog -> callback.reject())
+                            .show();
+                });
+            }
+        });
         
         // Add delegates AFTER opening
         newSession.setProgressDelegate(new ProgressDelegate() {
@@ -3012,6 +3048,12 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
              public GeckoResult<AllowOrDeny> onLoadRequest(GeckoSession session, NavigationDelegate.LoadRequest request) {
                 String uriString = request.uri;
                 Log.d(TAG, "MainTab NavDelegate onLoadRequest: URI="+uriString + " (Session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A") + ")");
+
+                if (uriString != null && uriString.startsWith("magnet:")) {
+                    Log.i(TAG, "MainTab NavDelegate: Intercepted magnet URI: " + uriString);
+                    runOnUiThread(() -> showTorrentDecisionDialog(uriString));
+                    return GeckoResult.fromValue(AllowOrDeny.DENY);
+                }
 
                 if (uriString != null && uriString.startsWith("intent://")) {
                     Log.i(TAG, "MainTab NavDelegate: Intercepted intent:// URI: " + uriString);
@@ -3244,6 +3286,12 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                     public GeckoResult<AllowOrDeny> onLoadRequest(GeckoSession session, NavigationDelegate.LoadRequest request) {
                         String uriString = request.uri;
                         Log.d(TAG, "Popup NavDelegate onLoadRequest: URI="+uriString + " (Session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A") + ")");
+
+                        if (uriString != null && uriString.toLowerCase().startsWith("magnet:")) {
+                            Log.i(TAG, "Popup NavDelegate: Intercepted magnet URI: " + uriString);
+                            runOnUiThread(() -> showTorrentDecisionDialog(uriString));
+                            return GeckoResult.fromValue(AllowOrDeny.DENY);
+                        }
 
                         if (uriString != null && uriString.startsWith("intent://")) {
                             Log.i(TAG, "Popup NavDelegate: Intercepted intent:// URI: " + uriString);
@@ -4889,7 +4937,7 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         
         switch (mode) {
             case "desktop":
-                return "Mozilla/5.0 (X11; Linux x86_64; rv:" + geckoVersion + ") Gecko/20100101 Firefox/" + geckoVersion + " IndicBrowser/" + version;
+                return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 IndicBrowser/" + version;
             case "mobile":
             default:
                 // Use Android-style mobile user agent that Google recognizes
@@ -4965,9 +5013,6 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         // }
 
         // Apply the modified settings (ContentBlocking and JavaScript are set on the 'settings' object directly)
-        // runtime.setSettings(settings); // This line is problematic, settings are applied via direct setters or at creation
-        Log.d(TAG, "Dynamic runtime settings application finished.");
-        // Moved uBlock initialization to be called after applyRuntimeSettings in onCreate
     }
 
     // --- Settings Panel Logic ---
@@ -4992,17 +5037,9 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                 hideContextMenu();
             }
             
-            // Also handle keyboard hide logic from previous implementation
-             if (motionEvent.getAction() == MotionEvent.ACTION_DOWN) {
-                 View currentFocus = getCurrentFocus();
-                 if (currentFocus != null && currentFocus != urlBar) {
-                     Log.d(TAG, "Touch on GeckoView detected, hiding keyboard (current focus: " + currentFocus.getClass().getSimpleName() + ")");
-                     hideKeyboard();
-                 } else if (currentFocus == null) {
-                     Log.d(TAG, "Touch on GeckoView detected (no focus), hiding keyboard.");
-                     hideKeyboard();
-                 }
-             }
+            // Logic to hide keyboard on touch has been removed to prevent interfering with web content interactions.
+            // GeckoView handles keyboard management natively.
+            
             return false; // Allow event propagation
         });
 
@@ -5415,7 +5452,7 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         super.onNewIntent(intent);
         Log.d(TAG, "onNewIntent called with intent: " + intent);
         setIntent(intent); // Important to update the activity's intent
-
+        handleTorrentIntent(intent);
         String action = intent.getAction();
         Uri data = intent.getData();
         String type = intent.getType(); // For ACTION_SEND
@@ -5567,6 +5604,7 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         // On resume, ensure the active session is attached and active (no pixel probing)
         resumeAtMs = System.currentTimeMillis();
         resumeHadProgress = false;
+        resumeRecoveryAttempted = false;
         // Keep screen awake during browsing sessions
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         GeckoSession active = getActiveSession();
@@ -5582,6 +5620,32 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
             } catch (Throwable t) {
                 Log.e(TAG, "Failed to activate GeckoSession onResume", t);
             }
+        }
+        // TV-only: after a short delay, if we still have no progress and the page paint looks stalled,
+        // attempt a gentle reload of the active session using the last known http(s) URL.
+        if (isTvDevice()) {
+            mainHandler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        if (isFinishing()) return;
+                        if (!isTvDevice()) return;
+                        if (resumeRecoveryAttempted) {
+                            Log.d(TAG, "[ResumeWatchdog] Skipping: recovery already attempted for this resume");
+                            return;
+                        }
+                        resumeRecoveryAttempted = true;
+                        if (isPagePaintLikelyStalled()) {
+                            Log.w(TAG, "[ResumeWatchdog] TV resume stall detected; attempting gentle reload");
+                            maybeReloadActiveIfStuck();
+                        } else {
+                            Log.d(TAG, "[ResumeWatchdog] TV resume: no stall detected; no reload needed");
+                        }
+                    } catch (Throwable t) {
+                        Log.w(TAG, "[ResumeWatchdog] TV resume recovery threw", t);
+                    }
+                }
+            }, 1500);
         }
     }
 
@@ -5820,6 +5884,16 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         String fileName = (fileNameFromCd != null && !fileNameFromCd.isEmpty())
                 ? fileNameFromCd
                 : URLUtil.guessFileName(url, contentDisposition, mimeType);
+
+        // Intercept .torrent files
+        if ("application/x-bittorrent".equalsIgnoreCase(mimeType) || 
+            (fileName != null && fileName.toLowerCase().endsWith(".torrent"))) {
+             Log.i(TAG, "Intercepted .torrent file: " + fileName);
+             final String finalFileName = fileName;
+             runOnUiThread(() -> showTorrentFileDecisionDialog(url, finalFileName, response.headers));
+             return;
+        }
+
         // Fallback if guessFileName returns something generic or empty
         if (fileName == null || fileName.isEmpty() || fileName.equals("downloadfile") || fileName.equals("dat") || fileName.endsWith(".bin")) {
             Log.w(TAG, "URLUtil.guessFileName returned a generic/empty name: " + fileName + ". Attempting to derive from URL path.");
@@ -5882,7 +5956,8 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                 DownloadsActivity.addDownload(this, new DownloadsActivity.DownloadItem(
                     fileName,
                     filePath,
-                    url
+                    url,
+                    downloadId
                 ));
                 Toast.makeText(this, "Download started: " + fileName, Toast.LENGTH_SHORT).show();
             } else {
@@ -5947,6 +6022,7 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+
         if (requestCode == REQUEST_CODE_WRITE_STORAGE) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 Log.d(TAG, "WRITE_EXTERNAL_STORAGE permission granted after request.");
@@ -5961,6 +6037,36 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                     Toast.makeText(this, "Storage permission is required to download files.", Toast.LENGTH_LONG).show();
                 }
                 pendingDownloadResponse = null; // Clear pending download as permission was denied
+            }
+        } else if (requestCode == REQUEST_CODE_GV_ANDROID_PERMS) {
+            // Forward result back to GeckoView's PermissionDelegate.Callback
+            GeckoSession.PermissionDelegate.Callback cb = pendingAndroidPermCallback;
+            pendingAndroidPermCallback = null;
+            pendingAndroidPerms = null;
+
+            if (cb == null) {
+                Log.w(TAG, "[Perm] REQUEST_CODE_GV_ANDROID_PERMS but callback is null");
+                return;
+            }
+
+            boolean allGranted = true;
+            if (grantResults.length == 0) {
+                allGranted = false;
+            } else {
+                for (int r : grantResults) {
+                    if (r != PackageManager.PERMISSION_GRANTED) {
+                        allGranted = false;
+                        break;
+                    }
+                }
+            }
+
+            if (allGranted) {
+                Log.d(TAG, "[Perm] All requested Android permissions granted; calling cb.grant()");
+                cb.grant();
+            } else {
+                Log.w(TAG, "[Perm] Some Android permissions denied; calling cb.reject()");
+                cb.reject();
             }
         }
     }
@@ -7183,6 +7289,15 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                 0
             );
 
+            // If desktop mode is active (or on TV), emulate a mouse-like event so sites treat it like a desktop click
+            try {
+                String uaMode = prefs != null ? prefs.getString(PREF_USER_AGENT_MODE, DEFAULT_USER_AGENT_MODE) : DEFAULT_USER_AGENT_MODE;
+                boolean desktopLike = "desktop".equals(uaMode) || isTvDevice();
+                if (desktopLike) {
+                    event.setSource(android.view.InputDevice.SOURCE_MOUSE);
+                }
+            } catch (Throwable ignored) {}
+
             GeckoSession activeSession = getActiveSession();
             if (activeSession != null) {
                 // CORRECT METHOD: Use the PanZoomController to process the touch event.
@@ -7264,5 +7379,143 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         );
 
         Log.d(TAG, "[TV][SCROLL] PZC.scrollBy invoked");
+    }
+
+    private void handleTorrentIntent(Intent intent) {
+        if (intent == null || intent.getData() == null) return;
+        String action = intent.getAction();
+        if (Intent.ACTION_VIEW.equals(action)) {
+            Uri data = intent.getData();
+            String scheme = data.getScheme();
+            String type = intent.getType();
+
+            boolean isMagnet = "magnet".equals(scheme);
+            boolean isTorrentFile = "application/x-bittorrent".equals(type) || (data.toString().endsWith(".torrent"));
+
+            if (isMagnet || isTorrentFile) {
+                showTorrentDecisionDialog(data.toString());
+            }
+        }
+    }
+
+    private void showTorrentDecisionDialog(String url) {
+        Log.i(TAG, "Torrent Detection: Magnet link intercepted: " + url);
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Torrent Detected")
+                .setMessage("What would you like to do with this torrent?")
+                .setPositiveButton("Stream", (d, w) -> {
+                    Log.i(TAG, "Torrent Decision: User selected STREAM for " + url);
+                    Intent serviceIntent = new Intent(this, TorrentService.class);
+                    serviceIntent.setAction(TorrentService.ACTION_START_STREAM);
+                    serviceIntent.putExtra(TorrentService.EXTRA_MAGNET_URL, url);
+                    startService(serviceIntent);
+
+                    // Launch Player Activity
+                    Intent playerIntent = new Intent(this, TorrentPlayerActivity.class);
+                    // No data needed, it binds to service
+                    startActivity(playerIntent);
+                })
+                .setNegativeButton("Download", (d, w) -> {
+                    Log.i(TAG, "Torrent Decision: User selected DOWNLOAD for " + url);
+                    Intent serviceIntent = new Intent(this, TorrentService.class);
+                    serviceIntent.setAction(TorrentService.ACTION_START_DOWNLOAD);
+                    serviceIntent.putExtra(TorrentService.EXTRA_MAGNET_URL, url);
+                    startService(serviceIntent);
+                    
+                    // Add to Downloads List
+                    String name = "Torrent Download";
+                    try {
+                         android.net.Uri uri = android.net.Uri.parse(url);
+                         String dn = uri.getQueryParameter("dn");
+                         if (dn != null && !dn.isEmpty()) name = dn;
+                    } catch (Exception e) {}
+                    
+                    DownloadsActivity.addDownload(this, new DownloadsActivity.DownloadItem(
+                        name,
+                        null, // File path unknown initially
+                        url,
+                        -1, // No DownloadManager ID
+                        true // isTorrent
+                    ));
+                    
+                    Toast.makeText(this, "Download started in background", Toast.LENGTH_SHORT).show();
+                })
+                .setNeutralButton("Cancel", null)
+                .show();
+    }
+
+    private void showTorrentFileDecisionDialog(String url, String fileName, Map<String, String> headers) {
+        Log.i(TAG, "Torrent File Detection: " + url);
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Torrent File Detected")
+                .setMessage("Do you want to stream or download this torrent file?")
+                .setPositiveButton("Stream", (d, w) -> {
+                    downloadAndStartTorrent(url, fileName, headers, true);
+                })
+                .setNegativeButton("Download", (d, w) -> {
+                    downloadAndStartTorrent(url, fileName, headers, false);
+                })
+                .setNeutralButton("Cancel", null)
+                .show();
+    }
+
+    private void downloadAndStartTorrent(String url, String fileName, Map<String, String> headers, boolean isStreaming) {
+        Toast.makeText(this, "Downloading metadata...", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            try {
+                java.net.URL u = new java.net.URL(url);
+                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) u.openConnection();
+                if (headers != null) {
+                    for (Map.Entry<String, String> e : headers.entrySet()) {
+                        conn.setRequestProperty(e.getKey(), e.getValue());
+                    }
+                }
+                conn.setInstanceFollowRedirects(true);
+                conn.connect();
+
+                File cacheDir = getCacheDir();
+                // Use provided filename if available, else generic
+                String safeName = (fileName != null && !fileName.isEmpty()) ? fileName : "temp.torrent";
+                File torrentFile = new File(cacheDir, safeName);
+                if (torrentFile.exists()) torrentFile.delete();
+
+                try (InputStream in = conn.getInputStream();
+                     FileOutputStream out = new FileOutputStream(torrentFile)) {
+                    byte[] buf = new byte[8192];
+                    int len;
+                    while ((len = in.read(buf)) > 0) out.write(buf, 0, len);
+                }
+
+                String fileUri = "file://" + torrentFile.getAbsolutePath();
+                Log.i(TAG, "Downloaded torrent file to: " + fileUri);
+
+                runOnUiThread(() -> {
+                     // Start Service
+                    Intent serviceIntent = new Intent(this, TorrentService.class);
+                    serviceIntent.setAction(isStreaming ? TorrentService.ACTION_START_STREAM : TorrentService.ACTION_START_DOWNLOAD);
+                    serviceIntent.putExtra(TorrentService.EXTRA_MAGNET_URL, fileUri); // Reuse EXTRA_MAGNET_URL for file URI
+                    startService(serviceIntent);
+
+                    if (isStreaming) {
+                        Intent playerIntent = new Intent(this, TorrentPlayerActivity.class);
+                        startActivity(playerIntent);
+                    } else {
+                        // Add to downloads
+                        DownloadsActivity.addDownload(this, new DownloadsActivity.DownloadItem(
+                            safeName.replace(".torrent", ""), // Display name
+                            null, 
+                            fileUri,
+                            -1,
+                            true
+                        ));
+                        Toast.makeText(this, "Download started", Toast.LENGTH_SHORT).show();
+                    }
+                });
+
+            } catch (Exception e) {
+                Log.e(TAG, "Error downloading torrent file", e);
+                runOnUiThread(() -> Toast.makeText(this, "Failed to download torrent file", Toast.LENGTH_SHORT).show());
+            }
+        }).start();
     }
 }

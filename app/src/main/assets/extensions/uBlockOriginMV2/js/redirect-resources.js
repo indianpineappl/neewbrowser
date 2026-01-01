@@ -94,6 +94,7 @@ export default new Map([
     } ],
     [ 'google-ima.js', {
         alias: 'google-ima3',                       /* adguard compatibility */
+        data: 'text',
     } ],
     [ 'googlesyndication_adsbygoogle.js', {
         alias: [
@@ -188,5 +189,8 @@ export default new Map([
     } ],
     [ 'scorecardresearch_beacon.js', {
         alias: 'scorecardresearch.com/beacon.js',
+    } ],
+    [ 'sensors-analytics.js', {
+        data: 'text',
     } ],
 ]);

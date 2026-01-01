@@ -1231,7 +1231,6 @@ class FilterRegex {
             );
         }
         if ( refs.$re.test($requestURLRaw) === false ) { return false; }
-        $patternMatchLeft = $requestURLRaw.search(refs.$re);
         return true;
     }
 
@@ -4595,9 +4594,14 @@ StaticNetFilteringEngine.prototype.dnrFromCompiled = function(op, context, ...ar
     seen.clear();
 
     // Adjust `important` priority
+    // Mind:
+    // - https://github.com/uBlockOrigin/uAssets/issues/29451#issuecomment-3150181993
     for ( const rule of ruleset ) {
         if ( rule.__important !== true ) { continue; }
-        if ( rule.priority === undefined ) { continue; }
+        if ( rule.priority === undefined ) {
+            if ( rule.__modifierType !== 'removeparam' ) { continue; }
+            rule.priority ||= 0;
+        }
         rule.priority += 30;
     }
 
@@ -4778,7 +4782,19 @@ StaticNetFilteringEngine.prototype.dnrFromCompiled = function(op, context, ...ar
             break;
         }
         case 'uritransform': {
-            dnrAddRuleError(rule, `Incompatible with DNR: uritransform=${rule.__modifierValue}`);
+            const parsed = sfp.parseReplaceByRegexValue(rule.__modifierValue);
+            if ( parsed.re !== undefined ) {
+                dnrAddRuleError(rule, `Incompatible with DNR: uritransform=${rule.__modifierValue}`);
+                break;
+            }
+            if ( rule.condition.regexFilter === undefined ) {
+                dnrAddRuleError(rule, `Incompatible with DNR (need regexFilter): uritransform=${rule.__modifierValue}`);
+                break;
+            }
+            rule.action.type = 'redirect';
+            rule.action.redirect = {
+                regexSubstitution: parsed.replacement.replace(/\$(\d+)/g, '\\$1')
+            };
             break;
         }
         case 'urlskip': {
@@ -5151,8 +5167,7 @@ StaticNetFilteringEngine.prototype.matchAndFetchModifiers = function(
                     toRemove.delete(key);
                 }
             }
-        }
-        else if ( toAdd.size !== 0 ) {
+        } else if ( toAdd.size !== 0 ) {
             toAdd.clear();
             if ( toRemove.size !== 1 ) {
                 const entry = toRemove.get('');
@@ -5495,7 +5510,7 @@ function compareRedirectRequests(redirectEngine, a, b) {
 
 /******************************************************************************/
 
-StaticNetFilteringEngine.prototype.transformRequest = function(fctxt, out = []) {
+StaticNetFilteringEngine.prototype.transformURL = function(fctxt, out = []) {
     const directives = this.matchAndFetchModifiers(fctxt, 'uritransform');
     if ( directives === undefined ) { return; }
     const redirectURL = new URL(fctxt.url);
@@ -5509,17 +5524,21 @@ StaticNetFilteringEngine.prototype.transformRequest = function(fctxt, out = []) 
         }
         const cache = directive.cache;
         if ( cache === undefined ) { continue; }
-        const before = `${redirectURL.pathname}${redirectURL.search}${redirectURL.hash}`;
-        if ( cache.re.test(before) !== true ) { continue; }
-        const after = before.replace(cache.re, cache.replacement);
+        let { re } = cache;
+        const before = redirectURL.href;
+        if ( re === undefined ) {
+            const logdata = directive.logData();
+            if ( logdata === undefined ) { continue; }
+            try { re = new RegExp(logdata.regex, cache.flags); }
+            catch { continue; }
+        }
+        if ( re.test(before) !== true ) { continue; }
+        const after = before.replace(re, cache.replacement);
+        try { void new URL(after); } catch { continue; }
         if ( after === before ) { continue; }
-        const hashPos = after.indexOf('#');
-        redirectURL.hash = hashPos !== -1 ? after.slice(hashPos) : '';
-        const afterMinusHash = hashPos !== -1 ? after.slice(0, hashPos) : after;
-        const searchPos = afterMinusHash.indexOf('?');
-        redirectURL.search = searchPos !== -1 ? afterMinusHash.slice(searchPos) : '';
-        redirectURL.pathname = searchPos !== -1 ? after.slice(0, searchPos) : after;
+        redirectURL.href = after;
         out.push(directive);
+        break;
     }
     if ( out.length === 0 ) { return; }
     if ( redirectURL.href !== fctxt.url ) {
@@ -5569,7 +5588,7 @@ StaticNetFilteringEngine.prototype.filterQuery = function(fctxt, out = []) {
     if ( qpos === -1 ) { return; }
     let hpos = url.indexOf('#', qpos + 1);
     if ( hpos === -1 ) { hpos = url.length; }
-    const params = new Map();
+    const params = [];
     const query = url.slice(qpos + 1, hpos);
     for ( let i = 0; i < query.length; ) {
         let pos = query.indexOf('&', i);
@@ -5578,14 +5597,14 @@ StaticNetFilteringEngine.prototype.filterQuery = function(fctxt, out = []) {
         i = pos + 1;
         pos = kv.indexOf('=');
         if ( pos !== -1 ) {
-            params.set(kv.slice(0, pos), kv.slice(pos + 1));
+            params.push(kv.slice(0, pos), kv.slice(pos + 1));
         } else {
-            params.set(kv, '');
+            params.push(kv, '');
         }
     }
-    const inParamCount = params.size;
+    const beforeParamCount = params.length;
     for ( const directive of directives ) {
-        if ( params.size === 0 ) { break; }
+        if ( params.length === 0 ) { break; }
         const isException = (directive.bits & ALLOW_REALM) !== 0;
         if ( isException && directive.value === '' ) {
             out.push(directive);
@@ -5594,35 +5613,29 @@ StaticNetFilteringEngine.prototype.filterQuery = function(fctxt, out = []) {
         const { all, bad, name, not, re } = parseQueryPruneValue(directive);
         if ( bad ) { continue; }
         if ( all ) {
-            if ( isException === false ) { params.clear(); }
+            if ( isException === false ) { params.length = 0; }
             out.push(directive);
             break;
         }
-        if ( name !== undefined ) {
-            const value = params.get(name);
-            if ( not === false ) {
-                if ( value !== undefined ) {
-                    if ( isException === false ) { params.delete(name); }
-                    out.push(directive);
-                }
-                continue;
-            }
-            if ( value !== undefined ) { params.delete(name); }
-            if ( params.size !== 0 ) {
-                if ( isException === false ) { params.clear(); }
-                out.push(directive);
-            }
-            if ( value !== undefined ) { params.set(name, value); }
-            continue;
-        }
-        if ( re === undefined ) { continue; }
         let filtered = false;
-        for ( const [ key, raw ] of params ) {
-            let value = raw;
-            try { value = decodeURIComponent(value); }
-            catch { }
-            if ( re.test(`${key}=${value}`) === not ) { continue; }
-            if ( isException === false ) { params.delete(key); }
+        let matched = false;
+        let i = params.length;
+        while ( i > 0 ) {
+            i -= 2;
+            if ( name !== undefined ) {
+                matched = params[i] === name;
+            } else if ( re !== undefined ) {
+                const key = params[i+0];
+                const raw = params[i+1];
+                let value = raw;
+                try { value = decodeURIComponent(value); }
+                catch { }
+                matched = re.test(`${key}=${value}`);
+            }
+            if ( matched === not ) { continue; }
+            if ( isException === false ) {
+                params.splice(i, 2);
+            }
             filtered = true;
         }
         if ( filtered ) {
@@ -5630,12 +5643,16 @@ StaticNetFilteringEngine.prototype.filterQuery = function(fctxt, out = []) {
         }
     }
     if ( out.length === 0 ) { return; }
-    if ( params.size !== inParamCount ) {
+    if ( params.length !== beforeParamCount ) {
         fctxt.redirectURL = url.slice(0, qpos);
-        if ( params.size !== 0 ) {
-            fctxt.redirectURL += '?' + Array.from(params).map(a =>
-                a[1] === '' ? `${a[0]}=` : `${a[0]}=${a[1]}`
-            ).join('&');
+        if ( params.length !== 0 ) {
+            const queryParts = [];
+            for ( let i = 0; i < params.length; i += 2 ) {
+                const key = params[i+0];
+                const val = params[i+1];
+                queryParts.push(val !== '' ? `${key}=${val}` : key);
+            }
+            fctxt.redirectURL += '?' + queryParts.join('&');
         }
         if ( hpos !== url.length ) {
             fctxt.redirectURL += url.slice(hpos);
@@ -5719,7 +5736,7 @@ StaticNetFilteringEngine.prototype.test = function(details) {
         out.push('not blocked');
     }
     if ( r !== 1 ) {
-        const entries = this.transformRequest(fctxt);
+        const entries = this.transformURL(fctxt);
         if ( entries ) {
             for ( const entry of entries ) {
                 out.push(`modified: ${entry.logData().raw}`);

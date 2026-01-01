@@ -4,12 +4,16 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Microphone for voice search and getUserMedia audio -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Legacy external storage write permission for Android 9 (API 28) and below -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" tools:ignore="QueryAllPackagesPermission" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <!-- TV-specific features -->
     <uses-feature
@@ -34,7 +38,8 @@
         android:banner="@drawable/banner"
         android:theme="@style/Theme.NeewBrowser"
         android:hardwareAccelerated="true"
-        android:extractNativeLibs="false">
+        android:usesCleartextTraffic="true"
+        tools:replace="android:allowBackup">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -76,6 +81,20 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
             </intent-filter>
+
+            <!-- Magnet & Torrent Intent Filters (Moved from TorrentPlayerActivity) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="magnet" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="application/x-bittorrent" />
+            </intent-filter>
         </activity>
         
         <!-- Declare TabSwitcherActivity -->
@@ -95,6 +114,20 @@
                 android:name="android.support.PARENT_ACTIVITY"
                 android:value=".MainActivity" />
         </activity>
+
+        <activity
+            android:name=".TorrentPlayerActivity"
+            android:label="Torrent Player"
+            android:theme="@style/Theme.NeewBrowser"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|uiMode"
+            android:hardwareAccelerated="true" />
+
+        <service
+            android:name=".TorrentService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -149,6 +149,24 @@
 		],
 		"supportURL": "https://github.com/uBlockOrigin/uAssets"
 	},
+	"ublock-experimental": {
+		"content": "filters",
+		"group": "default",
+		"off": true,
+		"title": "uBlock filters – Experimental",
+		"contentURL": "https://ublockorigin.github.io/uAssets/filters/experimental.txt",
+		"cdnURLs": [
+			"https://ublockorigin.github.io/uAssetsCDN/filters/experimental.min.txt",
+			"https://ublockorigin.pages.dev/filters/experimental.min.txt",
+			"https://cdn.jsdelivr.net/gh/uBlockOrigin/uAssetsCDN@main/filters/experimental.min.txt",
+			"https://cdn.statically.io/gh/uBlockOrigin/uAssetsCDN/main/filters/experimental.min.txt"
+		],
+		"patchURLs": [
+			"https://ublockorigin.github.io/uAssetsCDN/filters/",
+			"https://ublockorigin.pages.dev/filters/"
+		],
+		"supportURL": "https://github.com/uBlockOrigin/uAssets"
+	},
 	"adguard-generic": {
 		"content": "filters",
 		"group": "ads",
@@ -196,14 +214,6 @@
 		"title": "AdGuard URL Tracking Protection",
 		"tags": "privacy",
 		"contentURL": "https://filters.adtidy.org/extension/ublock/filters/17.txt",
-		"supportURL": "https://github.com/AdguardTeam/AdguardFilters#adguard-filters"
-	},
-	"adguard-spyware": {
-		"content": "filters",
-		"group": "privacy",
-		"off": true,
-		"title": "AdGuard Tracking Protection",
-		"contentURL": "https://filters.adtidy.org/extension/ublock/filters/3.txt",
 		"supportURL": "https://github.com/AdguardTeam/AdguardFilters#adguard-filters"
 	},
 	"block-lan": {
@@ -606,8 +616,8 @@
 		"title": "🇪🇪ee: Eesti saitidele kohandatud filter",
 		"tags": "ads estonian",
 		"lang": "et",
-		"contentURL": "https://adblock.ee/list.txt",
-		"supportURL": "https://adblock.ee"
+		"contentURL": "https://ubo-et.lepik.io/list.txt",
+		"supportURL": "https://github.com/sander85/uBO-et"
 	},
 	"FIN-0": {
 		"content": "filters",
@@ -828,7 +838,7 @@
 		"title": "🇵🇱pl: CERT.PL's Warning List",
 		"tags": "malware polish polski",
 		"lang": "szl pl",
-		"contentURL": "https://hole.cert.pl/domains/v2/domains_adblock.txt",
+		"contentURL": "https://hole.cert.pl/domains/v2/domains_ublock.txt",
 		"supportURL": "https://cert.pl/lista-ostrzezen/"
 	},
 	"ROU-1": {

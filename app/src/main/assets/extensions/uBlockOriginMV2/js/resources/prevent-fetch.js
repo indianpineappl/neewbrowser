@@ -20,7 +20,11 @@
 
 */
 
-import { generateContentFn } from './utils.js';
+import {
+    generateContentFn,
+    matchObjectPropertiesFn,
+    parsePropertiesToMatchFn,
+} from './utils.js';
 import { proxyApplyFn } from './proxy-apply.js';
 import { registerScriptlet } from './base.js';
 import { safeSelf } from './safe-self.js';
@@ -34,6 +38,7 @@ function preventFetchFn(
     responseType = ''
 ) {
     const safe = safeSelf();
+    const setTimeout = self.setTimeout;
     const scriptletName = `${trusted ? 'trusted-' : ''}prevent-fetch`;
     const logPrefix = safe.makeLogPrefix(
         scriptletName,
@@ -41,20 +46,8 @@ function preventFetchFn(
         responseBody,
         responseType
     );
-    const needles = [];
-    for ( const condition of safe.String_split.call(propsToMatch, /\s+/) ) {
-        if ( condition === '' ) { continue; }
-        const pos = condition.indexOf(':');
-        let key, value;
-        if ( pos !== -1 ) {
-            key = condition.slice(0, pos);
-            value = condition.slice(pos + 1);
-        } else {
-            key = 'url';
-            value = condition;
-        }
-        needles.push({ key, pattern: safe.initPattern(value, { canNegate: true }) });
-    }
+    const extraArgs = safe.getExtraArgs(Array.from(arguments), 4);
+    const propNeedles = parsePropertiesToMatchFn(propsToMatch, 'url');
     const validResponseProps = {
         ok: [ false, true ],
         statusText: [ '', 'Not Found' ],
@@ -63,9 +56,14 @@ function preventFetchFn(
     const responseProps = {
         statusText: { value: 'OK' },
     };
+    const responseHeaders = {};
     if ( /^\{.*\}$/.test(responseType) ) {
         try {
             Object.entries(JSON.parse(responseType)).forEach(([ p, v ]) => {
+                if ( p === 'headers' && trusted ) {
+                    Object.assign(responseHeaders, v);
+                    return;
+                }
                 if ( validResponseProps[p] === undefined ) { return; }
                 if ( validResponseProps[p].includes(v) === false ) { return; }
                 responseProps[p] = { value: v };
@@ -79,55 +77,57 @@ function preventFetchFn(
     }
     proxyApplyFn('fetch', function fetch(context) {
         const { callArgs } = context;
-        const details = callArgs[0] instanceof self.Request
-            ? callArgs[0]
-            : Object.assign({ url: callArgs[0] }, callArgs[1]);
-        let proceed = true;
-        try {
-            const props = new Map();
-            for ( const prop in details ) {
-                let v = details[prop];
-                if ( typeof v !== 'string' ) {
-                    try { v = safe.JSON_stringify(v); }
-                    catch { }
+        const details = (( ) => {
+            const fetchProps = (src, out) => {
+                if ( typeof src !== 'object' || src === null ) { return; }
+                const props = [
+                    'body', 'cache', 'credentials', 'duplex', 'headers',
+                    'integrity', 'keepalive', 'method', 'mode', 'priority',
+                    'redirect', 'referrer', 'referrerPolicy', 'signal',
+                ];
+                for ( const prop of props ) {
+                    if ( src[prop] === undefined ) { continue; }
+                    out[prop] = src[prop];
                 }
-                if ( typeof v !== 'string' ) { continue; }
-                props.set(prop, v);
+            };
+            const out = {};
+            if ( callArgs[0] instanceof self.Request ) {
+                out.url = `${callArgs[0].url}`;
+                fetchProps(callArgs[0], out);
+            } else {
+                out.url = `${callArgs[0]}`;
             }
-            if ( safe.logLevel > 1 || propsToMatch === '' && responseBody === '' ) {
-                const out = Array.from(props).map(a => `${a[0]}:${a[1]}`);
-                safe.uboLog(logPrefix, `Called: ${out.join('\n')}`);
-            }
-            if ( propsToMatch === '' && responseBody === '' ) {
-                return context.reflect();
-            }
-            proceed = needles.length === 0;
-            for ( const { key, pattern } of needles ) {
-                if (
-                    pattern.expect && props.has(key) === false ||
-                    safe.testPattern(pattern, props.get(key)) === false
-                ) {
-                    proceed = true;
-                    break;
-                }
-            }
-        } catch {
+            fetchProps(callArgs[1], out);
+            return out;
+        })();
+        if ( safe.logLevel > 1 || propsToMatch === '' && responseBody === '' ) {
+            const out = Array.from(details).map(a => `${a[0]}:${a[1]}`);
+            safe.uboLog(logPrefix, `Called: ${out.join('\n')}`);
         }
-        if ( proceed ) {
+        if ( propsToMatch === '' && responseBody === '' ) {
+            return context.reflect();
+        }
+        const matched = matchObjectPropertiesFn(propNeedles, details);
+        if ( matched === undefined || matched.length === 0 ) {
             return context.reflect();
         }
         return Promise.resolve(generateContentFn(trusted, responseBody)).then(text => {
             safe.uboLog(logPrefix, `Prevented with response "${text}"`);
-            const response = new Response(text, {
-                headers: {
-                    'Content-Length': text.length,
-                }
-            });
+            const headers = Object.assign({}, responseHeaders);
+            if ( headers['content-length'] === undefined ) {
+                headers['content-length'] = text.length;
+            }
+            const response = new Response(text, { headers });
             const props = Object.assign(
                 { url: { value: details.url } },
                 responseProps
             );
             safe.Object_defineProperties(response, props);
+            if ( extraArgs.throttle ) {
+                return new Promise(resolve => {
+                    setTimeout(( ) => { resolve(response); }, extraArgs.throttle);
+                });
+            }
             return response;
         });
     });
@@ -136,6 +136,8 @@ registerScriptlet(preventFetchFn, {
     name: 'prevent-fetch.fn',
     dependencies: [
         generateContentFn,
+        matchObjectPropertiesFn,
+        parsePropertiesToMatchFn,
         proxyApplyFn,
         safeSelf,
     ],
@@ -159,6 +161,9 @@ registerScriptlet(preventFetchFn, {
  * Optional. The response type to use when emitting a dummy response as a
  * result of the prevention.
  * 
+ * @param [...varargs]
+ * ["throttle", n]: the time to wait in ms before returning a result.
+ *
  * */
 
 function preventFetch(...args) {
@@ -192,6 +197,9 @@ registerScriptlet(preventFetch, {
  * Optional. The response type to use when emitting a dummy response as a
  * result of the prevention.
  * 
+ * @param [...varargs]
+ * ["throttle", n]: the time to wait in ms before returning a result.
+ *
  * */
 
 function trustedPreventFetch(...args) {

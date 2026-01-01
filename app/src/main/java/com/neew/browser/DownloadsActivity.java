@@ -29,6 +29,10 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
+import android.content.ServiceConnection;
+import android.content.ComponentName;
+import android.os.IBinder;
+import com.github.se_bastiaan.torrentstream.StreamStatus;
 
 public class DownloadsActivity extends AppCompatActivity {
 
@@ -36,6 +40,25 @@ public class DownloadsActivity extends AppCompatActivity {
     private TextView textViewNoDownloads;
     private DownloadsAdapter adapter;
     private List<DownloadItem> downloadsList = new ArrayList<>();
+    
+    private final android.os.Handler handler = new android.os.Handler();
+    private Runnable refreshRunnable;
+    
+    private TorrentService torrentService;
+    private boolean isBound = false;
+    
+    private final ServiceConnection connection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName className, IBinder service) {
+            TorrentService.LocalBinder binder = (TorrentService.LocalBinder) service;
+            torrentService = binder.getService();
+            isBound = true;
+        }
+        @Override
+        public void onServiceDisconnected(ComponentName arg0) {
+            isBound = false;
+        }
+    };
 
     private static final String PREFS_NAME = "downloads_prefs"; // Consistent prefs name
     private static final String PREF_DOWNLOADS = "downloads_list";
@@ -58,12 +81,198 @@ public class DownloadsActivity extends AppCompatActivity {
         recyclerViewDownloads.setLayoutManager(new LinearLayoutManager(this));
         adapter = new DownloadsAdapter(downloadsList, this);
         recyclerViewDownloads.setAdapter(adapter);
+        
+        refreshRunnable = new Runnable() {
+            @Override
+            public void run() {
+                updateDownloadProgress();
+                handler.postDelayed(this, 1000);
+            }
+        };
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        Intent intent = new Intent(this, TorrentService.class);
+        bindService(intent, connection, Context.BIND_AUTO_CREATE);
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        if (isBound) {
+            unbindService(connection);
+            isBound = false;
+        }
+    }
+
+    // Extract the info-hash from a magnet URI (xt=urn:btih:...)
+    private static String extractMagnetInfoHash(String magnet) {
+        if (magnet == null) return null;
+        try {
+            int xtIndex = magnet.indexOf("xt=urn:btih:");
+            if (xtIndex == -1) return null;
+            int start = xtIndex + "xt=urn:btih:".length();
+            int end = magnet.indexOf('&', start);
+            if (end == -1) end = magnet.length();
+            if (start >= end) return null;
+            return magnet.substring(start, end);
+        } catch (Exception e) {
+            android.util.Log.w("DownloadsActivity", "Failed to parse magnet info-hash", e);
+            return null;
+        }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         loadDownloads();
+        handler.post(refreshRunnable);
+    }
+    
+    @Override
+    protected void onPause() {
+        super.onPause();
+        handler.removeCallbacks(refreshRunnable);
+    }
+    
+    private void updateDownloadProgress() {
+        boolean changed = false;
+        DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+        // We continue even if dm is null to handle torrents
+
+        for (DownloadItem item : downloadsList) {
+            // Handle Torrents
+            if (item.isTorrent) {
+                 if (isBound && torrentService != null) {
+                     String currentMagnet = torrentService.getCurrentMagnetUrl();
+                     
+                     // Debug Log
+                     if (currentMagnet != null) {
+                        android.util.Log.d("DownloadsActivity", "Active: " + currentMagnet.substring(0, Math.min(20, currentMagnet.length())) + "...");
+                        android.util.Log.d("DownloadsActivity", "Checking Item: " + (item.sourceUrl != null ? item.sourceUrl.substring(0, Math.min(20, item.sourceUrl.length())) : "null"));
+                     }
+
+                     boolean isMatch = false;
+                     if (currentMagnet != null && item.sourceUrl != null) {
+                         // Prefer matching on magnet info-hash (xt=urn:btih:...) to ignore tracker differences
+                         String activeHash = extractMagnetInfoHash(currentMagnet);
+                         String itemHash = extractMagnetInfoHash(item.sourceUrl);
+                         if (!TextUtils.isEmpty(activeHash) && !TextUtils.isEmpty(itemHash)) {
+                             isMatch = activeHash.equalsIgnoreCase(itemHash);
+                         } else {
+                             // Fallback to full string comparison (handles file:// URIs, etc.)
+                             isMatch = currentMagnet.equals(item.sourceUrl);
+                         }
+                     }
+
+                     if (isMatch) {
+                         // Update Metadata (Filename & Path) once available
+                         File videoFile = torrentService.getCurrentVideoFile();
+                         if (videoFile != null) {
+                             boolean needsSave = false;
+                             if (TextUtils.isEmpty(item.filePath)) {
+                                 item.filePath = videoFile.getAbsolutePath();
+                                 needsSave = true;
+                             }
+                             // Update name if it's the default placeholder
+                             if ("Torrent Download".equals(item.fileName) && videoFile.getName() != null) {
+                                 item.fileName = videoFile.getName();
+                                 needsSave = true;
+                             }
+                             
+                             if (needsSave) {
+                                 saveDownloadsToPrefs();
+                                 changed = true;
+                             }
+                         }
+
+                         StreamStatus status = torrentService.getLastStatus();
+                         if (status != null) {
+                             item.status = DownloadManager.STATUS_RUNNING;
+                             item.progress = (int) status.progress; // 0-100 scale
+                             
+                             float speedKb = status.downloadSpeed / 1024f;
+                             String speedStr = (speedKb > 1024) ? String.format("%.1f MB/s", speedKb / 1024f) : String.format("%.0f KB/s", speedKb);
+                             item.statusText = String.format("%.1f%% | %s", status.progress, speedStr);
+                             
+                             changed = true;
+                         } else {
+                             // Status is null, meaning it's initializing
+                             item.status = DownloadManager.STATUS_RUNNING;
+                             item.statusText = (videoFile != null) ? "Connecting..." : "Fetching Metadata...";
+                             changed = true;
+                         }
+                     } else {
+                         // Not active torrent. Check if file exists -> Success?
+                         // Or if it was just stopped.
+                         // For now, if file exists, mark successful.
+                         if (item.filePath != null && new File(item.filePath).exists()) {
+                             // Assuming completed if not running? 
+                             // But maybe it's just paused/stopped incomplete.
+                             // Without metadata we don't know if incomplete.
+                             // Leave status as is (likely -1 or previous).
+                             // Or mark PAUSED if file exists but not fully downloaded?
+                             // We don't have progress persistence for stopped torrents in Service yet.
+                         }
+                     }
+                 }
+                 continue; // Skip DM logic for torrents
+            }
+
+            // Handle Normal Downloads
+            if (dm != null && item.downloadId != -1 && item.status != DownloadManager.STATUS_SUCCESSFUL && item.status != DownloadManager.STATUS_FAILED) {
+                DownloadManager.Query query = new DownloadManager.Query();
+                query.setFilterById(item.downloadId);
+                try (android.database.Cursor c = dm.query(query)) {
+                    if (c != null && c.moveToFirst()) {
+                        int statusIndex = c.getColumnIndex(DownloadManager.COLUMN_STATUS);
+                        int downloadedIndex = c.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR);
+                        int totalIndex = c.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES);
+                        
+                        if (statusIndex != -1) item.status = c.getInt(statusIndex);
+                        
+                        if (downloadedIndex != -1 && totalIndex != -1) {
+                            long downloaded = c.getLong(downloadedIndex);
+                            long total = c.getLong(totalIndex);
+                            if (total > 0) {
+                                item.progress = (int) ((downloaded * 100) / total);
+                                item.statusText = String.format("%d%% (%s / %s)", item.progress, 
+                                        android.text.format.Formatter.formatFileSize(this, downloaded),
+                                        android.text.format.Formatter.formatFileSize(this, total));
+                            } else {
+                                item.progress = 0;
+                                item.statusText = android.text.format.Formatter.formatFileSize(this, downloaded);
+                            }
+                        }
+                        changed = true;
+                    } else {
+                         // ID exists but not found in DM. It might be cancelled or completed and cleared.
+                         // We don't update status here to avoid hiding it if it was just completed.
+                         // Or we can mark it as failed/unknown?
+                    }
+                } catch (Exception e) {
+                    android.util.Log.e("DownloadsActivity", "Error querying download progress", e);
+                }
+            }
+        }
+        if (changed) {
+            adapter.notifyDataSetChanged();
+        }
+    }
+
+    void saveDownloadsToPrefs() {
+        JSONArray arr = new JSONArray();
+        for (DownloadItem d : downloadsList) {
+            try {
+                arr.put(d.toJson());
+            } catch (JSONException e) {
+                 android.util.Log.e("DownloadsActivity", "Error converting download item to JSON", e);
+            }
+        }
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        prefs.edit().putString(PREF_DOWNLOADS, arr.toString()).apply();
     }
 
     private void loadDownloads() {
@@ -94,11 +303,28 @@ public class DownloadsActivity extends AppCompatActivity {
         String fileName;
         String filePath;
         String sourceUrl;
+        long downloadId = -1;
+        boolean isTorrent = false;
+        
+        // Transient UI state
+        int progress = 0;
+        int status = -1;
+        String statusText = null; // Added for UI text
 
         DownloadItem(String fileName, String filePath, String sourceUrl) {
+            this(fileName, filePath, sourceUrl, -1, false);
+        }
+        
+        DownloadItem(String fileName, String filePath, String sourceUrl, long downloadId) {
+            this(fileName, filePath, sourceUrl, downloadId, false);
+        }
+
+        DownloadItem(String fileName, String filePath, String sourceUrl, long downloadId, boolean isTorrent) {
             this.fileName = fileName;
             this.filePath = filePath;
             this.sourceUrl = sourceUrl;
+            this.downloadId = downloadId;
+            this.isTorrent = isTorrent;
         }
 
         JSONObject toJson() throws JSONException {
@@ -106,6 +332,8 @@ public class DownloadsActivity extends AppCompatActivity {
             obj.put("fileName", fileName);
             obj.put("filePath", filePath);
             obj.put("sourceUrl", sourceUrl);
+            obj.put("downloadId", downloadId);
+            obj.put("isTorrent", isTorrent);
             return obj;
         }
 
@@ -113,7 +341,9 @@ public class DownloadsActivity extends AppCompatActivity {
             return new DownloadItem(
                     obj.optString("fileName"),
                     obj.optString("filePath"),
-                    obj.optString("sourceUrl")
+                    obj.optString("sourceUrl"),
+                    obj.optLong("downloadId", -1),
+                    obj.optBoolean("isTorrent", false)
             );
         }
     }
@@ -178,6 +408,32 @@ public class DownloadsActivity extends AppCompatActivity {
                 url = url.substring(0, 57) + "...";
             }
             holder.sourceUrlView.setText(url);
+            
+            // Progress Bar Logic
+            boolean isActive = (item.status == DownloadManager.STATUS_RUNNING || 
+                                item.status == DownloadManager.STATUS_PENDING || 
+                                item.status == DownloadManager.STATUS_PAUSED);
+
+            if (isActive) {
+                holder.progressBar.setVisibility(View.VISIBLE);
+                holder.textViewStatus.setVisibility(View.VISIBLE);
+                
+                if (item.statusText != null) {
+                    holder.textViewStatus.setText(item.statusText);
+                } else {
+                    holder.textViewStatus.setText(item.progress + "%");
+                }
+
+                if (item.status == DownloadManager.STATUS_PENDING) {
+                    holder.progressBar.setIndeterminate(true);
+                } else {
+                    holder.progressBar.setIndeterminate(false);
+                    holder.progressBar.setProgress(item.progress);
+                }
+            } else {
+                holder.progressBar.setVisibility(View.GONE);
+                holder.textViewStatus.setVisibility(View.GONE);
+            }
 
             holder.itemView.setOnClickListener(v -> openFile(item));
             holder.sourceUrlView.setOnClickListener(v -> openSourceUrl(item));
@@ -221,30 +477,46 @@ public class DownloadsActivity extends AppCompatActivity {
             }
         }
 
-
         private void openFile(DownloadItem item) {
             try {
-                File file = new File(item.filePath);
-                if (!file.exists()) {
-                    Toast.makeText(context, "File not found: " + item.fileName, Toast.LENGTH_SHORT).show();
+                if (item.filePath == null) {
+                    Toast.makeText(context, "File path missing", Toast.LENGTH_SHORT).show();
                     return;
                 }
-                // Use FileProvider for greater security and compatibility with API 24+
-                Uri fileUri = FileProvider.getUriForFile(context, context.getApplicationContext().getPackageName() + ".provider", file);
+                
+                File file = new File(item.filePath);
+                if (!file.exists()) {
+                    // Try fallback to Public Downloads for torrents (moved after completion)
+                    boolean recovered = false;
+                    if (item.isTorrent && item.fileName != null) {
+                         File publicDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
+                         File publicFile = new File(publicDir, item.fileName);
+                         if (publicFile.exists()) {
+                             item.filePath = publicFile.getAbsolutePath();
+                             file = publicFile;
+                             recovered = true;
+                             // Persist the new path
+                             if (context instanceof DownloadsActivity) {
+                                 ((DownloadsActivity) context).saveDownloadsToPrefs();
+                             }
+                         }
+                    }
+                    
+                    if (!recovered) {
+                        Toast.makeText(context, "File not found at: " + item.filePath, Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                }
+
+                android.net.Uri uri = androidx.core.content.FileProvider.getUriForFile(context, context.getPackageName() + ".provider", file);
+                String mimeType = getMimeType(item.fileName);
 
                 Intent intent = new Intent(Intent.ACTION_VIEW);
-                intent.setDataAndType(fileUri, getMimeType(item.fileName));
-                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); // Important if context is not activity
-
-                if (intent.resolveActivity(context.getPackageManager()) != null) {
-                    context.startActivity(intent);
-                } else {
-                    Toast.makeText(context, "No app can open this file type.", Toast.LENGTH_SHORT).show();
-                }
+                intent.setDataAndType(uri, mimeType);
+                intent.setFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                context.startActivity(intent);
             } catch (Exception e) {
-                android.util.Log.e("DownloadsAdapter", "Error opening file: " + item.filePath, e);
-                Toast.makeText(context, "Cannot open file: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                Toast.makeText(context, "Unable to open file: " + e.getMessage(), Toast.LENGTH_SHORT).show();
             }
         }
 
@@ -306,16 +578,19 @@ public class DownloadsActivity extends AppCompatActivity {
         }
 
         static class DownloadViewHolder extends RecyclerView.ViewHolder {
-            TextView fileNameView, filePathView, sourceUrlView;
+            TextView fileNameView, filePathView, sourceUrlView, textViewStatus;
             ImageButton folderButton, deleteButton; // Added deleteButton
+            android.widget.ProgressBar progressBar;
 
             DownloadViewHolder(@NonNull View itemView) {
                 super(itemView);
                 fileNameView = itemView.findViewById(R.id.textViewFileName);
                 filePathView = itemView.findViewById(R.id.textViewFilePath);
                 sourceUrlView = itemView.findViewById(R.id.textViewSourceUrl);
+                textViewStatus = itemView.findViewById(R.id.textViewStatus);
                 folderButton = itemView.findViewById(R.id.buttonOpenFileLocation);
                 deleteButton = itemView.findViewById(R.id.buttonDeleteDownload);
+                progressBar = itemView.findViewById(R.id.progressBarDownload);
             }
         }
 
