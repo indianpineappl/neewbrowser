@@ -32,7 +32,6 @@ import java.util.Objects;
 import android.content.ServiceConnection;
 import android.content.ComponentName;
 import android.os.IBinder;
-import com.github.se_bastiaan.torrentstream.StreamStatus;
 
 public class DownloadsActivity extends AppCompatActivity {
 
@@ -188,17 +187,18 @@ public class DownloadsActivity extends AppCompatActivity {
                              }
                          }
 
-                         StreamStatus status = torrentService.getLastStatus();
-                         if (status != null) {
-                             item.status = DownloadManager.STATUS_RUNNING;
-                             item.progress = (int) status.progress; // 0-100 scale
-                             
-                             float speedKb = status.downloadSpeed / 1024f;
-                             String speedStr = (speedKb > 1024) ? String.format("%.1f MB/s", speedKb / 1024f) : String.format("%.0f KB/s", speedKb);
-                             item.statusText = String.format("%.1f%% | %s", status.progress, speedStr);
-                             
-                             changed = true;
-                         } else {
+                         if (torrentService.hasLastStatus()) {
+                            float progress = torrentService.getLastProgress();
+                            long speedBytes = torrentService.getLastDownloadSpeedBytes();
+                            item.status = DownloadManager.STATUS_RUNNING;
+                            item.progress = (int) progress; // 0-100 scale
+                            
+                            float speedKb = speedBytes / 1024f;
+                            String speedStr = (speedKb > 1024) ? String.format("%.1f MB/s", speedKb / 1024f) : String.format("%.0f KB/s", speedKb);
+                            item.statusText = String.format("%.1f%% | %s", progress, speedStr);
+                            
+                            changed = true;
+                        } else {
                              // Status is null, meaning it's initializing
                              item.status = DownloadManager.STATUS_RUNNING;
                              item.statusText = (videoFile != null) ? "Connecting..." : "Fetching Metadata...";

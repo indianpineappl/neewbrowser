@@ -25,12 +25,6 @@ import android.app.AlertDialog; // or androidx
 
 import com.neew.browser.TorrentService; // Import Service
 
-import com.github.se_bastiaan.torrentstream.StreamStatus;
-import com.github.se_bastiaan.torrentstream.Torrent;
-import com.github.se_bastiaan.torrentstream.TorrentOptions;
-import com.github.se_bastiaan.torrentstream.TorrentStream;
-import com.github.se_bastiaan.torrentstream.listeners.TorrentListener;
-
 import org.videolan.libvlc.LibVLC;
 import org.videolan.libvlc.Media;
 import org.videolan.libvlc.MediaPlayer;
@@ -39,7 +33,7 @@ import org.videolan.libvlc.interfaces.IVLCVout;
 import java.io.File;
 import java.util.ArrayList;
 
-public class TorrentPlayerActivity extends AppCompatActivity implements TorrentListener {
+public class TorrentPlayerActivity extends AppCompatActivity {
 
     private static final String TAG = "TorrentPlayerActivity";
 
@@ -56,7 +50,6 @@ public class TorrentPlayerActivity extends AppCompatActivity implements TorrentL
     private View inputContainer;
 
     // Core Components
-    // private TorrentStream torrentStream; // Removed local instance
     private LibVLC libVLC;
     private MediaPlayer mediaPlayer;
 
@@ -72,6 +65,7 @@ public class TorrentPlayerActivity extends AppCompatActivity implements TorrentL
     private TextView textVideoTitle;
     private android.os.Handler handler = new android.os.Handler();
     private Runnable updateProgressAction;
+    private Runnable fileReadyWatcher;
     
     // Store aspect ratio for resizing on rotation
     private double mVideoAspectRatio = 0;
@@ -149,9 +143,6 @@ public class TorrentPlayerActivity extends AppCompatActivity implements TorrentL
     protected void onStop() {
         super.onStop();
         if (isBound) {
-            if (torrentService != null && torrentService.getTorrentStream() != null) {
-                torrentService.getTorrentStream().removeListener(this);
-            }
             unbindService(connection);
             isBound = false;
         }
@@ -163,19 +154,19 @@ public class TorrentPlayerActivity extends AppCompatActivity implements TorrentL
             TorrentService.LocalBinder binder = (TorrentService.LocalBinder) service;
             torrentService = binder.getService();
             isBound = true;
-            
-            TorrentStream stream = torrentService.getTorrentStream();
-            if (stream != null) {
-                stream.addListener(TorrentPlayerActivity.this);
-                
-                // Check if already playing
-                if (stream.getCurrentTorrent() != null) {
-                    onStreamReady(stream.getCurrentTorrent());
-                } else if (stream.isStreaming()) {
-                    statusText.setText("Connecting to stream...");
-                }
+
+            // If the service already has a video file, start playback immediately
+            File videoFile = torrentService.getCurrentVideoFile();
+            if (videoFile != null && videoFile.exists()) {
+                loadingProgress.setVisibility(View.GONE);
+                statusText.setVisibility(View.GONE);
+                textVideoTitle.setText(videoFile.getName());
+                initPlayer(videoFile);
+            } else if (torrentService.isStreaming()) {
+                statusText.setText("Connecting to stream...");
+                startFileReadyWatcher();
             } else {
-                // Service exists but no stream? Likely stopped.
+                // Service exists but no active stream
                 Toast.makeText(TorrentPlayerActivity.this, "No active torrent", Toast.LENGTH_SHORT).show();
                 finish();
             }
@@ -323,6 +314,9 @@ public class TorrentPlayerActivity extends AppCompatActivity implements TorrentL
                         textCurrentTime.setText(formatTime(current));
                         textTotalTime.setText(formatTime(total));
                     }
+
+                    // Refresh torrent stats overlay while playing
+                    updateStatsFromService();
                 }
                 handler.postDelayed(this, 1000);
             }
@@ -440,84 +434,72 @@ public class TorrentPlayerActivity extends AppCompatActivity implements TorrentL
         }
     }
 
-    @Override
-    public void onStreamReady(Torrent torrent) {
-        Log.d(TAG, "onStreamReady: " + torrent.getVideoFile());
-        runOnUiThread(() -> {
-            loadingProgress.setVisibility(View.GONE);
-            statusText.setVisibility(View.GONE); // Hide status once playing, or keep if you want stats
-            if (torrent.getVideoFile() != null) {
-                textVideoTitle.setText(torrent.getVideoFile().getName());
+    private void startFileReadyWatcher() {
+        if (fileReadyWatcher != null) {
+            handler.removeCallbacks(fileReadyWatcher);
+        }
+
+        fileReadyWatcher = new Runnable() {
+            @Override
+            public void run() {
+                if (torrentService == null) return;
+
+                File videoFile = torrentService.getCurrentVideoFile();
+                if (videoFile != null && videoFile.exists()) {
+                    loadingProgress.setVisibility(View.GONE);
+                    statusText.setVisibility(View.GONE);
+                    textVideoTitle.setText(videoFile.getName());
+                    initPlayer(videoFile);
+                    return; // Do not reschedule, we're playing now
+                }
+
+                // Update overlay stats while waiting
+                updateStatsFromService();
+
+                // Re-check in 1s while streaming is ongoing
+                if (torrentService != null && torrentService.isStreaming()) {
+                    handler.postDelayed(this, 1000);
+                }
             }
-            initPlayer(torrent.getVideoFile());
-        });
+        };
+
+        handler.post(fileReadyWatcher);
     }
 
-    @Override
-    public void onStreamProgress(Torrent torrent, StreamStatus status) {
-        // Capture values on the worker thread to avoid recycling issues
-        final float bufferProgress = status.bufferProgress;
-        final float totalProgress = status.progress; // Total download progress
-        final int seeds = status.seeds;
-        final float downloadSpeed = status.downloadSpeed;
+    private void updateStatsFromService() {
+        if (torrentService == null) return;
 
-        // Log status for debugging
-        Log.d(TAG, "StreamProgress: Buffer=" + bufferProgress + "% Total=" + totalProgress + "% (" + seeds + " seeds) " + downloadSpeed);
-        
-        runOnUiThread(() -> {
-            float speedKb = downloadSpeed / 1024f;
-            String speedStr = (speedKb > 1024) ? String.format("%.1f MB/s", speedKb / 1024f) : String.format("%.0f KB/s", speedKb);
-            
-            // Info for Buffering Screen (emphasize Buffer)
-            String bufferingInfo = String.format("Buffer: %.1f%% (Total: %.1f%%) \nSeeds: %d | Speed: %s", 
-                        bufferProgress, totalProgress, seeds, speedStr);
+        if (!torrentService.hasLastStatus()) {
+            // Still fetching metadata or connecting
+            return;
+        }
 
-            // Info for Overlay (emphasize Total Progress)
-            String overlayInfo = String.format("Total Progress: %.1f%% \nSeeds: %d | Speed: %s", 
-                        totalProgress, seeds, speedStr);
+        float totalProgress = torrentService.getLastProgress();
+        int seeds = torrentService.getLastSeeds();
+        long downloadSpeed = torrentService.getLastDownloadSpeedBytes();
 
-            if (bufferProgress < 100 && loadingProgress.getVisibility() == View.VISIBLE) {
-                statusText.setVisibility(View.VISIBLE);
-                statusText.setText(bufferingInfo);
-            }
-            
-            if (textOverlayStats != null) {
-                textOverlayStats.setText(overlayInfo);
-            }
-        });
-    }
+        float speedKb = downloadSpeed / 1024f;
+        String speedStr = (speedKb > 1024) ? String.format("%.1f MB/s", speedKb / 1024f) : String.format("%.0f KB/s", speedKb);
 
-    @Override
-    public void onStreamError(Torrent torrent, Exception e) {
-        Log.e(TAG, "onStreamError", e);
-        runOnUiThread(() -> {
-            loadingProgress.setVisibility(View.GONE);
-            inputContainer.setVisibility(View.VISIBLE);
-            Toast.makeText(this, "Stream Error: " + e.getMessage(), Toast.LENGTH_LONG).show();
-        });
-    }
+        String overlayInfo = String.format("Total Progress: %.1f%% \nSeeds: %d | Speed: %s", 
+                    totalProgress, seeds, speedStr);
 
-    @Override
-    public void onStreamPrepared(Torrent torrent) {
-        Log.d(TAG, "onStreamPrepared");
-        runOnUiThread(() -> statusText.setText("Metadata retrieved. Starting download..."));
-    }
-
-    @Override
-    public void onStreamStarted(Torrent torrent) {
-        Log.d(TAG, "onStreamStarted");
-        runOnUiThread(() -> statusText.setText("Stream started..."));
-    }
-
-    @Override
-    public void onStreamStopped() {
-        Log.d(TAG, "onStreamStopped");
+        if (textOverlayStats != null) {
+            textOverlayStats.setText(overlayInfo);
+        }
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        
+
+        if (fileReadyWatcher != null) {
+            handler.removeCallbacks(fileReadyWatcher);
+        }
+        if (updateProgressAction != null) {
+            handler.removeCallbacks(updateProgressAction);
+        }
+
         // Cleanup Media Player
         if (mediaPlayer != null) {
             mediaPlayer.release();

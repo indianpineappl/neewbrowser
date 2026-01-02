@@ -22,15 +22,9 @@ import java.io.OutputStream;
 
 import androidx.core.app.NotificationCompat;
 
-import com.github.se_bastiaan.torrentstream.StreamStatus;
-import com.github.se_bastiaan.torrentstream.Torrent;
-import com.github.se_bastiaan.torrentstream.TorrentOptions;
-import com.github.se_bastiaan.torrentstream.TorrentStream;
-import com.github.se_bastiaan.torrentstream.listeners.TorrentListener;
-
 import java.io.File;
 
-public class TorrentService extends Service implements TorrentListener {
+public class TorrentService extends Service {
 
     private static final String TAG = "TorrentService";
     
@@ -43,13 +37,17 @@ public class TorrentService extends Service implements TorrentListener {
     private static final int NOTIFICATION_ID = 1337;
     private static final String CHANNEL_ID = "TorrentChannel";
 
-    private TorrentStream torrentStream;
+    private TorrentEngine torrentEngine;
+    private String currentSessionId;
     private final IBinder binder = new LocalBinder();
     private boolean isStreaming = false; // true if UI requested stream (temp location)
     private boolean shouldSave = false; // true if user requested to save (move from temp to download)
-    private Torrent currentTorrent;
+    private File currentVideoFile;
     private String currentMagnetUrl;
-    private StreamStatus lastStatus;
+    private float lastProgress = 0f;
+    private int lastSeeds = 0;
+    private long lastDownloadSpeedBytes = 0L;
+    private boolean hasLastStatus = false;
     private int lastLoggedProgress = -1;
     private long lastNotificationTime = 0;
 
@@ -67,12 +65,24 @@ public class TorrentService extends Service implements TorrentListener {
         return currentMagnetUrl;
     }
     
-    public StreamStatus getLastStatus() {
-        return lastStatus;
-    }
-    
     public File getCurrentVideoFile() {
-        return (currentTorrent != null) ? currentTorrent.getVideoFile() : null;
+        return currentVideoFile;
+    }
+
+    public boolean hasLastStatus() {
+        return hasLastStatus;
+    }
+
+    public float getLastProgress() {
+        return lastProgress;
+    }
+
+    public int getLastSeeds() {
+        return lastSeeds;
+    }
+
+    public long getLastDownloadSpeedBytes() {
+        return lastDownloadSpeedBytes;
     }
     
     public void setSaveVideo(boolean save) {
@@ -83,6 +93,7 @@ public class TorrentService extends Service implements TorrentListener {
     public void onCreate() {
         super.onCreate();
         createNotificationChannel();
+        torrentEngine = new TorrentStreamEngine(getApplicationContext());
     }
 
     @Override
@@ -143,37 +154,22 @@ public class TorrentService extends Service implements TorrentListener {
 
         Log.i(TAG, "Starting Torrent. Mode: " + (isStreamMode ? "Stream" : "Download") + ", Magnet: " + magnetUrl);
         this.currentMagnetUrl = magnetUrl;
-        this.lastStatus = null; // Reset status on new start
+        this.currentVideoFile = null;
+        this.lastProgress = 0f;
+        this.lastSeeds = 0;
+        this.lastDownloadSpeedBytes = 0L;
+        this.hasLastStatus = false;
         this.lastLoggedProgress = -1;
-        if (torrentStream != null) {
-            // If already running same torrent, ignore.
-            // If new torrent, stop old one.
-            if (torrentStream.isStreaming()) {
-                 stopTorrent();
-            }
+        if (torrentEngine == null) {
+            torrentEngine = new TorrentStreamEngine(getApplicationContext());
         }
 
-        File saveDir;
-        if (isStreamMode) {
-            saveDir = getExternalFilesDir("torrent_temp");
-        } else {
-            saveDir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+        if (currentSessionId != null) {
+            torrentEngine.stop(currentSessionId);
+            currentSessionId = null;
         }
 
-        if (saveDir == null) {
-            Log.e(TAG, "Save directory is null");
-            stopSelf();
-            return;
-        }
-
-        TorrentOptions options = new TorrentOptions.Builder()
-                .saveLocation(saveDir)
-                .removeFilesAfterStop(false) // Always keep, manage manually
-                .build();
-
-        torrentStream = TorrentStream.init(options);
-        torrentStream.addListener(this);
-        torrentStream.startStream(magnetUrl);
+        currentSessionId = torrentEngine.start(magnetUrl, isStreamMode, engineListener);
 
         scheduleMetadataTimeout();
 
@@ -182,30 +178,31 @@ public class TorrentService extends Service implements TorrentListener {
     
     public void stopTorrent() {
         clearMetadataTimeout();
-        if (torrentStream != null) {
-            torrentStream.removeListener(this);
-            // Capture file before stop
-            File videoFile = (currentTorrent != null) ? currentTorrent.getVideoFile() : null;
-            
-            torrentStream.stopStream();
-            torrentStream = null;
-            
-            // Handle file persistence
-            if (videoFile != null && videoFile.exists()) {
-                if (shouldSave || !isStreaming) {
-                    // Move/Copy to Public Downloads
-                    saveFileToPublicStorage(videoFile);
-                    // Return early to let thread finish
-                    return; 
-                } else {
-                    // Streaming and NOT saving -> Delete temp
-                    if (videoFile.delete()) {
-                        Log.i(TAG, "Deleted temp file");
-                    }
+        File videoFile = currentVideoFile;
+
+        if (torrentEngine != null && currentSessionId != null) {
+            torrentEngine.stop(currentSessionId);
+        }
+
+        // Handle file persistence
+        if (videoFile != null && videoFile.exists()) {
+            if (shouldSave || !isStreaming) {
+                // Move/Copy to Public Downloads
+                saveFileToPublicStorage(videoFile);
+                // Return early to let thread finish
+                return; 
+            } else {
+                // Streaming and NOT saving -> Delete temp
+                if (videoFile.delete()) {
+                    Log.i(TAG, "Deleted temp file");
                 }
             }
         }
-        currentTorrent = null;
+
+        currentSessionId = null;
+        currentVideoFile = null;
+        hasLastStatus = false;
+        lastProgress = 0f;
         stopForeground(true);
     }
     
@@ -274,7 +271,6 @@ public class TorrentService extends Service implements TorrentListener {
                 showCompletionNotification(fileName, false, null, null);
             }
             
-            currentTorrent = null;
             stopForeground(true); 
             stopSelf();
         }).start();
@@ -310,10 +306,6 @@ public class TorrentService extends Service implements TorrentListener {
         return type;
     }
 
-    public TorrentStream getTorrentStream() {
-        return torrentStream;
-    }
-
     private void scheduleMetadataTimeout() {
         clearMetadataTimeout();
         metadataTimeoutRunnable = new Runnable() {
@@ -338,9 +330,9 @@ public class TorrentService extends Service implements TorrentListener {
     }
 
     private void handleMetadataTimeout() {
-        if (torrentStream == null) return;
-        if (currentTorrent != null) return;
-        if (lastStatus != null) return;
+        if (currentSessionId == null) return;
+        if (currentVideoFile != null) return;
+        if (hasLastStatus) return;
 
         String msg;
         if (isTvDevice()) {
@@ -383,8 +375,8 @@ public class TorrentService extends Service implements TorrentListener {
         // If Streaming, open Player. If Download, open Browser?
         // For simplicity, pending intent opens nothing for now, or maybe Player if active.
         
-        String title = (currentTorrent != null && currentTorrent.getVideoFile() != null) 
-                ? currentTorrent.getVideoFile().getName() 
+        String title = (currentVideoFile != null) 
+                ? currentVideoFile.getName() 
                 : "Torrent Download";
 
         return new NotificationCompat.Builder(this, CHANNEL_ID)
@@ -400,8 +392,8 @@ public class TorrentService extends Service implements TorrentListener {
     
     private void updateNotification(String status, int progress, int seeds) {
         long now = System.currentTimeMillis();
-        // Update if > 1s passed OR progress is 100/0 (immediate updates for critical states)
-        if (now - lastNotificationTime > 1000 || progress >= 100 || progress == 0) {
+        // Update if > 1s passed OR progress is 100 (immediate update for completion)
+        if (now - lastNotificationTime > 1000 || progress >= 100) {
             NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
             if (manager != null) {
                 manager.notify(NOTIFICATION_ID, createNotification(status, progress, seeds));
@@ -410,98 +402,73 @@ public class TorrentService extends Service implements TorrentListener {
         }
     }
 
-    // --- TorrentListener Implementation ---
+    // --- TorrentEngine Listener Implementation ---
 
-    @Override
-    public void onStreamPrepared(Torrent torrent) {
-        clearMetadataTimeout();
-        Log.i(TAG, "Torrent Prepared. Metadata retrieved. File: " + (torrent.getVideoFile() != null ? torrent.getVideoFile().getName() : "Unknown"));
-        currentTorrent = torrent;
+    private final TorrentEngine.Listener engineListener = new TorrentEngine.Listener() {
+        @Override
+        public void onPrepared(String sessionId) {
+            clearMetadataTimeout();
+            Log.i(TAG, "Torrent Prepared. Metadata retrieved. Session: " + sessionId);
+            updateNotification("Metadata retrieved. Starting...", 0, 0);
+        }
 
-        // Inspect Torrent API via reflection to find way to download all files
-        try {
-            java.lang.reflect.Method[] methods = torrent.getClass().getMethods();
-            for (java.lang.reflect.Method m : methods) {
-                // Log interesting methods
-                if (m.getName().contains("File") || m.getName().contains("Priority") || m.getName().contains("start") || m.getName().contains("handle")) {
-                     Log.d(TAG, "Torrent Method: " + m.getName());
-                }
+        @Override
+        public void onStarted(String sessionId) {
+            Log.i(TAG, "Torrent Stream Started. Session: " + sessionId);
+            updateNotification("Downloading...", 0, 0);
+        }
+
+        @Override
+        public void onProgress(String sessionId, float progress, int seeds, long downloadSpeedBytesPerSecond) {
+            clearMetadataTimeout();
+            hasLastStatus = true;
+            lastProgress = progress;
+            lastSeeds = seeds;
+            lastDownloadSpeedBytes = downloadSpeedBytesPerSecond;
+
+            float speedKb = downloadSpeedBytesPerSecond / 1024f;
+            String speedStr;
+            if (speedKb > 1024) {
+                speedStr = String.format("%.1f MB/s", speedKb / 1024f);
+            } else {
+                speedStr = String.format("%.0f KB/s", speedKb);
             }
-        } catch (Exception e) {
-            Log.e(TAG, "Reflection error", e);
-        }
-        
-        // Force start download explicitly to ensure it doesn't wait for playback
-        try {
-            torrent.startDownload();
-            Log.d(TAG, "Invoked torrent.startDownload()");
-        } catch (Exception e) {
-            Log.w(TAG, "Could not call startDownload on torrent", e);
-        }
 
-        updateNotification("Metadata retrieved. Starting...", 0, 0);
-    }
+            String content = String.format("%.1f%% | Seeds: %d | Speed: %s",
+                    progress, seeds, speedStr);
 
-    @Override
-    public void onStreamStarted(Torrent torrent) {
-        Log.i(TAG, "Torrent Stream Started.");
-        currentTorrent = torrent;
-        updateNotification("Downloading...", 0, 0);
-    }
+            updateNotification(content, (int) progress, seeds);
 
-    @Override
-    public void onStreamError(Torrent torrent, Exception e) {
-        clearMetadataTimeout();
-        Log.e(TAG, "Torrent Error occurred.", e);
-        updateNotification("Error: " + e.getMessage(), 0, 0);
-    }
+            int currentProgress = (int) progress;
+            if (currentProgress > lastLoggedProgress + 5 || currentProgress == 100) {
+                Log.d(TAG, String.format("Torrent Progress: %.1f%%, Seeds: %d, Speed: %s", progress, seeds, speedStr));
+                lastLoggedProgress = currentProgress;
+            }
 
-    @Override
-    public void onStreamReady(Torrent torrent) {
-        currentTorrent = torrent;
-        // Don't force progress to 100% here, let onStreamProgress handle valid updates
-        // updateNotification("Ready to play", 100, 0);
-    }
-
-    @Override
-    public void onStreamProgress(Torrent torrent, StreamStatus status) {
-        clearMetadataTimeout();
-        this.lastStatus = status;
-        float speedKb = status.downloadSpeed / 1024f;
-        String speedStr;
-        if (speedKb > 1024) {
-            speedStr = String.format("%.1f MB/s", speedKb / 1024f);
-        } else {
-            speedStr = String.format("%.0f KB/s", speedKb);
-        }
-        
-        String content = String.format("%.1f%% | Seeds: %d | Speed: %s", 
-                status.progress, status.seeds, speedStr);
-        
-        updateNotification(content, (int)status.progress, status.seeds);
-
-        // Debug Log for Progress (Periodic)
-        int currentProgress = (int) status.progress;
-        if (currentProgress > lastLoggedProgress + 5 || currentProgress == 100) { // Log every 5% or at completion
-            Log.d(TAG, String.format("Torrent Progress: %.1f%%, Seeds: %d, Speed: %s", status.progress, status.seeds, speedStr));
-            lastLoggedProgress = currentProgress;
+            if (progress >= 99.8f) {
+                Log.i(TAG, "Download/Stream reached >= 99.8%. Initiating stop and save/cleanup.");
+                new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> stopTorrent());
+            }
         }
 
-        // Auto-stop when transfer is effectively complete (download or stream)
-        // Relax threshold further to 99.8% to avoid endless near-complete states
-        if (status.progress >= 99.8f) {
-            Log.i(TAG, "Download/Stream reached >= 99.8%. Initiating stop and save/cleanup.");
-            // Post to main thread to avoid re-entrancy issues in library callbacks
-            new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
-                if (torrentStream != null) {
-                    stopTorrent();
-                }
-            });
+        @Override
+        public void onReadyForPlayback(String sessionId, File mediaFile) {
+            Log.i(TAG, "Media ready for playback. Session: " + sessionId + ", file=" +
+                    (mediaFile != null ? mediaFile.getAbsolutePath() : "null"));
+            currentVideoFile = mediaFile;
         }
-    }
 
-    @Override
-    public void onStreamStopped() {
-        stopForeground(true);
-    }
+        @Override
+        public void onError(String sessionId, Throwable error) {
+            clearMetadataTimeout();
+            Log.e(TAG, "Torrent Error occurred.", error);
+            String msg = (error != null && error.getMessage() != null) ? error.getMessage() : "Unknown error";
+            updateNotification("Error: " + msg, 0, 0);
+        }
+
+        @Override
+        public void onStopped(String sessionId) {
+            stopForeground(true);
+        }
+    };
 }
