@@ -79,19 +79,33 @@
   }
 
   function getScrollableAncestor(el) {
-    if (!el || el === document) return document.scrollingElement || document.documentElement || document.body;
-    let current = el;
+    // Generic scrollable ancestor detection that works across a wide range of layouts.
+    // We intentionally treat any non-"visible" overflow as potentially scrollable
+    // and then require that the scrollable dimension actually has extra content.
+    if (!el || el === document) {
+      return document.scrollingElement || document.documentElement || document.body;
+    }
+
     const root = document.scrollingElement || document.documentElement || document.body;
-    while (current && current !== root && current !== document.body) {
+    let current = el;
+
+    while (current && current !== document && current !== document.documentElement && current !== document.body) {
       const style = window.getComputedStyle(current);
       const overflowY = style.overflowY;
       const overflowX = style.overflowX;
-      const scrollable = (overflowY === 'auto' || overflowY === 'scroll' || overflowX === 'auto' || overflowX === 'scroll');
-      if (scrollable && (current.scrollHeight > current.clientHeight + 1 || current.scrollWidth > current.clientWidth + 1)) {
+
+      const scrollableY = overflowY && overflowY !== 'visible';
+      const scrollableX = overflowX && overflowX !== 'visible';
+      const canScrollY = scrollableY && (current.scrollHeight - current.clientHeight > 1);
+      const canScrollX = scrollableX && (current.scrollWidth - current.clientWidth > 1);
+
+      if (canScrollY || canScrollX) {
         return current;
       }
-      current = current.parentElement;
+
+      current = current.parentElement || current.parentNode;
     }
+
     return root;
   }
 
@@ -176,18 +190,63 @@
 
   function tryScrollElement(node, deltaY) {
     if (!node) return false;
-    if (node === window || node === document || node === document.body) {
-      const before = window.scrollY;
-      window.scrollBy(0, deltaY);
-      return window.scrollY !== before;
+
+    function attempt(target) {
+      if (!target) return false;
+      if (target === window || target === document || target === document.body) {
+        const before = window.scrollY;
+        window.scrollBy(0, deltaY);
+        return window.scrollY !== before;
+      }
+      const beforeTop = target.scrollTop;
+      if (typeof target.scrollBy === 'function') {
+        target.scrollBy({ top: deltaY, behavior: 'auto' });
+      } else {
+        target.scrollTop = beforeTop + deltaY;
+      }
+      return target.scrollTop !== beforeTop;
     }
-    const beforeTop = node.scrollTop;
-    if (typeof node.scrollBy === 'function') {
-      node.scrollBy({ top: deltaY, behavior: 'auto' });
-    } else {
-      node.scrollTop = beforeTop + deltaY;
+
+    // First try on the provided node
+    if (attempt(node)) {
+      return true;
     }
-    return node.scrollTop !== beforeTop;
+
+    // If it didn't move, escalate once to a higher scrollable ancestor.
+    // This helps with deeply nested layouts where the immediate container
+    // isn't actually the scroll owner.
+    const parent = node.parentElement || node.parentNode;
+    const higher = parent ? getScrollableAncestor(parent) : null;
+    if (higher && higher !== node) {
+      return attempt(higher);
+    }
+
+    // As a last resort, synthesize a wheel event so that sites with
+    // custom JS-based scrollers (e.g., translateY animations) can
+    // handle the scroll even when scrollTop does not change.
+    try {
+      const evt = new WheelEvent('wheel', {
+        bubbles: true,
+        cancelable: true,
+        deltaY: deltaY,
+        deltaMode: 0
+      });
+      node.dispatchEvent(evt);
+      return true;
+    } catch (_) {
+      try {
+        const evt = document.createEvent('WheelEvent');
+        // Some older engines require initWheelEvent, but GeckoView should
+        // support the constructor path above. We keep this as a best-effort.
+        if (evt && evt.initEvent) {
+          evt.initEvent('wheel', true, true);
+          node.dispatchEvent(evt);
+          return true;
+        }
+      } catch (_) {}
+    }
+
+    return false;
   }
 
   function sendHoverEvent(target, clientX, clientY) {
@@ -239,17 +298,50 @@
     }
 
     const element = deepElementFromPoint(xCss, yCss);
-    let target;
+    // First, handle YouTube playlist panel overlays explicitly. These often
+    // use custom JS-driven scrolling, so we scroll the panel element itself
+    // and let tryScrollElement fall back to synthesizing a wheel event.
+    const playlistPanel = element && element.closest
+      ? element.closest('ytd-playlist-panel-renderer, ytm-playlist-panel-renderer')
+      : null;
+    if (playlistPanel) {
+      const movedPanel = tryScrollElement(playlistPanel, dy);
+      const usedPanel = playlistPanel.tagName ? playlistPanel.tagName.toLowerCase() : 'playlist-panel';
+      sendScrollDone(id, movedPanel, usedPanel);
+      if (id) scrollHandledIds.delete(id);
+      return;
+    }
+
+    // Generic + other YouTube containers
+    // Try to normalize special YouTube playlist containers, but always
+    // run the final candidate through getScrollableAncestor so we end up
+    // scrolling the *actual* scrollable container (not just an inner div).
     const panel = element && element.closest ? element.closest('ytd-playlist-panel-renderer') : null;
-    const items = panel ? panel.querySelector('#items.playlist-items') : null;
+    // Desktop playlist side panel: prefer the main items/contents container inside the panel
+    const items = panel
+      ? panel.querySelector('#items.playlist-items, #items, #contents')
+      : null;
     // Mobile (ytm) variant: prefer the inner #items container if inside the mobile playlist panel
     const mPanel = element && element.closest ? element.closest('ytm-playlist-panel-renderer') : null;
-    const mItems = mPanel ? (mPanel.querySelector('#items.playlist-items, #items')) : (element && element.closest ? element.closest('#items.playlist-items, #items') : null);
-    target = mItems || items || getScrollableAncestor(element || document.body);
-    const moved = tryScrollElement(target, dy);
+    const mItems = mPanel
+      ? mPanel.querySelector('#items.playlist-items, #items')
+      : (element && element.closest ? element.closest('#items.playlist-items, #items') : null);
+
+    const base = mItems || items || element || document.body;
+    const target = getScrollableAncestor(base);
+
+    // If the best scrollable ancestor is the root (html/body/scrollingElement),
+    // we deliberately report failure so that the Android side can fall back to
+    // its existing PanZoomController root scrolling. The content script focuses
+    // purely on nested/element-level scrolling.
+    const root = document.scrollingElement || document.documentElement || document.body;
+    const isRootTarget = !target || target === root || target === document.documentElement || target === document.body;
+    const moved = isRootTarget ? false : tryScrollElement(target, dy);
 
     let used = 'none';
-    if (target && target.tagName) {
+    if (isRootTarget) {
+      used = 'root';
+    } else if (target && target.tagName) {
       used = target.tagName.toLowerCase();
     } else if (!target) {
       used = 'unknown';
