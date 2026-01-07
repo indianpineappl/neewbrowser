@@ -50,6 +50,8 @@ public class TorrentService extends Service {
     private boolean hasLastStatus = false;
     private int lastLoggedProgress = -1;
     private long lastNotificationTime = 0;
+    private volatile boolean isSaving = false; // Guard against multiple simultaneous save operations
+    private volatile boolean isStoppingForCompletion = false; // Guard against multiple stopTorrent calls
 
     private final android.os.Handler mainHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private Runnable metadataTimeoutRunnable;
@@ -160,6 +162,8 @@ public class TorrentService extends Service {
         this.lastDownloadSpeedBytes = 0L;
         this.hasLastStatus = false;
         this.lastLoggedProgress = -1;
+        this.isSaving = false;
+        this.isStoppingForCompletion = false;
         if (torrentEngine == null) {
             torrentEngine = new TorrentStreamEngine(getApplicationContext());
         }
@@ -187,6 +191,11 @@ public class TorrentService extends Service {
         // Handle file persistence
         if (videoFile != null && videoFile.exists()) {
             if (shouldSave || !isStreaming) {
+                // Prevent multiple simultaneous save operations
+                if (isSaving) {
+                    Log.w(TAG, "Save already in progress, ignoring duplicate stopTorrent call");
+                    return;
+                }
                 // Move/Copy to Public Downloads
                 saveFileToPublicStorage(videoFile);
                 // Return early to let thread finish
@@ -207,6 +216,7 @@ public class TorrentService extends Service {
     }
     
     private void saveFileToPublicStorage(File srcFile) {
+        isSaving = true; // Set flag to prevent duplicate calls
         Log.d(TAG, "Starting saveFileToPublicStorage. Source: " + srcFile.getAbsolutePath() + ", Size: " + srcFile.length() + " bytes");
         // Show saving notification
         updateNotification("Saving to Downloads...", 100, 0);
@@ -271,19 +281,23 @@ public class TorrentService extends Service {
                 showCompletionNotification(fileName, false, null, null);
             }
             
+            isSaving = false; // Clear flag when done
+            isStoppingForCompletion = false;
             stopForeground(true); 
             stopSelf();
         }).start();
     }
     
     private void showCompletionNotification(String fileName, boolean success, android.net.Uri fileUri, String mimeType) {
+        Log.i(TAG, "showCompletionNotification: success=" + success + ", fileName=" + fileName + ", uri=" + fileUri);
         NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (manager != null) {
             NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle(success ? "Download Saved" : "Save Failed")
                 .setContentText(success ? fileName + " saved to Downloads" : "Could not save " + fileName)
                 .setSmallIcon(android.R.drawable.stat_sys_download_done)
-                .setAutoCancel(true);
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_HIGH);
             
             if (success && fileUri != null) {
                 Intent intent = new Intent(Intent.ACTION_VIEW);
@@ -294,14 +308,44 @@ public class TorrentService extends Service {
             }
             
             manager.notify(NOTIFICATION_ID + 1, builder.build());
+            Log.i(TAG, "Completion notification posted with ID: " + (NOTIFICATION_ID + 1));
+        } else {
+            Log.e(TAG, "NotificationManager is null, cannot show completion notification");
         }
     }
     
-    private String getMimeType(String url) {
+    private String getMimeType(String fileName) {
         String type = null;
-        String extension = MimeTypeMap.getFileExtensionFromUrl(url);
-        if (extension != null) {
+        // First try to get extension directly from filename
+        int dotIndex = fileName.lastIndexOf('.');
+        if (dotIndex > 0 && dotIndex < fileName.length() - 1) {
+            String extension = fileName.substring(dotIndex + 1).toLowerCase();
             type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+            Log.d(TAG, "getMimeType: fileName=" + fileName + ", extension=" + extension + ", mimeType=" + type);
+        }
+        // Fallback to URL-based detection
+        if (type == null) {
+            String extension = MimeTypeMap.getFileExtensionFromUrl(fileName);
+            if (extension != null) {
+                type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+            }
+        }
+        // Default to video/mp4 for common video extensions if still null
+        if (type == null && fileName != null) {
+            String lowerName = fileName.toLowerCase();
+            if (lowerName.endsWith(".mp4") || lowerName.endsWith(".m4v")) {
+                type = "video/mp4";
+            } else if (lowerName.endsWith(".mkv")) {
+                type = "video/x-matroska";
+            } else if (lowerName.endsWith(".avi")) {
+                type = "video/x-msvideo";
+            } else if (lowerName.endsWith(".mov")) {
+                type = "video/quicktime";
+            } else if (lowerName.endsWith(".mp3")) {
+                type = "audio/mpeg";
+            } else if (lowerName.endsWith(".flac")) {
+                type = "audio/flac";
+            }
         }
         return type;
     }
@@ -445,7 +489,8 @@ public class TorrentService extends Service {
                 lastLoggedProgress = currentProgress;
             }
 
-            if (progress >= 99.8f) {
+            if (progress >= 99.8f && !isStoppingForCompletion) {
+                isStoppingForCompletion = true;
                 Log.i(TAG, "Download/Stream reached >= 99.8%. Initiating stop and save/cleanup.");
                 new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> stopTorrent());
             }

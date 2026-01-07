@@ -89,10 +89,12 @@ android {
         buildConfig = true
     }
 
-    // Ensure native libraries are not repackaged/extracted; keep uncompressed & page-aligned
+    // Ensure native libraries are properly aligned for 16KB page sizes
     packagingOptions {
         jniLibs {
             useLegacyPackaging = false
+            // Keep native libraries uncompressed and properly aligned
+            keepDebugSymbols += ['**/*.so']
         }
     }
     
@@ -170,7 +172,14 @@ dependencies {
     implementation 'com.google.firebase:firebase-analytics:21.5.0'
     implementation 'androidx.leanback:leanback:1.0.0' // Added for TV support
     implementation 'androidx.tvprovider:tvprovider:1.0.0' // Added for TV support
-    implementation 'com.github.TorrentStream:TorrentStream-Android:2.7.0'
+    // 16KB-aligned libtorrent4j (built locally with 16KB page size support)
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+    // TorrentStream-Android wrapper (using our 16KB-compliant libtorrent4j)
+    implementation('com.github.TorrentStream:TorrentStream-Android:2.7.0') {
+        exclude group: 'com.frostwire.jlibtorrent', module: 'jlibtorrent'
+        exclude group: 'com.frostwire.jlibtorrent', module: 'jlibtorrent-android-arm'
+        exclude group: 'com.frostwire.jlibtorrent', module: 'jlibtorrent-android-x86'
+    }
     implementation 'org.videolan.android:libvlc-all:3.6.0'
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'
