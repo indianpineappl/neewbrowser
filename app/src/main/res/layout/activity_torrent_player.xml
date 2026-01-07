@@ -214,6 +214,17 @@
                     android:gravity="center" />
 
                 <ImageButton
+                    android:id="@+id/btn_pip"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:src="@drawable/ic_pip"
+                    android:scaleType="fitCenter"
+                    android:tint="#FFFFFF"
+                    android:layout_marginStart="8dp"
+                    android:contentDescription="Picture in Picture"/>
+
+                <ImageButton
                     android:id="@+id/btn_fullscreen"
                     android:layout_width="32dp"
                     android:layout_height="32dp"

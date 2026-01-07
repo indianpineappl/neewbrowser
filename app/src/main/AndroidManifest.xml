@@ -121,7 +121,8 @@
             android:theme="@style/Theme.NeewBrowser"
             android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|uiMode"
-            android:hardwareAccelerated="true" />
+            android:hardwareAccelerated="true"
+            android:supportsPictureInPicture="true" />
 
         <service
             android:name=".TorrentService"

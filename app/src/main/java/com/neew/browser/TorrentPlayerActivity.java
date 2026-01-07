@@ -22,6 +22,10 @@ import android.os.IBinder;
 import android.content.Context;
 import android.content.Intent;
 import android.app.AlertDialog; // or androidx
+import android.app.PictureInPictureParams;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
+import android.util.Rational;
 
 import com.neew.browser.TorrentService; // Import Service
 
@@ -59,6 +63,7 @@ public class TorrentPlayerActivity extends AppCompatActivity {
     private android.widget.ImageButton btnFullscreen;
     private android.widget.ImageButton btnBack; // Added field
     private android.widget.ImageButton btnInfo; // Added Info button
+    private android.widget.ImageButton btnPip; // PiP button
     private TextView textOverlayStats; // Stats overlay
     private android.widget.SeekBar seekBar;
     private TextView textCurrentTime, textTotalTime;
@@ -69,6 +74,7 @@ public class TorrentPlayerActivity extends AppCompatActivity {
     
     // Store aspect ratio for resizing on rotation
     private double mVideoAspectRatio = 0;
+    private boolean isInPipMode = false;
 
     private boolean isTvDevice() {
         android.content.pm.PackageManager pm = getPackageManager();
@@ -96,6 +102,7 @@ public class TorrentPlayerActivity extends AppCompatActivity {
         btnFullscreen = findViewById(R.id.btn_fullscreen);
         btnBack = findViewById(R.id.btn_back);
         btnInfo = findViewById(R.id.btn_info);
+        btnPip = findViewById(R.id.btn_pip);
         textOverlayStats = findViewById(R.id.text_overlay_stats);
         overlayKeepCheck = findViewById(R.id.overlay_keep_check);
         seekBar = findViewById(R.id.seek_bar);
@@ -278,6 +285,18 @@ public class TorrentPlayerActivity extends AppCompatActivity {
 
         // Fullscreen Toggle logic
         btnFullscreen.setOnClickListener(v -> toggleFullscreen());
+        
+        // PiP button
+        if (btnPip != null) {
+            btnPip.setOnClickListener(v -> {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O &&
+                    getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
+                    enterPipMode();
+                } else {
+                    Toast.makeText(this, "Picture-in-Picture not supported on this device", Toast.LENGTH_SHORT).show();
+                }
+            });
+        }
         
         btnBack.setOnClickListener(v -> onBackPressed());
         
@@ -488,6 +507,71 @@ public class TorrentPlayerActivity extends AppCompatActivity {
             textOverlayStats.setText(overlayInfo);
         }
     }
+
+    // --- Picture-in-Picture Support ---
+    @Override
+    public void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        // Enter PiP when user presses home while video is playing
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O &&
+            mediaPlayer != null && mediaPlayer.isPlaying() &&
+            getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
+            
+            Log.d(TAG, "onUserLeaveHint: Entering PiP mode");
+            enterPipMode();
+        }
+    }
+
+    private void enterPipMode() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            try {
+                Rational aspectRatio = new Rational(16, 9);
+                if (mVideoAspectRatio > 0) {
+                    // Use actual video aspect ratio if available
+                    int width = (int) (mVideoAspectRatio * 1000);
+                    int height = 1000;
+                    aspectRatio = new Rational(width, height);
+                }
+                PictureInPictureParams params = new PictureInPictureParams.Builder()
+                        .setAspectRatio(aspectRatio)
+                        .build();
+                enterPictureInPictureMode(params);
+            } catch (IllegalStateException e) {
+                Log.e(TAG, "Error entering PiP mode", e);
+            }
+        }
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, Configuration newConfig) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
+        isInPipMode = isInPictureInPictureMode;
+        
+        if (isInPictureInPictureMode) {
+            Log.d(TAG, "Entered PiP mode");
+            // Hide all controls in PiP
+            if (controlsOverlay != null) controlsOverlay.setVisibility(View.GONE);
+            if (loadingProgress != null) loadingProgress.setVisibility(View.GONE);
+            if (statusText != null) statusText.setVisibility(View.GONE);
+        } else {
+            Log.d(TAG, "Exited PiP mode");
+            // Restore controls visibility based on playback state
+            if (mediaPlayer != null && mediaPlayer.isPlaying()) {
+                // Keep controls hidden during playback, user can tap to show
+            }
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        // Don't pause video if entering PiP mode
+        if (!isInPipMode && mediaPlayer != null && mediaPlayer.isPlaying()) {
+            // Optionally pause when leaving activity (not PiP)
+            // mediaPlayer.pause();
+        }
+    }
+    // --- End Picture-in-Picture Support ---
 
     @Override
     protected void onDestroy() {
