@@ -187,6 +187,8 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     // Track whether we saw page progress shortly after resume to avoid unnecessary recovery
     private volatile boolean resumeHadProgress = false;
     private volatile long resumeAtMs = 0L;
+    private volatile boolean hasEverResumed = false;
+    private volatile boolean tvBlankBounceRecoveryAttempted = false;
 
     private boolean isBlankOrNullUri(String uri) {
         if (uri == null) return true;
@@ -1757,6 +1759,32 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
              Log.e(TAG, "Error: No active session and session list is empty after onCreate logic.");
         }
 
+        if (isTvDevice()) {
+            mainHandler.postDelayed(() -> {
+                try {
+                    GeckoSession active = getActiveSession();
+                    if (active == null || geckoView == null) return;
+                    if (geckoView.getSession() != active) return;
+
+                    String url = sessionUrlMap.get(active);
+                    if (url == null) url = "";
+                    String lower = url.toLowerCase();
+
+                    if (lower.isEmpty() || lower.startsWith("about:blank")) {
+                        String fallback = getDefaultHomepageUrl();
+                        if (fallback == null || fallback.isEmpty()) fallback = "about:blank";
+                        Log.w(TAG, "[TVRestoreFix] Active tab is blank after restore; loading fallback: " + fallback);
+                        sessionUrlMap.put(active, fallback);
+                        mLastValidUrl = fallback;
+                        active.loadUri(fallback);
+                        updateUIForActiveSession();
+                    }
+                } catch (Throwable t) {
+                    Log.e(TAG, "[TVRestoreFix] Failed applying restore fallback", t);
+                }
+            }, 800);
+        }
+
         // Register download complete receiver
         downloadCompleteReceiver = new BroadcastReceiver() {
             @Override
@@ -3007,6 +3035,30 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                     }
                     // Ensure a control bar is visible on navigation start
                     ensureControlBarVisibleOnNavigation();
+
+                    if (isTvDevice()) {
+                        try {
+                            String saved = sessionUrlMap.get(session);
+                            boolean urlIsBlank = (url == null || url.toLowerCase().startsWith("about:blank"));
+                            if (urlIsBlank && saved != null && isHttpLike(saved) && !tvBlankBounceRecoveryAttempted) {
+                                tvBlankBounceRecoveryAttempted = true;
+                                final String target = saved;
+                                mainHandler.postDelayed(() -> {
+                                    try {
+                                        GeckoSession active = getActiveSession();
+                                        if (active != session || geckoView == null || geckoView.getSession() != session) return;
+                                        Log.w(TAG, "[TVRestoreFix] Detected about:blank bounce; forcing load of saved URL: " + target);
+                                        mLastValidUrl = target;
+                                        sessionUrlMap.put(session, target);
+                                        session.loadUri(target);
+                                        updateUIForActiveSession();
+                                    } catch (Throwable t) {
+                                        Log.w(TAG, "[TVRestoreFix] about:blank bounce recovery failed", t);
+                                    }
+                                }, 600);
+                            }
+                        } catch (Throwable ignored) {}
+                    }
                 }
             }
 
@@ -5605,6 +5657,9 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         resumeAtMs = System.currentTimeMillis();
         resumeHadProgress = false;
         resumeRecoveryAttempted = false;
+        tvBlankBounceRecoveryAttempted = false;
+        boolean isFirstResume = !hasEverResumed;
+        hasEverResumed = true;
         // Keep screen awake during browsing sessions
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         GeckoSession active = getActiveSession();
@@ -5623,7 +5678,7 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         }
         // TV-only: after a short delay, if we still have no progress and the page paint looks stalled,
         // attempt a gentle reload of the active session using the last known http(s) URL.
-        if (isTvDevice()) {
+        if (isTvDevice() && !isFirstResume) {
             mainHandler.postDelayed(new Runnable() {
                 @Override
                 public void run() {

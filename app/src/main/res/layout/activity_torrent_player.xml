@@ -90,6 +90,7 @@
 
         <!-- Top Bar (Back & Title) -->
         <LinearLayout
+            android:id="@+id/top_bar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_alignParentTop="true"
@@ -147,7 +148,7 @@
             android:id="@+id/text_overlay_stats"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_below="@+id/input_container" 
+            android:layout_below="@id/top_bar" 
             android:layout_centerHorizontal="true"
             android:layout_marginTop="60dp"
             android:textColor="#FFFFFF"
