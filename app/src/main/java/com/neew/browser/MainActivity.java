@@ -390,6 +390,34 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         } catch (Throwable ignored) {}
     }
 
+    private void forceReloadActiveSession(String reason) {
+        try {
+            final GeckoSession active = getActiveSession();
+            if (active == null) return;
+            if (geckoView == null) return;
+
+            if (geckoView.getSession() != active) {
+                Log.w(TAG, "[Reload] Re-attaching active session before reload (" + reason + ")");
+                geckoView.setSession(active);
+                updateUIForActiveSession();
+            }
+            try {
+                active.setActive(true);
+            } catch (Throwable ignored) {}
+
+            String url = sessionUrlMap.get(active);
+            if (url != null && isHttpLike(url)) {
+                Log.w(TAG, "[Reload] Forcing loadUri(" + url + ") (" + reason + ")");
+                active.loadUri(url);
+            } else {
+                Log.w(TAG, "[Reload] Forcing reload() (" + reason + ") url=" + url);
+                active.reload();
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "[Reload] forceReloadActiveSession failed (" + reason + ")", t);
+        }
+    }
+
     // Validate that the uBlock assets are real files, not Git LFS pointer stubs
     private boolean isUblockAssetsValid() {
         // Asset paths relative to assets/ folder
@@ -1953,13 +1981,22 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private int tvReqCounter = 1;
     // Track requests initiated from top-edge UP so we can react to ok=false immediately
     private final Map<String, Boolean> tvPendingTopEdgeUp = new HashMap<>();
+    private volatile String tvPendingMenuNavDir = null;
+    private volatile long tvLastEnsureExtAtMs = 0L;
 
     // Send a tv-menu-nav command to the content script via background port
     private void sendTvMenuNav(String dir) {
         org.mozilla.geckoview.WebExtension.Port port = tvPort;
         if (port == null) {
             Log.w(TAG, "[TV][DPAD] tv-menu-nav not sent: BG port null");
-            if (isTvDevice()) ensureTvScrollExtension();
+            if (isTvDevice()) {
+                tvPendingMenuNavDir = dir;
+                long now = System.currentTimeMillis();
+                if (now - tvLastEnsureExtAtMs > 1500) {
+                    tvLastEnsureExtAtMs = now;
+                    ensureTvScrollExtension();
+                }
+            }
             return;
         }
         try {
@@ -2128,6 +2165,13 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                                     public void onDisconnect(@NonNull org.mozilla.geckoview.WebExtension.Port p) {
                                         Log.d(TAG, "[TV][EXT] BG port disconnected");
                                         if (p == tvPort) tvPort = null;
+                                        if (isTvDevice()) {
+                                            long now = System.currentTimeMillis();
+                                            if (now - tvLastEnsureExtAtMs > 1500) {
+                                                tvLastEnsureExtAtMs = now;
+                                                ensureTvScrollExtension();
+                                            }
+                                        }
                                     }
                                 };
                                 port.setDelegate(portDelegate);
@@ -2141,6 +2185,20 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                                     Log.d(TAG, "[TV][EXT] announced tv-enabled=" + isTvDevice());
                                 } catch (Exception e) {
                                     Log.w(TAG, "[TV][EXT] failed to announce tv-enabled", e);
+                                }
+
+                                try {
+                                    final String pendingDir = tvPendingMenuNavDir;
+                                    tvPendingMenuNavDir = null;
+                                    if (pendingDir != null) {
+                                        JSONObject msg = new JSONObject();
+                                        msg.put("type", "tv-menu-nav");
+                                        msg.put("dir", pendingDir);
+                                        port.postMessage(msg);
+                                        Log.d(TAG, "[TV][DPAD] flushed pending tv-menu-nav dir=" + pendingDir);
+                                    }
+                                } catch (Exception e) {
+                                    Log.w(TAG, "[TV][DPAD] failed to flush pending tv-menu-nav", e);
                                 }
                             }
                         };
@@ -2505,10 +2563,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
         if (refreshButton != null) {
         refreshButton.setOnClickListener(v -> {
-            GeckoSession activeSession = getActiveSession();
-            if (activeSession != null) {
-                activeSession.reload();
-            }
+            forceReloadActiveSession("refreshButton");
         });
         }
 
@@ -2567,8 +2622,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
         if (minimizedRefreshButton != null) {
         minimizedRefreshButton.setOnClickListener(v -> {
-             GeckoSession activeSession = getActiveSession();
-             if (activeSession != null) activeSession.reload();
+             forceReloadActiveSession("minimizedRefreshButton");
         });
         }
 
@@ -4398,15 +4452,8 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                 Log.d(TAG, "[ResumeWatchdog] Skipping reload: not an http(s) URL (" + url + ")");
                 return;
             }
-            try {
-                Log.w(TAG, "[ResumeWatchdog] Triggering reload on active session due to stalled overlay");
-                active.reload();
-            } catch (Throwable t) {
-                if (url != null && !url.isEmpty()) {
-                    Log.w(TAG, "[ResumeWatchdog] reload() failed; calling loadUri(" + url + ")");
-                    active.loadUri(url);
-                }
-            }
+            Log.w(TAG, "[ResumeWatchdog] Triggering reload on active session due to stalled overlay");
+            forceReloadActiveSession("ResumeWatchdog");
         } catch (Throwable ignore) {}
     }
 
