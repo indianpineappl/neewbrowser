@@ -1268,7 +1268,18 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
     private boolean isTvDevice() {
         PackageManager pm = getPackageManager();
-        return pm.hasSystemFeature(PackageManager.FEATURE_LEANBACK);
+        // Check for leanback (Android TV standard)
+        if (pm.hasSystemFeature(PackageManager.FEATURE_LEANBACK)) {
+            return true;
+        }
+        // Fallback: check for FEATURE_TELEVISION (some TVs don't declare leanback)
+        if (pm.hasSystemFeature(PackageManager.FEATURE_TELEVISION)) {
+            return true;
+        }
+        // Additional fallback: check UI mode for TV
+        android.content.res.Configuration config = getResources().getConfiguration();
+        return (config.uiMode & android.content.res.Configuration.UI_MODE_TYPE_MASK) 
+                == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION;
     }
 
     private TvCursorView tvCursorView;
@@ -1983,6 +1994,8 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private final Map<String, Boolean> tvPendingTopEdgeUp = new HashMap<>();
     private volatile String tvPendingMenuNavDir = null;
     private volatile long tvLastEnsureExtAtMs = 0L;
+    private volatile boolean tvEnabledAnnounced = false;
+    private volatile boolean tvMessageDelegateSet = false;
 
     // Send a tv-menu-nav command to the content script via background port
     private void sendTvMenuNav(String dir) {
@@ -2034,7 +2047,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                         org.mozilla.geckoview.WebExtension.MessageDelegate bgDelegate = new org.mozilla.geckoview.WebExtension.MessageDelegate() {
                             @Override
                             public void onConnect(@NonNull org.mozilla.geckoview.WebExtension.Port port) {
-                                Log.d(TAG, "[TV][EXT] onConnect (BG) port=" + port);
+                                Log.i(TAG, "[TV][EXT] onConnect (BG) port=" + port + " wasAnnounced=" + tvEnabledAnnounced);
                                 org.mozilla.geckoview.WebExtension.PortDelegate portDelegate = new org.mozilla.geckoview.WebExtension.PortDelegate() {
                                     @Override
                                     public void onPortMessage(@NonNull Object message, @NonNull org.mozilla.geckoview.WebExtension.Port p) {
@@ -2164,7 +2177,10 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                                     @Override
                                     public void onDisconnect(@NonNull org.mozilla.geckoview.WebExtension.Port p) {
                                         Log.d(TAG, "[TV][EXT] BG port disconnected");
-                                        if (p == tvPort) tvPort = null;
+                                        if (p == tvPort) {
+                                            tvPort = null;
+                                            tvEnabledAnnounced = false; // Reset so we re-announce on reconnect
+                                        }
                                         if (isTvDevice()) {
                                             long now = System.currentTimeMillis();
                                             if (now - tvLastEnsureExtAtMs > 1500) {
@@ -2177,14 +2193,20 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                                 port.setDelegate(portDelegate);
                                 tvPort = port;
                                 // Announce TV mode to background so it (un)registers content.js accordingly
-                                try {
-                                    org.json.JSONObject tvMsg = new org.json.JSONObject();
-                                    tvMsg.put("type", "tv-enabled");
-                                    tvMsg.put("enabled", isTvDevice());
-                                    port.postMessage(tvMsg);
-                                    Log.d(TAG, "[TV][EXT] announced tv-enabled=" + isTvDevice());
-                                } catch (Exception e) {
-                                    Log.w(TAG, "[TV][EXT] failed to announce tv-enabled", e);
+                                // Send this every time we connect (including after process restarts)
+                                if (!tvEnabledAnnounced) {
+                                    try {
+                                        org.json.JSONObject tvMsg = new org.json.JSONObject();
+                                        tvMsg.put("type", "tv-enabled");
+                                        tvMsg.put("enabled", isTvDevice());
+                                        port.postMessage(tvMsg);
+                                        tvEnabledAnnounced = true;
+                                        Log.i(TAG, "[TV][EXT] announced tv-enabled=" + isTvDevice());
+                                    } catch (Exception e) {
+                                        Log.w(TAG, "[TV][EXT] failed to announce tv-enabled", e);
+                                    }
+                                } else {
+                                    Log.d(TAG, "[TV][EXT] tv-enabled already announced for this connection");
                                 }
 
                                 try {
@@ -2203,13 +2225,21 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                             }
                         };
                         // Namespace must match background.js connectNative('neewbrowser')
-                        runOnUiThread(() -> {
-                            try {
-                                ext.setMessageDelegate(bgDelegate, "neewbrowser");
-                            } catch (Exception e) {
-                                Log.e(TAG, "[TV][EXT] setMessageDelegate failed", e);
-                            }
-                        });
+                        // CRITICAL: Only set the delegate once to avoid breaking existing connections
+                        if (!tvMessageDelegateSet) {
+                            runOnUiThread(() -> {
+                                try {
+                                    Log.i(TAG, "[TV][EXT] Setting message delegate for namespace 'neewbrowser'");
+                                    ext.setMessageDelegate(bgDelegate, "neewbrowser");
+                                    tvMessageDelegateSet = true;
+                                    Log.i(TAG, "[TV][EXT] Message delegate set successfully for namespace 'neewbrowser'");
+                                } catch (Exception e) {
+                                    Log.e(TAG, "[TV][EXT] setMessageDelegate failed", e);
+                                }
+                            });
+                        } else {
+                            Log.d(TAG, "[TV][EXT] Message delegate already set, skipping re-registration");
+                        }
                         // No session delegate; background relays to content.
                     }
                 });
@@ -4313,6 +4343,15 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
                      captureSnapshot(sessionCurrentlyInView);
                 }
             }
+            
+            // CRITICAL: Deactivate the old session to stop media playback before releasing
+            try {
+                sessionCurrentlyInView.setActive(false);
+                Log.d(TAG, "Deactivated old session: " + (sessionUrlMap.containsKey(sessionCurrentlyInView) ? sessionUrlMap.get(sessionCurrentlyInView) : "N/A"));
+            } catch (Throwable t) {
+                Log.e(TAG, "Failed to deactivate old session", t);
+            }
+            
             geckoView.releaseSession();
             Log.d(TAG, "Released session from GeckoView: " + (sessionUrlMap.containsKey(sessionCurrentlyInView) ? sessionUrlMap.get(sessionCurrentlyInView) : "N/A"));
         }
@@ -4328,6 +4367,15 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
 
         geckoView.setSession(targetSession);
         Log.d(TAG, "Attached session to GeckoView: " + (sessionUrlMap.containsKey(targetSession) ? sessionUrlMap.get(targetSession) : "N/A"));
+        
+        // CRITICAL: Activate the session so Gecko resumes rendering
+        try {
+            targetSession.setActive(true);
+            Log.d(TAG, "Activated switched-to session index=" + targetIndex);
+        } catch (Throwable t) {
+            Log.e(TAG, "Failed to activate session on switch", t);
+        }
+        
         // captureSnapshot(targetSession); // CAPTURE SNAPSHOT OF THE NEWLY ACTIVE TAB -> REMOVED, handled by onPageStop
 
         updateUIForActiveSession();
@@ -5457,8 +5505,11 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         View decorView = getWindow().getDecorView();
-        // Hide navigation and status bars
-        int uiOptions = View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+        // Hide navigation and status bars with stable layout to prevent surface recreation
+        int uiOptions = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                 | View.SYSTEM_UI_FLAG_FULLSCREEN
                 | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
         decorView.setSystemUiVisibility(uiOptions);
