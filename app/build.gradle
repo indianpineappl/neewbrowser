@@ -107,11 +107,6 @@ android {
             // Keep native libraries uncompressed and properly aligned
             keepDebugSymbols += ['**/*.so']
         }
-        // Exclude old non-16KB-compliant libjlibtorrent from TorrentStream-Android AAR
-        exclude 'lib/arm64-v8a/libjlibtorrent-1.2.5.0.so'
-        exclude 'lib/armeabi-v7a/libjlibtorrent-1.2.5.0.so'
-        exclude 'lib/x86/libjlibtorrent-1.2.5.0.so'
-        exclude 'lib/x86_64/libjlibtorrent-1.2.5.0.so'
     }
     
     lintOptions {
