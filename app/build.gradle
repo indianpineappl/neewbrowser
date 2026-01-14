@@ -42,6 +42,17 @@ tasks.matching { it.name in [
         'packageDebug', 'packageRelease'
 ] }.configureEach { it.dependsOn tasks.named('verifyUblockAssets') }
 
+configurations.all {
+    exclude group: 'com.frostwire.jlibtorrent', module: 'jlibtorrent'
+    exclude group: 'com.frostwire.jlibtorrent', module: 'jlibtorrent-android-arm'
+    exclude group: 'com.frostwire.jlibtorrent', module: 'jlibtorrent-android-arm64'
+    exclude group: 'com.frostwire.jlibtorrent', module: 'jlibtorrent-android-x86'
+    exclude group: 'com.frostwire.jlibtorrent', module: 'jlibtorrent-android-x86_64'
+}
+
+// Note: TorrentStream-Android AAR contains old non-16KB-compliant libjlibtorrent-1.2.5.0.so
+// We exclude it in packagingOptions below and rely on our 16KB-compliant libtorrent4j.so from libs/
+
 android {
     compileSdkVersion 36
     defaultConfig {
@@ -96,6 +107,11 @@ android {
             // Keep native libraries uncompressed and properly aligned
             keepDebugSymbols += ['**/*.so']
         }
+        // Exclude old non-16KB-compliant libjlibtorrent from TorrentStream-Android AAR
+        exclude 'lib/arm64-v8a/libjlibtorrent-1.2.5.0.so'
+        exclude 'lib/armeabi-v7a/libjlibtorrent-1.2.5.0.so'
+        exclude 'lib/x86/libjlibtorrent-1.2.5.0.so'
+        exclude 'lib/x86_64/libjlibtorrent-1.2.5.0.so'
     }
     
     lintOptions {
