@@ -423,7 +423,7 @@ public class TorrentPlayerActivity extends AppCompatActivity {
                 });
                 vout.attachViews();
                 
-                // Set Event Listener for playback start
+                // Set Event Listener for playback start and errors
                 mediaPlayer.setEventListener(event -> {
                     if (event.type == MediaPlayer.Event.Playing) {
                         runOnUiThread(() -> {
@@ -434,6 +434,23 @@ public class TorrentPlayerActivity extends AppCompatActivity {
                     }
                     if (event.type == MediaPlayer.Event.Vout) {
                         runOnUiThread(this::adjustAspectRatio);
+                    }
+                    if (event.type == MediaPlayer.Event.EncounteredError) {
+                        runOnUiThread(() -> {
+                            Log.w(TAG, "VLC playback error - file may need more download time");
+                            statusText.setText("File is still downloading. Playback will start when more data is available...");
+                            statusText.setVisibility(View.VISIBLE);
+                        });
+                    }
+                    if (event.type == MediaPlayer.Event.EndReached) {
+                        runOnUiThread(() -> {
+                            // Check if torrent is still downloading
+                            if (torrentService != null && torrentService.getLastProgress() < 99.0f) {
+                                Log.i(TAG, "Playback ended but download incomplete - file may be corrupted or needs more data");
+                                statusText.setText("Download continuing... Playback will resume when more data is available.");
+                                statusText.setVisibility(View.VISIBLE);
+                            }
+                        });
                     }
                 });
             }

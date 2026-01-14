@@ -180,7 +180,8 @@ dependencies {
         exclude group: 'com.frostwire.jlibtorrent', module: 'jlibtorrent-android-arm'
         exclude group: 'com.frostwire.jlibtorrent', module: 'jlibtorrent-android-x86'
     }
-    implementation 'org.videolan.android:libvlc-all:3.6.0'
+    // VLC 3.6.3 with 16KB page size support
+    implementation 'org.videolan.android:libvlc-all:3.6.3'
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'

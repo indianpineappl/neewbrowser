@@ -43,8 +43,10 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
     ));
     private boolean isAudioFile = false;
     private boolean hasReceivedLibraryProgress = false;
+    private boolean audioFileReadyNotified = false;
     private long totalFileSize = 0;
     private long lastReportedSize = 0;
+    private long lastReportedTime = 0;
     private Runnable audioProgressRunnable;
 
     public TorrentStreamEngine(Context context) {
@@ -65,8 +67,10 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
         this.lastStatus = null;
         this.isAudioFile = false;
         this.hasReceivedLibraryProgress = false;
+        this.audioFileReadyNotified = false;
         this.totalFileSize = 0;
         this.lastReportedSize = 0;
+        this.lastReportedTime = 0;
         this.audioProgressRunnable = null;
 
         File saveDir;
@@ -152,6 +156,7 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
 
     @Override
     public synchronized void onStreamPrepared(Torrent torrent) {
+        Log.i(TAG, "[CALLBACK] onStreamPrepared called, torrent=" + (torrent != null ? "present" : "null"));
         currentTorrent = torrent;
         final Listener listener = currentListener;
         final String sessionId = currentSessionId;
@@ -162,6 +167,7 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
             // Detect if this is an audio file by checking the file extension
             File mediaFile = torrent.getVideoFile();
             if (mediaFile != null) {
+                Log.i(TAG, "onStreamPrepared: mediaFile=" + mediaFile.getAbsolutePath());
                 String fileName = mediaFile.getName().toLowerCase();
                 int dotIndex = fileName.lastIndexOf('.');
                 if (dotIndex > 0) {
@@ -169,8 +175,12 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
                     isAudioFile = AUDIO_EXTENSIONS.contains(extension);
                     if (isAudioFile) {
                         Log.i(TAG, "onStreamPrepared: Detected AUDIO file by extension: " + extension);
+                    } else {
+                        Log.i(TAG, "onStreamPrepared: Detected VIDEO file by extension: " + extension);
                     }
                 }
+            } else {
+                Log.w(TAG, "onStreamPrepared: mediaFile is NULL");
             }
             
             // Get total file size from torrent metadata
@@ -178,6 +188,8 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
                 if (torrent.getTorrentHandle() != null && torrent.getTorrentHandle().torrentFile() != null) {
                     totalFileSize = torrent.getTorrentHandle().torrentFile().totalSize();
                     Log.i(TAG, "onStreamPrepared: Total file size from metadata: " + totalFileSize + " bytes");
+                } else {
+                    Log.w(TAG, "onStreamPrepared: TorrentHandle or torrentFile is null");
                 }
             } catch (Exception e) {
                 Log.w(TAG, "onStreamPrepared: Could not get total size from metadata", e);
@@ -193,6 +205,7 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
 
     @Override
     public synchronized void onStreamStarted(Torrent torrent) {
+        Log.i(TAG, "[CALLBACK] onStreamStarted called, torrent=" + (torrent != null ? "present" : "null"));
         currentTorrent = torrent;
         final Listener listener = currentListener;
         final String sessionId = currentSessionId;
@@ -217,7 +230,33 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
                     startAudioProgressPolling(sid);
                 }
             }, 1000);
+        } else {
+            // For video files, also start polling as fallback since onStreamProgress may not fire
+            Log.i(TAG, "onStreamStarted: Video file - starting fallback progress polling");
+            startVideoProgressPolling(sessionId);
         }
+    }
+    
+    /**
+     * Start polling file size for video files as fallback since onStreamProgress may not fire.
+     */
+    private void startVideoProgressPolling(final String sessionId) {
+        Runnable videoProgressRunnable = new Runnable() {
+            @Override
+            public void run() {
+                // Stop polling if we've received library progress or session changed
+                if (hasReceivedLibraryProgress || currentSessionId == null || !currentSessionId.equals(sessionId)) {
+                    Log.d(TAG, "Video polling stopped: libraryProgress=" + hasReceivedLibraryProgress);
+                    return;
+                }
+                
+                checkFileProgress(sessionId);
+                
+                // Continue polling every 2 seconds
+                mainHandler.postDelayed(this, 2000);
+            }
+        };
+        mainHandler.postDelayed(videoProgressRunnable, 2000);
     }
     
     /**
@@ -234,7 +273,7 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
                     return;
                 }
                 
-                checkAudioFileProgress(sessionId);
+                checkFileProgress(sessionId);
                 
                 // Continue polling every 2 seconds
                 mainHandler.postDelayed(this, 2000);
@@ -244,10 +283,11 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
     }
     
     /**
-     * Check audio file download progress by measuring file size on disk.
+     * Check file download progress by measuring file size on disk.
+     * Works for both audio and video files.
      */
-    private synchronized void checkAudioFileProgress(String sessionId) {
-        if (currentTorrent == null || !isAudioFile || totalFileSize <= 0) {
+    private synchronized void checkFileProgress(String sessionId) {
+        if (currentTorrent == null || totalFileSize <= 0) {
             return;
         }
         
@@ -262,16 +302,36 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
                 return; // No change
             }
             
+            // Calculate download speed based on file growth over time
+            long currentTime = System.currentTimeMillis();
+            long bytesDownloaded = currentSize - lastReportedSize;
+            long timeElapsed = currentTime - lastReportedTime;
+            long speedBytesPerSecond = 0;
+            
+            if (lastReportedTime > 0 && timeElapsed > 0) {
+                // Speed = bytes downloaded / seconds elapsed
+                speedBytesPerSecond = (bytesDownloaded * 1000) / timeElapsed;
+            }
+            
             lastReportedSize = currentSize;
+            lastReportedTime = currentTime;
             float progress = Math.min((float) currentSize / totalFileSize * 100f, 99.9f);
             
             final Listener listener = currentListener;
             if (listener != null && sessionId.equals(currentSessionId)) {
-                // Estimate speed based on file growth (rough estimate)
-                long estimatedSpeed = currentSize / 2; // Very rough estimate
-                mainHandler.post(() -> listener.onProgress(sessionId, progress, 0, estimatedSpeed));
-                Log.d(TAG, "Audio progress (file size): " + currentSize + "/" + totalFileSize + 
+                final long speed = speedBytesPerSecond;
+                mainHandler.post(() -> listener.onProgress(sessionId, progress, 0, speed));
+                Log.d(TAG, "File progress (polling): " + currentSize + "/" + totalFileSize + 
                         " bytes (" + String.format("%.1f", progress) + "%)");
+                
+                // Manually trigger onReadyForPlayback when we have enough data (5%)
+                // since the library's onStreamReady callback is not firing reliably
+                if (progress >= 5.0f && !audioFileReadyNotified) {
+                    audioFileReadyNotified = true;
+                    final File file = mediaFile;
+                    Log.i(TAG, "Media file ready for playback (polling): " + file.getAbsolutePath() + " (" + String.format("%.1f", progress) + "%)");
+                    mainHandler.post(() -> listener.onReadyForPlayback(sessionId, file));
+                }
             }
         } catch (Exception e) {
             Log.w(TAG, "Error checking audio file progress", e);
@@ -302,6 +362,7 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
 
     @Override
     public synchronized void onStreamProgress(Torrent torrent, StreamStatus status) {
+        Log.d(TAG, "[CALLBACK] onStreamProgress called, status=" + (status != null ? String.format("%.1f%%", status.progress) : "null"));
         currentTorrent = torrent;
         lastStatus = status;
         
@@ -315,6 +376,18 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
             final int seeds = status.seeds;
             final long speedBytesPerSecond = status.downloadSpeed;
             mainHandler.post(() -> listener.onProgress(sessionId, progress, seeds, speedBytesPerSecond));
+            
+            // WORKAROUND: onStreamReady is not being called reliably by the library
+            // Manually trigger onReadyForPlayback when we have 5% downloaded
+            if (progress >= 5.0f && !audioFileReadyNotified && torrent != null) {
+                File mediaFile = torrent.getVideoFile();
+                if (mediaFile != null && mediaFile.exists()) {
+                    audioFileReadyNotified = true; // Reuse flag for both audio and video
+                    final File file = mediaFile;
+                    Log.i(TAG, "Media file ready for playback (via progress): " + file.getAbsolutePath() + " (" + String.format("%.1f", progress) + "%)");
+                    mainHandler.post(() -> listener.onReadyForPlayback(sessionId, file));
+                }
+            }
         }
     }
 

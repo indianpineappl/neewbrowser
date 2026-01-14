@@ -39,7 +39,15 @@
         android:theme="@style/Theme.NeewBrowser"
         android:hardwareAccelerated="true"
         android:usesCleartextTraffic="true"
+        android:extractNativeLibs="false"
+        android:enableOnBackInvokedCallback="true"
+        tools:targetApi="34"
         tools:replace="android:allowBackup">
+        
+        <!-- Support for 16KB page sizes (Android 15+) with VLC 3.6.3 -->
+        <property
+            android:name="android.app.16kb_page_size.enabled"
+            android:value="true" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

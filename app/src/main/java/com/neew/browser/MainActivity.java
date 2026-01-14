@@ -5762,7 +5762,17 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         GeckoSession active = getActiveSession();
         if (active != null) {
-            if (geckoView.getSession() != active) {
+            // For TV devices after sleep/wake, always re-attach to recover from compositor detachment
+            if (isTvDevice() && !isFirstResume) {
+                Log.d(TAG, "onResume: TV device - forcing session re-attachment to recover from sleep");
+                try {
+                    geckoView.releaseSession();
+                } catch (Throwable t) {
+                    Log.w(TAG, "onResume: Failed to release session", t);
+                }
+                geckoView.setSession(active);
+                updateUIForActiveSession();
+            } else if (geckoView.getSession() != active) {
                 Log.d(TAG, "onResume: Re-attaching active session to GeckoView");
                 geckoView.setSession(active);
                 updateUIForActiveSession();

@@ -67,10 +67,30 @@
     }
   }
 
+  // Helper to re-inject content script into all existing tabs
+  async function reinjectContentScript() {
+    try {
+      const tabs = await browser.tabs.query({});
+      for (const t of tabs || []) {
+        try {
+          if (typeof t.id === 'number') {
+            await browser.tabs.executeScript(t.id, { file: 'content.js', allFrames: true, runAt: 'document_idle' });
+            try { console.log('[TV][EXT][BG] re-injected content.js into tab', t.id); } catch(_) {}
+          }
+        } catch (e) {
+          // Tab might not be ready or script already injected, ignore
+        }
+      }
+    } catch (e) {
+      try { console.log('[TV][EXT][BG] re-inject failed', String(e)); } catch(_) {}
+    }
+  }
+
   // Helper to wire an app Port with relays
   function bindAppPort(p) {
     appPort = p;
     try { console.log('[TV][EXT][BG] appPort bound'); } catch (_) {}
+    
     p.onMessage.addListener(async (msg) => {
       try { console.log('[TV][EXT][BG] App->BG msg', msg); } catch (_) {}
       const id = msg && msg.id; const cmd = msg && msg.cmd;
@@ -79,6 +99,10 @@
         if (msg && msg.type === 'tv-enabled') {
           await setTvEnabled(!!msg.enabled);
           try { console.log('[TV][EXT][BG] tv-enabled set to', !!msg.enabled); } catch(_) {}
+          // Re-inject into existing tabs whenever TV is enabled (including on reconnect)
+          if (!!msg.enabled) {
+            await reinjectContentScript();
+          }
           return;
         }
         if (lastContentTabId == null) {
