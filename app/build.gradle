@@ -60,10 +60,7 @@ android {
         minSdkVersion 26
         targetSdkVersion 35
         // versionCode and versionName will be set below using Git
-        // Only include 64-bit ABIs - GeckoView doesn't provide 16KB-compliant libs for 32-bit
-        ndk {
-            abiFilters "arm64-v8a", "x86_64"
-        }
+        // ndk.abiFilters removed - using splits instead for per-ABI APKs
         versionName "1.7.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -162,15 +159,15 @@ android {
     defaultConfig.versionName = getVersionNameFromGit()
     defaultConfig.versionCode = getVersionCodeFromGit() // Respects manually set versionCode above
 
-    // ABI splits disabled - using ndk.abiFilters instead for 16KB compliance
-    // splits {
-    //     abi {
-    //         enable true
-    //         reset()
-    //         include 'arm64-v8a', 'x86_64'
-    //         universalApk false
-    //     }
-    // }
+    // ABI splits enabled - 64-bit APKs are 16KB compliant, 32-bit APKs for legacy devices
+    splits {
+        abi {
+            enable true
+            reset()
+            include 'arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86'
+            universalApk false
+        }
+    }
 }
 
 ext {
