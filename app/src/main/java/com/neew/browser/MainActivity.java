@@ -2064,7 +2064,8 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                                 org.mozilla.geckoview.WebExtension.PortDelegate portDelegate = new org.mozilla.geckoview.WebExtension.PortDelegate() {
                                     @Override
                                     public void onPortMessage(@NonNull Object message, @NonNull org.mozilla.geckoview.WebExtension.Port p) {
-                                        Log.d(TAG, "[TV][EXT] onPortMessage BG msg=" + String.valueOf(message));
+                                        // Avoid verbose logging on every message - only log occasionally for debug
+                                        // Log.d(TAG, "[TV][EXT] onPortMessage BG msg=" + String.valueOf(message));
                                         try {
                                             String id = null;
                                             String type = null;
@@ -2074,7 +2075,8 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                                                 id = jo.optString("id", null);
                                                 type = jo.optString("type", null);
                                                 if (jo.has("ok")) ok = jo.optBoolean("ok", false);
-                                                if ("tv-menu-nav-ack".equals(type)) { return; }
+                                                // Early-exit for noisy messages to reduce main-thread load
+                                                if ("tv-menu-nav-ack".equals(type) || "tv-warmup".equals(type)) { return; }
                                                 // Surface content-script diagnostics
                                                 if ("tv-ext-log".equals(type)) {
                                                     String text = jo.optString("text", "");
@@ -2095,7 +2097,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                                                     id = jo.optString("id", null);
                                                     type = jo.optString("type", null);
                                                     if (jo.has("ok")) ok = jo.optBoolean("ok", false);
-                                                    if ("tv-menu-nav-ack".equals(type)) {
+                                                    if ("tv-menu-nav-ack".equals(type) || "tv-warmup".equals(type)) {
                                                         return;
                                                     }
                                                     if ("tv-ext-log".equals(type)) {
@@ -2119,7 +2121,7 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
                                                 if (typeObj != null) type = String.valueOf(typeObj);
                                                 Object okObj = map.get("ok");
                                                 if (okObj instanceof Boolean) ok = (Boolean) okObj;
-                                                if ("tv-menu-nav-ack".equals(type)) { return; }
+                                                if ("tv-menu-nav-ack".equals(type) || "tv-warmup".equals(type)) { return; }
                                                 if ("tv-ext-log".equals(type)) {
                                                     Object textObj = map.get("text");
                                                     String text = textObj != null ? String.valueOf(textObj) : "";
