@@ -71,6 +71,11 @@ public class TorrentPlayerActivity extends AppCompatActivity {
     private android.os.Handler handler = new android.os.Handler();
     private Runnable updateProgressAction;
     private Runnable fileReadyWatcher;
+    private Runnable playbackRetryAction;
+    private File currentPlaybackFile;
+    private float lastRetryProgress = -1f;
+    private boolean retryScheduled = false;
+    private boolean hasStartedPlayback = false;
     
     // Store aspect ratio for resizing on rotation
     private double mVideoAspectRatio = 0;
@@ -140,6 +145,12 @@ public class TorrentPlayerActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+    }
+
+    @Override
     protected void onStart() {
         super.onStart();
         Intent intent = new Intent(this, TorrentService.class);
@@ -155,6 +166,55 @@ public class TorrentPlayerActivity extends AppCompatActivity {
         }
     }
 
+    private void schedulePlaybackRetry() {
+        if (retryScheduled) return;
+
+        if (torrentService == null || !torrentService.isStreaming()) {
+            return;
+        }
+
+        retryScheduled = true;
+
+        if (playbackRetryAction != null) {
+            handler.removeCallbacks(playbackRetryAction);
+        }
+
+        playbackRetryAction = new Runnable() {
+            @Override
+            public void run() {
+                retryScheduled = false;
+
+                if (torrentService == null || currentPlaybackFile == null) return;
+                if (!currentPlaybackFile.exists()) return;
+
+                float p = torrentService.getLastProgress();
+                if (p <= lastRetryProgress + 0.5f) {
+                    schedulePlaybackRetry();
+                    return;
+                }
+                lastRetryProgress = p;
+
+                try {
+                    if (mediaPlayer != null) {
+                        mediaPlayer.stop();
+                        Media media = new Media(libVLC, Uri.fromFile(currentPlaybackFile));
+                        media.addOption(":file-caching=1500");
+                        media.addOption(":live-caching=1500");
+                        media.addOption(":clock-jitter=0");
+                        media.addOption(":clock-synchro=0");
+                        mediaPlayer.setMedia(media);
+                        mediaPlayer.play();
+                    }
+                } catch (Throwable t) {
+                    Log.w(TAG, "Retry playback failed", t);
+                    schedulePlaybackRetry();
+                }
+            }
+        };
+
+        handler.postDelayed(playbackRetryAction, 3000);
+    }
+
     private ServiceConnection connection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName className, IBinder service) {
@@ -166,11 +226,13 @@ public class TorrentPlayerActivity extends AppCompatActivity {
             File videoFile = torrentService.getCurrentVideoFile();
             if (videoFile != null && videoFile.exists()) {
                 loadingProgress.setVisibility(View.GONE);
-                statusText.setVisibility(View.GONE);
+                statusText.setText("Buffering stream...");
+                statusText.setVisibility(View.VISIBLE);
                 textVideoTitle.setText(videoFile.getName());
                 initPlayer(videoFile);
             } else if (torrentService.isStreaming()) {
-                statusText.setText("Connecting to stream...");
+                statusText.setText("Connecting to peers...");
+                statusText.setVisibility(View.VISIBLE);
                 startFileReadyWatcher();
             } else {
                 // Service exists but no active stream
@@ -402,6 +464,8 @@ public class TorrentPlayerActivity extends AppCompatActivity {
 
     private void initPlayer(File videoFile) {
         try {
+            currentPlaybackFile = videoFile;
+            hasStartedPlayback = false;
             if (libVLC == null) {
                 ArrayList<String> options = new ArrayList<>();
                 options.add("--no-drop-late-frames");
@@ -427,9 +491,29 @@ public class TorrentPlayerActivity extends AppCompatActivity {
                 mediaPlayer.setEventListener(event -> {
                     if (event.type == MediaPlayer.Event.Playing) {
                         runOnUiThread(() -> {
+                            hasStartedPlayback = true;
                             controlsOverlay.setVisibility(View.GONE); // Hide initially
+                            statusText.setVisibility(View.GONE);
                             handler.post(updateProgressAction);
                             adjustAspectRatio();
+                        });
+                    }
+                    if (event.type == MediaPlayer.Event.Opening) {
+                        runOnUiThread(() -> {
+                            hasStartedPlayback = false;
+                            statusText.setText("Opening stream...");
+                            statusText.setVisibility(View.VISIBLE);
+                        });
+                    }
+                    if (event.type == MediaPlayer.Event.Buffering) {
+                        runOnUiThread(() -> {
+                            if (hasStartedPlayback) {
+                                // VLC can keep emitting Buffering=100% during normal playback; don't show it.
+                                return;
+                            }
+                            float pct = event.getBuffering();
+                            statusText.setText(String.format("Buffering... %.0f%%", pct));
+                            statusText.setVisibility(View.VISIBLE);
                         });
                     }
                     if (event.type == MediaPlayer.Event.Vout) {
@@ -441,6 +525,8 @@ public class TorrentPlayerActivity extends AppCompatActivity {
                             statusText.setText("File is still downloading. Playback will start when more data is available...");
                             statusText.setVisibility(View.VISIBLE);
                         });
+
+                        schedulePlaybackRetry();
                     }
                     if (event.type == MediaPlayer.Event.EndReached) {
                         runOnUiThread(() -> {
@@ -451,13 +537,16 @@ public class TorrentPlayerActivity extends AppCompatActivity {
                                 statusText.setVisibility(View.VISIBLE);
                             }
                         });
+
+                        schedulePlaybackRetry();
                     }
                 });
             }
 
             Media media = new Media(libVLC, Uri.fromFile(videoFile));
-            // Network caching hint for smoother playback of growing files
-            media.addOption(":network-caching=1500");
+            // File caching hint for smoother playback of growing files
+            media.addOption(":file-caching=1500");
+            media.addOption(":live-caching=1500");
             media.addOption(":clock-jitter=0");
             media.addOption(":clock-synchro=0");
             
@@ -483,7 +572,8 @@ public class TorrentPlayerActivity extends AppCompatActivity {
                 File videoFile = torrentService.getCurrentVideoFile();
                 if (videoFile != null && videoFile.exists()) {
                     loadingProgress.setVisibility(View.GONE);
-                    statusText.setVisibility(View.GONE);
+                    statusText.setText("Buffering stream...");
+                    statusText.setVisibility(View.VISIBLE);
                     textVideoTitle.setText(videoFile.getName());
                     initPlayer(videoFile);
                     return; // Do not reschedule, we're playing now
@@ -506,7 +596,12 @@ public class TorrentPlayerActivity extends AppCompatActivity {
         if (torrentService == null) return;
 
         if (!torrentService.hasLastStatus()) {
-            // Still fetching metadata or connecting
+            // Still fetching metadata or connecting: keep a persistent message so the user
+            // knows something is happening.
+            if (statusText != null) {
+                statusText.setText("Connecting to peers... Waiting for metadata / seeds...");
+                statusText.setVisibility(View.VISIBLE);
+            }
             return;
         }
 
@@ -599,6 +694,9 @@ public class TorrentPlayerActivity extends AppCompatActivity {
         }
         if (updateProgressAction != null) {
             handler.removeCallbacks(updateProgressAction);
+        }
+        if (playbackRetryAction != null) {
+            handler.removeCallbacks(playbackRetryAction);
         }
 
         // Cleanup Media Player

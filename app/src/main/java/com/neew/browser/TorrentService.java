@@ -201,10 +201,8 @@ public class TorrentService extends Service {
                 // Return early to let thread finish
                 return; 
             } else {
-                // Streaming and NOT saving -> Delete temp
-                if (videoFile.delete()) {
-                    Log.i(TAG, "Deleted temp file");
-                }
+                // Streaming and NOT saving -> keep temp file so playback can start.
+                Log.i(TAG, "Streaming session stopped; keeping temp file for playback: " + videoFile.getAbsolutePath());
             }
         }
 
@@ -487,6 +485,12 @@ public class TorrentService extends Service {
             if (currentProgress > lastLoggedProgress + 5 || currentProgress == 100) {
                 Log.d(TAG, String.format("Torrent Progress: %.1f%%, Seeds: %d, Speed: %s", progress, seeds, speedStr));
                 lastLoggedProgress = currentProgress;
+            }
+
+            // Do not auto-stop streaming sessions: stopping triggers cleanup and can delete the
+            // temp file before the player has a chance to open it.
+            if (isStreaming && !shouldSave) {
+                return;
             }
 
             if (progress >= 99.8f && !isStoppingForCompletion) {

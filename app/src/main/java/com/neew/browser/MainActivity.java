@@ -406,13 +406,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             } catch (Throwable ignored) {}
 
             String url = sessionUrlMap.get(active);
-            if (url != null && isHttpLike(url)) {
-                Log.w(TAG, "[Reload] Forcing loadUri(" + url + ") (" + reason + ")");
-                active.loadUri(url);
-            } else {
-                Log.w(TAG, "[Reload] Forcing reload() (" + reason + ") url=" + url);
-                active.reload();
-            }
+            // Always use reload() to ensure the page actually refreshes, even if URL is the same
+            Log.w(TAG, "[Reload] Forcing reload() (" + reason + ") url=" + url);
+            active.reload(GeckoSession.LOAD_FLAGS_BYPASS_CACHE);
         } catch (Throwable t) {
             Log.w(TAG, "[Reload] forceReloadActiveSession failed (" + reason + ")", t);
         }
@@ -3271,8 +3267,8 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
 
             @Override
             public void onLocationChange(GeckoSession session, @Nullable String newUri, @NonNull List<GeckoSession.PermissionDelegate.ContentPermission> perms, @NonNull Boolean hasUserGesture) {
-                Log.d(TAG, "NavDelegate: onLocationChange for session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A") + " to URI: " + newUri +
-                           " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
+        Log.d(TAG, "NavDelegate: onLocationChange for session: " + (sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : "N/A") + " to URI: " + newUri +
+                   " Perms: " + perms.size() + " HasGesture: " + hasUserGesture);
                 if (!isTvDevice()) {
                     // Track URL
                     if (newUri != null) {

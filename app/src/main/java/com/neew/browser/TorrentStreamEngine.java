@@ -13,6 +13,8 @@ import com.github.se_bastiaan.torrentstream.TorrentStream;
 import com.github.se_bastiaan.torrentstream.listeners.TorrentListener;
 
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
@@ -48,6 +50,7 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
     private long lastReportedSize = 0;
     private long lastReportedTime = 0;
     private Runnable audioProgressRunnable;
+    private String currentMediaExtension;
 
     public TorrentStreamEngine(Context context) {
         this.appContext = context.getApplicationContext();
@@ -72,6 +75,7 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
         this.lastReportedSize = 0;
         this.lastReportedTime = 0;
         this.audioProgressRunnable = null;
+        this.currentMediaExtension = null;
 
         File saveDir;
         if (streamMode) {
@@ -163,6 +167,22 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
         try {
             torrent.startDownload();
             Log.d(TAG, "Invoked torrent.startDownload()");
+
+            // Improve streaming behavior: prioritize sequential pieces so the file header becomes valid early.
+            try {
+                if (torrent.getTorrentHandle() != null) {
+                    try {
+                        torrent.getTorrentHandle().getClass()
+                                .getMethod("setSequentialDownload", boolean.class)
+                                .invoke(torrent.getTorrentHandle(), true);
+                        Log.i(TAG, "Enabled sequential download on torrent handle");
+                    } catch (Throwable ignored) {
+                        // Method not available in this jlibtorrent version.
+                    }
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "Could not enable sequential download", t);
+            }
             
             // Detect if this is an audio file by checking the file extension
             File mediaFile = torrent.getVideoFile();
@@ -173,6 +193,7 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
                 if (dotIndex > 0) {
                     String extension = fileName.substring(dotIndex + 1);
                     isAudioFile = AUDIO_EXTENSIONS.contains(extension);
+                    currentMediaExtension = extension;
                     if (isAudioFile) {
                         Log.i(TAG, "onStreamPrepared: Detected AUDIO file by extension: " + extension);
                     } else {
@@ -297,14 +318,19 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
                 return;
             }
             
-            long currentSize = mediaFile.length();
-            if (currentSize == lastReportedSize) {
+            long downloadedBytes = getDownloadedBytesFromHandle(currentTorrent);
+            if (downloadedBytes < 0) {
+                // Fallback to file length (can be misleading if libtorrent preallocates).
+                downloadedBytes = mediaFile.length();
+            }
+
+            if (downloadedBytes == lastReportedSize) {
                 return; // No change
             }
             
             // Calculate download speed based on file growth over time
             long currentTime = System.currentTimeMillis();
-            long bytesDownloaded = currentSize - lastReportedSize;
+            long bytesDownloaded = downloadedBytes - lastReportedSize;
             long timeElapsed = currentTime - lastReportedTime;
             long speedBytesPerSecond = 0;
             
@@ -313,20 +339,21 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
                 speedBytesPerSecond = (bytesDownloaded * 1000) / timeElapsed;
             }
             
-            lastReportedSize = currentSize;
+            lastReportedSize = downloadedBytes;
             lastReportedTime = currentTime;
-            float progress = Math.min((float) currentSize / totalFileSize * 100f, 99.9f);
+
+            float progress = Math.min((float) downloadedBytes / totalFileSize * 100f, 99.9f);
             
             final Listener listener = currentListener;
             if (listener != null && sessionId.equals(currentSessionId)) {
                 final long speed = speedBytesPerSecond;
                 mainHandler.post(() -> listener.onProgress(sessionId, progress, 0, speed));
-                Log.d(TAG, "File progress (polling): " + currentSize + "/" + totalFileSize + 
+                Log.d(TAG, "File progress (polling): " + downloadedBytes + "/" + totalFileSize +
                         " bytes (" + String.format("%.1f", progress) + "%)");
-                
+
                 // Manually trigger onReadyForPlayback when we have enough data (5%)
                 // since the library's onStreamReady callback is not firing reliably
-                if (progress >= 5.0f && !audioFileReadyNotified) {
+                if (!audioFileReadyNotified && progress >= 0.5f && isMediaHeaderReady(mediaFile)) {
                     audioFileReadyNotified = true;
                     final File file = mediaFile;
                     Log.i(TAG, "Media file ready for playback (polling): " + file.getAbsolutePath() + " (" + String.format("%.1f", progress) + "%)");
@@ -356,7 +383,12 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
             Log.w(TAG, "onStreamReady: mediaFile is null");
         }
         if (listener != null && sessionId != null && mediaFile != null) {
-            mainHandler.post(() -> listener.onReadyForPlayback(sessionId, mediaFile));
+            // Gate readiness on a real file header AND enough actually-downloaded bytes.
+            // For video (especially MKV), the header can appear long before the first playable clusters are available.
+            if (!audioFileReadyNotified && isMediaHeaderReady(mediaFile) && isEnoughDataForPlayback(torrent)) {
+                audioFileReadyNotified = true;
+                mainHandler.post(() -> listener.onReadyForPlayback(sessionId, mediaFile));
+            }
         }
     }
 
@@ -365,9 +397,11 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
         Log.d(TAG, "[CALLBACK] onStreamProgress called, status=" + (status != null ? String.format("%.1f%%", status.progress) : "null"));
         currentTorrent = torrent;
         lastStatus = status;
-        
-        // Mark that library is sending progress - stop audio polling if active
-        hasReceivedLibraryProgress = true;
+
+        // Only stop polling once the library is providing meaningful progress.
+        if (status != null && (status.progress > 0.1f || status.downloadSpeed > 0)) {
+            hasReceivedLibraryProgress = true;
+        }
 
         final Listener listener = currentListener;
         final String sessionId = currentSessionId;
@@ -377,18 +411,103 @@ public class TorrentStreamEngine implements TorrentEngine, TorrentListener {
             final long speedBytesPerSecond = status.downloadSpeed;
             mainHandler.post(() -> listener.onProgress(sessionId, progress, seeds, speedBytesPerSecond));
             
-            // WORKAROUND: onStreamReady is not being called reliably by the library
-            // Manually trigger onReadyForPlayback when we have 5% downloaded
-            if (progress >= 5.0f && !audioFileReadyNotified && torrent != null) {
+            // Gate readiness on a real file header AND enough actually-downloaded bytes.
+            if (!audioFileReadyNotified && torrent != null) {
                 File mediaFile = torrent.getVideoFile();
-                if (mediaFile != null && mediaFile.exists()) {
-                    audioFileReadyNotified = true; // Reuse flag for both audio and video
+                if (mediaFile != null && mediaFile.exists() && isMediaHeaderReady(mediaFile) && isEnoughDataForPlayback(torrent)) {
+                    audioFileReadyNotified = true;
                     final File file = mediaFile;
                     Log.i(TAG, "Media file ready for playback (via progress): " + file.getAbsolutePath() + " (" + String.format("%.1f", progress) + "%)");
                     mainHandler.post(() -> listener.onReadyForPlayback(sessionId, file));
+                } else if (mediaFile != null && mediaFile.exists() && isMediaHeaderReady(mediaFile)) {
+                    long done = getDownloadedBytesFromHandle(torrent);
+                    Log.d(TAG, "Header ready but not enough data yet (via progress). totalDone=" + done + " bytes, progress=" + String.format("%.1f", progress) + "%");
                 }
             }
         }
+    }
+
+    private boolean isEnoughDataForPlayback(Torrent torrent) {
+        // For audio we can start much earlier.
+        if (isAudioFile) return true;
+
+        long done = getDownloadedBytesFromHandle(torrent);
+        if (done < 0) {
+            // If we can't get totalDone(), fall back to being conservative.
+            return false;
+        }
+
+        // Video minimum buffer:
+        // - absolute minimum: 32 MiB
+        // - or 1% of total size (whichever is larger), capped to 128 MiB
+        long minBytes = 32L * 1024L * 1024L;
+        if (totalFileSize > 0) {
+            long onePercent = totalFileSize / 100L;
+            if (onePercent > minBytes) minBytes = onePercent;
+        }
+        long maxBytes = 128L * 1024L * 1024L;
+        if (minBytes > maxBytes) minBytes = maxBytes;
+
+        return done >= minBytes;
+    }
+
+    private long getDownloadedBytesFromHandle(Torrent torrent) {
+        try {
+            if (torrent == null || torrent.getTorrentHandle() == null) return -1;
+            Object status = torrent.getTorrentHandle().status();
+            if (status == null) return -1;
+            // jlibtorrent exposes totalDone() on TorrentStatus
+            return (long) status.getClass().getMethod("totalDone").invoke(status);
+        } catch (Throwable ignored) {
+            return -1;
+        }
+    }
+
+    private boolean isMediaHeaderReady(File f) {
+        if (f == null || !f.exists() || !f.canRead()) return false;
+
+        // If we don't know the extension yet, just check that the header isn't all zeros.
+        String ext = currentMediaExtension;
+        if (ext == null) {
+            ext = "";
+        }
+
+        byte[] header = new byte[16];
+        try (FileInputStream in = new FileInputStream(f)) {
+            int n = in.read(header);
+            if (n <= 0) return false;
+        } catch (IOException e) {
+            return false;
+        }
+
+        boolean allZero = true;
+        for (byte b : header) {
+            if (b != 0) {
+                allZero = false;
+                break;
+            }
+        }
+        if (allZero) return false;
+
+        // MKV/WebM: EBML header begins with 1A 45 DF A3
+        if ("mkv".equals(ext) || "webm".equals(ext)) {
+            return (header[0] == (byte) 0x1A
+                    && header[1] == (byte) 0x45
+                    && header[2] == (byte) 0xDF
+                    && header[3] == (byte) 0xA3);
+        }
+
+        // MP4/M4V: should contain 'ftyp' in bytes 4..7
+        if ("mp4".equals(ext) || "m4v".equals(ext)) {
+            return (header.length >= 8
+                    && header[4] == 'f'
+                    && header[5] == 't'
+                    && header[6] == 'y'
+                    && header[7] == 'p');
+        }
+
+        // For other formats, non-zero header is a decent heuristic.
+        return true;
     }
 
     @Override

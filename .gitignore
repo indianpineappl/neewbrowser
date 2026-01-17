@@ -37,3 +37,10 @@ app/release/
 
 # Ignore large play store logo
 app/src/main/main_logo-playstore.png 
+
+# Sensitive local signing / Play App Signing artifacts
+app/neew-browser-certificate.der
+app/neew-browser-certificate.pem
+app/pepk.jar
+app/run_pepk.sh
+app/rustore-pepk.zip
