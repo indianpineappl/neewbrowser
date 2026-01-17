@@ -57,12 +57,13 @@ android {
     compileSdkVersion 36
     defaultConfig {
         applicationId "com.neew.browser"
-        minSdkVersion 23
+        minSdkVersion 26
         targetSdkVersion 35
         // versionCode and versionName will be set below using Git
-        // ndk {
-        //     abiFilters "arm64-v8a"
-        // }
+        // Only include 64-bit ABIs - GeckoView doesn't provide 16KB-compliant libs for 32-bit
+        ndk {
+            abiFilters "arm64-v8a", "x86_64"
+        }
         versionName "1.7.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -106,6 +107,8 @@ android {
             useLegacyPackaging = false
             // Keep native libraries uncompressed and properly aligned
             keepDebugSymbols += ['**/*.so']
+            // Exclude old non-16KB-compliant jlibtorrent libraries from TorrentStream-Android
+            excludes += ['**/libjlibtorrent-1.2.5.0.so']
         }
     }
     
@@ -159,18 +162,19 @@ android {
     defaultConfig.versionName = getVersionNameFromGit()
     defaultConfig.versionCode = getVersionCodeFromGit() // Respects manually set versionCode above
 
-    splits {
-        abi {
-            enable true
-            reset()
-            include 'arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64'
-            universalApk true // Changed to true to ensure TV compatibility
-        }
-    }
+    // ABI splits disabled - using ndk.abiFilters instead for 16KB compliance
+    // splits {
+    //     abi {
+    //         enable true
+    //         reset()
+    //         include 'arm64-v8a', 'x86_64'
+    //         universalApk false
+    //     }
+    // }
 }
 
 ext {
-    geckoviewVersion = "144.0.20251027123126"
+    geckoviewVersion = "147.0.20260116091309"
     geckoviewChannel = "stable"
 }
 
