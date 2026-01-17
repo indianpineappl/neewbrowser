@@ -390,6 +390,10 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
         } catch (Throwable ignored) {}
     }
 
+    private long lastForceReloadAtMs = 0L;
+    private String lastForceReloadReason = null;
+    private String lastForceReloadUrl = null;
+
     private void forceReloadActiveSession(String reason) {
         try {
             final GeckoSession active = getActiveSession();
@@ -406,8 +410,21 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             } catch (Throwable ignored) {}
 
             String url = sessionUrlMap.get(active);
-            // Always use reload() to ensure the page actually refreshes, even if URL is the same
-            Log.w(TAG, "[Reload] Forcing reload() (" + reason + ") url=" + url);
+
+            // Debounce: avoid tight loops that can starve input (ANR) and spike CPU in Gecko tab processes.
+            long now = System.currentTimeMillis();
+            if (now - lastForceReloadAtMs < 2000
+                    && ((lastForceReloadUrl == null && url == null) || (lastForceReloadUrl != null && lastForceReloadUrl.equals(url)))
+                    && ((lastForceReloadReason == null && reason == null) || (lastForceReloadReason != null && lastForceReloadReason.equals(reason)))) {
+                Log.w(TAG, "[Reload] Skipping forced reload (debounced) reason=" + reason + " url=" + url);
+                return;
+            }
+            lastForceReloadAtMs = now;
+            lastForceReloadReason = reason;
+            lastForceReloadUrl = url;
+
+            // Prefer reload() to avoid creating new navigation work (loadUri can trigger heavy reload loops).
+            Log.w(TAG, "[Reload] Forcing reload(BYPASS_CACHE) (" + reason + ") url=" + url);
             active.reload(GeckoSession.LOAD_FLAGS_BYPASS_CACHE);
         } catch (Throwable t) {
             Log.w(TAG, "[Reload] forceReloadActiveSession failed (" + reason + ")", t);
