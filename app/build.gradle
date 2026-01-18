@@ -57,7 +57,7 @@ android {
     compileSdkVersion 36
     defaultConfig {
         applicationId "com.neew.browser"
-        minSdkVersion 26
+        minSdkVersion 23
         targetSdkVersion 35
         // versionCode and versionName will be set below using Git
         // ndk.abiFilters removed - using splits instead for per-ABI APKs
@@ -171,7 +171,7 @@ android {
 }
 
 ext {
-    geckoviewVersion = "147.0.20260116091309"
+    geckoviewVersion = "144.0.20251027123126"
     geckoviewChannel = "stable"
 }
 
