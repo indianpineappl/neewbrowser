@@ -173,6 +173,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private static final String TAG = "MainActivity";
     private static final String SNAPSHOT_DIRECTORY_NAME = "tab_snapshots";
 
+    // Low-memory safety: when the system is under pressure, disable snapshot work and reduce tab count
+    private volatile boolean snapshotsEnabled = true;
+
     // --- Ephemeral popup tracking (suppress blank/new-tab until it proves useful) ---
     private final java.util.Set<GeckoSession> ephemeralSessions = java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<GeckoSession, Boolean>());
     private final java.util.Map<GeckoSession, Runnable> ephemeralTimeoutTasks = new java.util.concurrent.ConcurrentHashMap<>();
@@ -1079,9 +1082,9 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private String mLastValidUrl = "";
     private boolean isControlBarExpanded = true;
     // Cursor acceleration
-    private int currentStepSize = 30; // base step size in px
-    private static final int MAX_STEP_SIZE = 60;
-    private static final int STEP_INCREMENT = 10;
+    private int currentStepSize = 45; // base step size in px (increased for faster TV navigation)
+    private static final int MAX_STEP_SIZE = 90;
+    private static final int STEP_INCREMENT = 12;
     private static final long ACCELERATION_INTERVAL = 100L; // ms
     private long accelerationStartTime = 0L;
     // Gesture timing for simulated touch
@@ -1190,8 +1193,11 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
     private WebExtension tvScrollExtension = null; // content.js under assets/webext
     private boolean tvElementScrollEnabled = true; // developer toggle can wire later
     private float tvDevicePixelRatio = 1.0f; // CSS px conversion cache
-    private static final int TV_EXT_SCROLL_CSS_PX = 100; // element scroll step in CSS px
+    private static final int TV_EXT_SCROLL_CSS_PX = 150; // element scroll step in CSS px (increased for faster scrolling)
     private static final int TV_EXT_TIMEOUT_MS = 600; // timeout before fallback
+    // Throttle extension scroll messages: drop rapid-fire DPAD presses within this window
+    private static final long TV_EXT_SCROLL_THROTTLE_MS = 50L;
+    private long lastExtScrollMsgMs = 0L;
     private Button panelCancelButton;
 
     private static final int REQUEST_CODE_WRITE_STORAGE = 1001;
@@ -2312,6 +2318,13 @@ public class MainActivity extends AppCompatActivity implements ScrollDelegate, G
             if (onFail != null) onFail.run();
             return;
         }
+
+        // Throttle: skip if we just sent a scroll message within TV_EXT_SCROLL_THROTTLE_MS
+        long now = android.os.SystemClock.uptimeMillis();
+        if (now - lastExtScrollMsgMs < TV_EXT_SCROLL_THROTTLE_MS) {
+            return; // silently drop — cursor will still move, next press will scroll
+        }
+        lastExtScrollMsgMs = now;
 
         // Compute cursor center relative to GeckoView (device pixels). Send device coords to content;
         // let content convert using its window.devicePixelRatio. This avoids mismatches.
@@ -4404,6 +4417,10 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
             Log.w(TAG, "Cannot capture snapshot, session or geckoView is null.");
             return;
         }
+
+        if (!snapshotsEnabled) {
+            return;
+        }
         // Only capture for the session currently attached to the GeckoView
         if (geckoView.getSession() != session) {
             Log.d(TAG, "Snapshot skipped: Session index " + geckoSessionList.indexOf(session) + " is not the active session in GeckoView.");
@@ -4423,47 +4440,47 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         GeckoResult<Bitmap> result = geckoView.capturePixels();
         result.accept(originalBitmap -> {
             if (originalBitmap != null) {
-                Log.d(TAG, "Snapshot captured successfully for session index: " + geckoSessionList.indexOf(session) +
-                        " (Original size: " + originalBitmap.getWidth() + "x" + originalBitmap.getHeight() + ")");
+                // Move all CPU-intensive bitmap work (resize, pixel check, disk save) off main thread
+                final String url = sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : null;
+                ioExecutor.execute(() -> {
+                    try {
+                        int originalWidth = originalBitmap.getWidth();
+                        int originalHeight = originalBitmap.getHeight();
+                        if (originalWidth == 0 || originalHeight == 0) {
+                            originalBitmap.recycle();
+                            return;
+                        }
+                        float aspectRatio = (float) originalHeight / originalWidth;
+                        int targetHeight = Math.round(SNAPSHOT_WIDTH * aspectRatio);
+                        if (targetHeight <= 0) targetHeight = 1;
 
-                // Resize to target width while preserving aspect ratio
-                int originalWidth = originalBitmap.getWidth();
-                int originalHeight = originalBitmap.getHeight();
-                if (originalWidth == 0 || originalHeight == 0) {
-                    Log.w(TAG, "Snapshot has zero dimensions, skipping resize/storage.");
-                    originalBitmap.recycle();
-                    return;
-                }
-                float aspectRatio = (float) originalHeight / originalWidth;
-                int targetHeight = Math.round(SNAPSHOT_WIDTH * aspectRatio);
-                if (targetHeight <= 0) targetHeight = 1;
+                        Bitmap resizedBitmap = Bitmap.createScaledBitmap(originalBitmap, SNAPSHOT_WIDTH, targetHeight, true);
+                        originalBitmap.recycle();
 
-                Bitmap resizedBitmap = Bitmap.createScaledBitmap(originalBitmap, SNAPSHOT_WIDTH, targetHeight, true);
-                originalBitmap.recycle();
+                        if (isBitmapMostlyWhite(resizedBitmap)) {
+                            resizedBitmap.recycle();
+                            return;
+                        }
 
-                // Skip saving/display if snapshot is mostly white (common when compositor paused)
-                if (isBitmapMostlyWhite(resizedBitmap)) {
-                    Log.w(TAG, "Snapshot mostly white; skipping store/display for session index: " + geckoSessionList.indexOf(session));
-                    resizedBitmap.recycle();
-                    return;
-                }
+                        // Disk save on this background thread
+                        if (url != null) {
+                            saveSnapshotToDisk(resizedBitmap, url);
+                        }
 
-                Log.d(TAG, "Snapshot resized to: " + resizedBitmap.getWidth() + "x" + resizedBitmap.getHeight());
-                String url = sessionUrlMap.containsKey(session) ? sessionUrlMap.get(session) : null;
-                sessionSnapshotMap.put(session, resizedBitmap);
-                sessionSnapshotUrlMap.put(session, url);
-                if (url != null) {
-                    saveSnapshotToDisk(resizedBitmap, url);
-                }
-            } else {
-                Log.w(TAG, "Snapshot capture returned null bitmap for session index: " + geckoSessionList.indexOf(session));
+                        // Only touch the in-memory maps on the main thread
+                        final Bitmap finalBitmap = resizedBitmap;
+                        runOnUiThread(() -> {
+                            sessionSnapshotMap.put(session, finalBitmap);
+                            sessionSnapshotUrlMap.put(session, url);
+                        });
+                    } catch (Throwable t) {
+                        Log.e(TAG, "Snapshot processing failed on background thread", t);
+                    }
+                });
             }
-        }, e -> {
-            Log.e(TAG, "Snapshot capture failed for session index: " + geckoSessionList.indexOf(session), e);
         });
     }
 
-    // Heuristic: quickly check if bitmap is mostly white by sampling a small grid
     private boolean isBitmapMostlyWhite(Bitmap bmp) {
         try {
             if (bmp == null || bmp.isRecycled()) return true;
@@ -4490,6 +4507,43 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
             return whiteish >= (int) (total * 0.9f);
         } catch (Throwable t) {
             return false;
+        }
+    }
+
+    private void closeAllTabsExceptActive(String reason) {
+        try {
+            if (geckoSessionList == null || geckoSessionList.size() <= 1) return;
+            int keepIndex = activeSessionIndex;
+            if (keepIndex < 0 || keepIndex >= geckoSessionList.size()) {
+                keepIndex = 0;
+            }
+            Log.w(TAG, "[LowMem] Closing background tabs (keeping index=" + keepIndex + ") reason=" + reason + " tabs=" + geckoSessionList.size());
+
+            for (int i = geckoSessionList.size() - 1; i >= 0; i--) {
+                if (i == keepIndex) continue;
+                closeTab(i);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "[LowMem] closeAllTabsExceptActive failed reason=" + reason, t);
+        }
+    }
+
+    @Override
+    public void onLowMemory() {
+        super.onLowMemory();
+        Log.w(TAG, "[LowMem] onLowMemory");
+        snapshotsEnabled = false;
+        closeAllTabsExceptActive("onLowMemory");
+    }
+
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        Log.w(TAG, "[LowMem] onTrimMemory level=" + level);
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+                || level == android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE) {
+            snapshotsEnabled = false;
+            closeAllTabsExceptActive("onTrimMemory(" + level + ")");
         }
     }
 
@@ -5094,16 +5148,17 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
     }
 
     private String getUserAgent(String mode) {
-        String version = BuildConfig.VERSION_NAME;
-        String geckoVersion = "129.0"; // Keep synchronized with GeckoView version
-        
+        // IMPORTANT: Must use Firefox/Gecko UA because the engine IS Gecko.
+        // Using Chrome UA causes Cloudflare to detect the mismatch (InstallTrigger,
+        // mozOrientation, Window.fullScreen etc. are Firefox-only APIs) and flag
+        // the browser as a spoofed bot, causing infinite challenge loops.
+        // Firefox 152 matches our GeckoView 152 engine version.
         switch (mode) {
             case "desktop":
-                return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 IndicBrowser/" + version;
+                return "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0";
             case "mobile":
             default:
-                // Use Android-style mobile user agent that Google recognizes
-                return "Mozilla/5.0 (Linux; Android 14; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 IndicBrowser/" + version;
+                return "Mozilla/5.0 (Android 14; Mobile; rv:152.0) Gecko/152.0 Firefox/152.0";
         }
     }
 
@@ -5157,8 +5212,11 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         // --- Apply Cookie Settings ---
         boolean cookiesEnabled = prefs.getBoolean(PREF_COOKIES_ENABLED, true); // Default true
         Log.d(TAG, "Applying dynamic Cookies enabled: " + cookiesEnabled);
+        // Use ACCEPT_ALL when cookies are enabled to ensure Cloudflare challenge cookies
+        // (__cf_bm, cf_clearance) are never blocked. ACCEPT_NON_TRACKERS incorrectly
+        // classifies CF challenge cookies as trackers, causing challenges to loop forever.
         cbSettings.setCookieBehavior(
-            cookiesEnabled ? ContentBlocking.CookieBehavior.ACCEPT_NON_TRACKERS // Corrected constant
+            cookiesEnabled ? ContentBlocking.CookieBehavior.ACCEPT_ALL
                            : ContentBlocking.CookieBehavior.ACCEPT_NONE);
 
         // --- Apply Ad Blocker Settings (Default/Implicit) ---
@@ -5300,10 +5358,24 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         }
 
         // Reload the active session to apply changes.
+        // If UA mode changed, navigate to the URL fresh (not just reload) so the server
+        // can redirect based on the new UA (e.g., desktop->mobile URL redirect).
         GeckoSession activeSession = getActiveSession();
         if (activeSession != null) {
-            Log.d(TAG, "Settings Panel: Reloading active session to apply settings.");
-            activeSession.reload();
+            boolean uaModeChanged = (oldDesktopModeState != newDesktopModeStateFromSwitch);
+            if (uaModeChanged) {
+                String currentUrl = sessionUrlMap.containsKey(activeSession) ? sessionUrlMap.get(activeSession) : null;
+                if (currentUrl != null && !currentUrl.isEmpty() && !currentUrl.startsWith("about:")) {
+                    Log.d(TAG, "Settings Panel: UA mode changed, navigating fresh to: " + currentUrl);
+                    activeSession.loadUri(currentUrl);
+                } else {
+                    Log.d(TAG, "Settings Panel: UA mode changed but no valid URL, reloading.");
+                    activeSession.reload();
+                }
+            } else {
+                Log.d(TAG, "Settings Panel: Reloading active session to apply settings.");
+                activeSession.reload();
+            }
         } else {
             Log.w(TAG, "Settings Panel: No active session to reload after applying settings.");
         }
@@ -5936,16 +6008,18 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
             Log.d(TAG, "[StorageDebug] Restoring tab: " + url);
             createNewTab(url, false); // This will add the session to geckoSessionList and sessionUrlMap
             
-            // --- Attempt to load snapshot from disk ---
+            // --- Attempt to load snapshot from disk (off main thread) ---
             GeckoSession justCreatedSession = geckoSessionList.get(geckoSessionList.size() - 1); // Get the session that was just added
-            Bitmap loadedSnapshot = loadSnapshotFromDisk(url);
-            if (loadedSnapshot != null) {
-                sessionSnapshotMap.put(justCreatedSession, loadedSnapshot);
-                sessionSnapshotUrlMap.put(justCreatedSession, url);
-                Log.d(TAG, "[StorageDebug] Loaded snapshot from disk for: " + url);
-            } else {
-                Log.d(TAG, "[StorageDebug] No snapshot found on disk for: " + url);
-            }
+            final String snapshotUrl = url;
+            ioExecutor.execute(() -> {
+                Bitmap loadedSnapshot = loadSnapshotFromDisk(snapshotUrl);
+                if (loadedSnapshot != null) {
+                    runOnUiThread(() -> {
+                        sessionSnapshotMap.put(justCreatedSession, loadedSnapshot);
+                        sessionSnapshotUrlMap.put(justCreatedSession, snapshotUrl);
+                    });
+                }
+            });
             // --- End attempt to load snapshot ---
 
             restoredIndex++;
@@ -7232,7 +7306,7 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
             }
         } else if (event.getAction() == KeyEvent.ACTION_UP) {
             isKeyPressed = false;
-            currentStepSize = 30; // Reset to base
+            currentStepSize = 45; // Reset to base
         }
 
         if (isKeyPressed) {
@@ -7543,8 +7617,8 @@ newTabSession.setMediaSessionDelegate(MainActivity.this); // Use MainActivity.th
         }
 
         final PanZoomController pzc = activeSession.getPanZoomController();
-        // A reasonable distance to scroll with one D-pad press
-        final int scrollDistance = 100;
+        // Scroll distance per D-pad press (increased for faster TV scrolling)
+        final int scrollDistance = 160;
         final float direction = scrollUp ? -1.0f : 1.0f;
 
         // Use PanZoomController's built-in scrollBy method for a reliable scroll.

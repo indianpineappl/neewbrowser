@@ -1,18 +1,22 @@
 (function () {
   'use strict';
 
+  // --- SUBFRAME GATE (Task #5) ---
+  // In subframes, only activate if explicitly delegated via postMessage.
+  // This prevents dozens of ad-iframe instances from running the full script.
+  const isTopFrame = (window.top === window);
+
   function detectTvMode() {
     try {
       if (typeof window !== 'undefined') {
         if (window.__NEEW_TV_DISABLED__ === true) return false;
         if (window.__NEEW_TV_MODE__ === true) return true;
       }
-
       try {
-        const sessionFlag = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('neew.tv.enabled') : null;
-        const localFlag = typeof localStorage !== 'undefined' ? localStorage.getItem('neew.tv.enabled') : null;
         const localOff = typeof localStorage !== 'undefined' ? localStorage.getItem('neew.tv.disabled') : null;
         if (localOff === '1' || localOff === 'true') return false;
+        const sessionFlag = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('neew.tv.enabled') : null;
+        const localFlag = typeof localStorage !== 'undefined' ? localStorage.getItem('neew.tv.enabled') : null;
         if (sessionFlag === '1' || sessionFlag === 'true' || localFlag === '1' || localFlag === 'true') return true;
       } catch (_) {}
       const ua = (typeof navigator !== 'undefined' && navigator.userAgent) ? navigator.userAgent : '';
@@ -25,23 +29,29 @@
   if (typeof window !== 'undefined') {
     try { window.__NEEW_TV_MODE__ = true; } catch (_) {}
   }
-  if (!detectTvMode()) {
-    try { console.debug('[TV][EXT][CT] disabled: non-TV mode'); } catch (_) {}
+  if (!detectTvMode()) { return; }
+
+  // --- Subframe: only listen for delegated postMessage, skip everything else ---
+  if (!isTopFrame) {
+    window.addEventListener('message', (evt) => {
+      const data = evt && evt.data;
+      if (!data || typeof data !== 'object') return;
+      if (data.type === 'tv-frame-focus' && data.payload) {
+        handleFocusAtPoint({ ...data.payload, local: true });
+      } else if (data.type === 'tv-frame-scroll' && data.payload) {
+        handleScrollAtPoint({ ...data.payload, local: true });
+      }
+    }, true);
+    // No warmup, no browser.runtime listener, no hover/cursor — only delegated scroll/focus
     return;
   }
 
-  function ctEmit(text) {
-    try { console.log(text); } catch (_) {}
-    try { browser.runtime && browser.runtime.sendMessage && browser.runtime.sendMessage({ type: 'tv-ext-log', text }); } catch (_) {}
-  }
+  // --- TOP FRAME ONLY from here ---
 
   function warmUp() {
     try {
       browser.runtime && browser.runtime.sendMessage && browser.runtime.sendMessage({ type: 'tv-warmup' });
-      ctEmit('[TV][EXT][CT] warmup sent');
-    } catch (e) {
-      try { console.warn('[TV][EXT][CT] warmup failed', e); } catch (_) {}
-    }
+    } catch (_) {}
   }
 
   if (document.readyState === 'loading') {
@@ -50,18 +60,36 @@
     warmUp();
   }
 
-  const focusHandledIds = new Set();
-  const scrollHandledIds = new Set();
+  // --- SCROLLABLE CACHE (Task #3) ---
+  // Cache the last-used element -> scrollable container mapping to avoid DOM walk on every press.
+  let cachedScrollElement = null;
+  let cachedScrollTarget = null;
+  let cacheInvalidateTimer = null;
+  const CACHE_TTL_MS = 2000; // invalidate after 2s idle
 
+  function invalidateScrollCache() {
+    cachedScrollElement = null;
+    cachedScrollTarget = null;
+  }
+
+  function touchScrollCache() {
+    if (cacheInvalidateTimer) clearTimeout(cacheInvalidateTimer);
+    cacheInvalidateTimer = setTimeout(invalidateScrollCache, CACHE_TTL_MS);
+  }
+
+  // Invalidate cache on navigation within the page
+  try {
+    const obs = new MutationObserver(() => { invalidateScrollCache(); });
+    obs.observe(document.documentElement, { childList: true, subtree: false });
+  } catch (_) {}
+
+  const scrollHandledIds = new Set();
+  const focusHandledIds = new Set();
   let lastHover = null;
 
   function sendMenuNavAck() {
     try {
-      if (window.top === window) {
-        browser.runtime && browser.runtime.sendMessage && browser.runtime.sendMessage({ type: 'tv-menu-nav-ack' });
-      } else {
-        window.parent && window.parent.postMessage({ type: 'tv-menu-nav-ack' }, '*');
-      }
+      browser.runtime && browser.runtime.sendMessage && browser.runtime.sendMessage({ type: 'tv-menu-nav-ack' });
     } catch (_) {}
   }
 
@@ -79,34 +107,36 @@
   }
 
   function getScrollableAncestor(el) {
-    // Generic scrollable ancestor detection that works across a wide range of layouts.
-    // We intentionally treat any non-"visible" overflow as potentially scrollable
-    // and then require that the scrollable dimension actually has extra content.
     if (!el || el === document) {
       return document.scrollingElement || document.documentElement || document.body;
     }
-
-    const root = document.scrollingElement || document.documentElement || document.body;
     let current = el;
-
     while (current && current !== document && current !== document.documentElement && current !== document.body) {
       const style = window.getComputedStyle(current);
       const overflowY = style.overflowY;
       const overflowX = style.overflowX;
-
-      const scrollableY = overflowY && overflowY !== 'visible';
-      const scrollableX = overflowX && overflowX !== 'visible';
-      const canScrollY = scrollableY && (current.scrollHeight - current.clientHeight > 1);
-      const canScrollX = scrollableX && (current.scrollWidth - current.clientWidth > 1);
-
-      if (canScrollY || canScrollX) {
-        return current;
-      }
-
+      const canScrollY = (overflowY && overflowY !== 'visible') && (current.scrollHeight - current.clientHeight > 1);
+      const canScrollX = (overflowX && overflowX !== 'visible') && (current.scrollWidth - current.clientWidth > 1);
+      if (canScrollY || canScrollX) return current;
       current = current.parentElement || current.parentNode;
     }
+    return document.scrollingElement || document.documentElement || document.body;
+  }
 
-    return root;
+  function getCachedScrollable(element) {
+    // If the element under cursor matches our cache, skip the DOM walk
+    if (cachedScrollElement && cachedScrollElement === element && cachedScrollTarget) {
+      // Quick validation: is the cached target still scrollable?
+      if (cachedScrollTarget.scrollHeight - cachedScrollTarget.clientHeight > 1) {
+        return cachedScrollTarget;
+      }
+      invalidateScrollCache();
+    }
+    const target = getScrollableAncestor(element);
+    cachedScrollElement = element;
+    cachedScrollTarget = target;
+    touchScrollCache();
+    return target;
   }
 
   function clampToViewport(value, max) {
@@ -116,22 +146,14 @@
   function sendFocusDone(id, ok, used) {
     if (!id) return;
     try {
-      if (window.top === window) {
-        browser.runtime && browser.runtime.sendMessage && browser.runtime.sendMessage({ id, type: 'focusAtPoint:done', ok, used });
-      } else {
-        window.parent && window.parent.postMessage({ type: 'tv-frame-focus:done', id, ok, used }, '*');
-      }
+      browser.runtime && browser.runtime.sendMessage && browser.runtime.sendMessage({ id, type: 'focusAtPoint:done', ok, used });
     } catch (_) {}
   }
 
   function sendScrollDone(id, ok, used) {
     if (!id) return;
     try {
-      if (window.top === window) {
-        browser.runtime && browser.runtime.sendMessage && browser.runtime.sendMessage({ id, type: 'scrollAtPoint:done', ok, used });
-      } else {
-        window.parent && window.parent.postMessage({ type: 'tv-frame-scroll:done', id, ok, used }, '*');
-      }
+      browser.runtime && browser.runtime.sendMessage && browser.runtime.sendMessage({ id, type: 'scrollAtPoint:done', ok, used });
     } catch (_) {}
   }
 
@@ -139,9 +161,7 @@
     try {
       targetIframe.contentWindow && targetIframe.contentWindow.postMessage({ type, payload }, '*');
       return true;
-    } catch (_) {
-      return false;
-    }
+    } catch (_) { return false; }
   }
 
   function findIframeUnderPoint(x, y) {
@@ -151,7 +171,7 @@
 
   async function handleFocusAtPoint(msg) {
     const { id, x = 0, y = 0, dpr, local } = msg;
-    if (!local && window.top !== window) return;
+    if (!local && !isTopFrame) return;
     if (id && focusHandledIds.has(id)) return;
     if (id) focusHandledIds.add(id);
 
@@ -159,6 +179,7 @@
     const xCss = clampToViewport(x / devicePixelRatio, window.innerWidth - 1);
     const yCss = clampToViewport(y / devicePixelRatio, window.innerHeight - 1);
 
+    // Delegate to iframe if point falls within one
     const iframe = !local ? findIframeUnderPoint(xCss, yCss) : null;
     if (!local && iframe && delegateToIframe('tv-frame-focus', iframe, { id, x: xCss, y: yCss, dpr: devicePixelRatio, local: true })) {
       return;
@@ -170,27 +191,17 @@
       if (id) focusHandledIds.delete(id);
       return;
     }
-
-    if (target.nodeType === Node.TEXT_NODE) {
-      target = target.parentElement;
-    }
-
+    if (target.nodeType === Node.TEXT_NODE) target = target.parentElement;
     if (target) {
-      if (target.tabIndex < 0) {
-        target.setAttribute('tabindex', '0');
-      }
-      try {
-        target.focus({ preventScroll: true });
-      } catch (_) {}
+      if (target.tabIndex < 0) target.setAttribute('tabindex', '0');
+      try { target.focus({ preventScroll: true }); } catch (_) {}
     }
-
     sendFocusDone(id, true, target && target.tagName ? target.tagName.toLowerCase() : 'unknown');
     if (id) focusHandledIds.delete(id);
   }
 
   function tryScrollElement(node, deltaY) {
     if (!node) return false;
-
     function attempt(target) {
       if (!target) return false;
       if (target === window || target === document || target === document.body) {
@@ -207,84 +218,25 @@
       return target.scrollTop !== beforeTop;
     }
 
-    // First try on the provided node
-    if (attempt(node)) {
-      return true;
-    }
+    if (attempt(node)) return true;
 
-    // If it didn't move, escalate once to a higher scrollable ancestor.
-    // This helps with deeply nested layouts where the immediate container
-    // isn't actually the scroll owner.
+    // Escalate to a higher ancestor once
     const parent = node.parentElement || node.parentNode;
     const higher = parent ? getScrollableAncestor(parent) : null;
-    if (higher && higher !== node) {
-      return attempt(higher);
-    }
+    if (higher && higher !== node && attempt(higher)) return true;
 
-    // As a last resort, synthesize a wheel event so that sites with
-    // custom JS-based scrollers (e.g., translateY animations) can
-    // handle the scroll even when scrollTop does not change.
+    // Last resort: synthesize wheel event for custom JS scrollers
     try {
-      const evt = new WheelEvent('wheel', {
-        bubbles: true,
-        cancelable: true,
-        deltaY: deltaY,
-        deltaMode: 0
-      });
+      const evt = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY, deltaMode: 0 });
       node.dispatchEvent(evt);
       return true;
-    } catch (_) {
-      try {
-        const evt = document.createEvent('WheelEvent');
-        // Some older engines require initWheelEvent, but GeckoView should
-        // support the constructor path above. We keep this as a best-effort.
-        if (evt && evt.initEvent) {
-          evt.initEvent('wheel', true, true);
-          node.dispatchEvent(evt);
-          return true;
-        }
-      } catch (_) {}
-    }
-
-    return false;
-  }
-
-  function sendHoverEvent(target, clientX, clientY) {
-    if (!target) return;
-    const types = ['pointerover', 'mouseover', 'mousemove'];
-    for (const type of types) {
-      try {
-        const evt = new MouseEvent(type, {
-          bubbles: true,
-          cancelable: true,
-          view: window,
-          clientX,
-          clientY,
-          button: 0
-        });
-        target.dispatchEvent(evt);
-      } catch (_) {}
-    }
-  }
-
-  function sendPointerMove(target, clientX, clientY) {
-    if (!target) return;
-    try {
-      const evt = new PointerEvent('pointermove', {
-        bubbles: true,
-        cancelable: true,
-        clientX,
-        clientY,
-        pointerId: 1,
-        pointerType: 'mouse'
-      });
-      target.dispatchEvent(evt);
     } catch (_) {}
+    return false;
   }
 
   async function handleScrollAtPoint(msg) {
     const { id, x = 0, y = 0, dy = 0, dpr, local } = msg;
-    if (!local && window.top !== window) return;
+    if (!local && !isTopFrame) return;
     if (id && scrollHandledIds.has(id)) return;
     if (id) scrollHandledIds.add(id);
 
@@ -292,60 +244,36 @@
     const xCss = clampToViewport(x / devicePixelRatio, window.innerWidth - 1);
     const yCss = clampToViewport(y / devicePixelRatio, window.innerHeight - 1);
 
+    // Delegate to iframe if point is inside one
     const iframe = !local ? findIframeUnderPoint(xCss, yCss) : null;
     if (!local && iframe && delegateToIframe('tv-frame-scroll', iframe, { id, x: xCss, y: yCss, dy, dpr: devicePixelRatio, local: true })) {
       return;
     }
 
     const element = deepElementFromPoint(xCss, yCss);
-    // First, handle YouTube playlist panel overlays explicitly. These often
-    // use custom JS-driven scrolling, so we scroll the panel element itself
-    // and let tryScrollElement fall back to synthesizing a wheel event.
+
+    // YouTube playlist panels: handle explicitly
     const playlistPanel = element && element.closest
       ? element.closest('ytd-playlist-panel-renderer, ytm-playlist-panel-renderer')
       : null;
     if (playlistPanel) {
-      const movedPanel = tryScrollElement(playlistPanel, dy);
-      const usedPanel = playlistPanel.tagName ? playlistPanel.tagName.toLowerCase() : 'playlist-panel';
-      sendScrollDone(id, movedPanel, usedPanel);
+      const moved = tryScrollElement(playlistPanel, dy);
+      sendScrollDone(id, moved, playlistPanel.tagName ? playlistPanel.tagName.toLowerCase() : 'playlist-panel');
       if (id) scrollHandledIds.delete(id);
       return;
     }
 
-    // Generic + other YouTube containers
-    // Try to normalize special YouTube playlist containers, but always
-    // run the final candidate through getScrollableAncestor so we end up
-    // scrolling the *actual* scrollable container (not just an inner div).
-    const panel = element && element.closest ? element.closest('ytd-playlist-panel-renderer') : null;
-    // Desktop playlist side panel: prefer the main items/contents container inside the panel
-    const items = panel
-      ? panel.querySelector('#items.playlist-items, #items, #contents')
-      : null;
-    // Mobile (ytm) variant: prefer the inner #items container if inside the mobile playlist panel
-    const mPanel = element && element.closest ? element.closest('ytm-playlist-panel-renderer') : null;
-    const mItems = mPanel
-      ? mPanel.querySelector('#items.playlist-items, #items')
-      : (element && element.closest ? element.closest('#items.playlist-items, #items') : null);
+    // Use cached scrollable ancestor (Task #3 optimization)
+    const base = element || document.body;
+    const target = getCachedScrollable(base);
 
-    const base = mItems || items || element || document.body;
-    const target = getScrollableAncestor(base);
-
-    // If the best scrollable ancestor is the root (html/body/scrollingElement),
-    // we deliberately report failure so that the Android side can fall back to
-    // its existing PanZoomController root scrolling. The content script focuses
-    // purely on nested/element-level scrolling.
     const root = document.scrollingElement || document.documentElement || document.body;
     const isRootTarget = !target || target === root || target === document.documentElement || target === document.body;
     const moved = isRootTarget ? false : tryScrollElement(target, dy);
 
     let used = 'none';
-    if (isRootTarget) {
-      used = 'root';
-    } else if (target && target.tagName) {
-      used = target.tagName.toLowerCase();
-    } else if (!target) {
-      used = 'unknown';
-    }
+    if (isRootTarget) used = 'root';
+    else if (target && target.tagName) used = target.tagName.toLowerCase();
 
     sendScrollDone(id, moved, used);
     if (id) scrollHandledIds.delete(id);
@@ -356,23 +284,19 @@
     const devicePixelRatio = Number(dpr) || window.devicePixelRatio || 1;
     const xCss = clampToViewport(x / devicePixelRatio, window.innerWidth - 1);
     const yCss = clampToViewport(y / devicePixelRatio, window.innerHeight - 1);
-
     const target = deepElementFromPoint(xCss, yCss);
     if (!target) return;
     if (lastHover && lastHover !== target) {
       try {
-        const leaveEvt = new MouseEvent('mouseout', {
-          bubbles: true,
-          cancelable: true,
-          clientX: xCss,
-          clientY: yCss,
-          button: 0
-        });
-        lastHover.dispatchEvent(leaveEvt);
+        lastHover.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, cancelable: true, clientX: xCss, clientY: yCss }));
       } catch (_) {}
     }
     lastHover = target;
-    sendHoverEvent(target, xCss, yCss);
+    // Batch hover events into a single pointermove + mouseover
+    try {
+      target.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: xCss, clientY: yCss, pointerId: 1, pointerType: 'mouse' }));
+      target.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window, clientX: xCss, clientY: yCss }));
+    } catch (_) {}
   }
 
   function handleMoveCursor(msg) {
@@ -382,29 +306,26 @@
     const yCss = clampToViewport(y / devicePixelRatio, window.innerHeight - 1);
     const target = deepElementFromPoint(xCss, yCss);
     if (!target) return;
-    sendPointerMove(target, xCss, yCss);
+    try {
+      target.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: xCss, clientY: yCss, pointerId: 1, pointerType: 'mouse' }));
+    } catch (_) {}
   }
 
-  function onMessage(evt) {
+  // Listen for delegated messages from iframes bubbling results up
+  window.addEventListener('message', (evt) => {
     const data = evt && evt.data;
     if (!data || typeof data !== 'object') return;
-    if (data.type === 'tv-menu-nav') {
+    // Forward iframe scroll/focus results up to background via runtime
+    if (data.type === 'tv-frame-scroll:done' && data.id) {
+      sendScrollDone(data.id, data.ok, data.used);
+    } else if (data.type === 'tv-frame-focus:done' && data.id) {
+      sendFocusDone(data.id, data.ok, data.used);
+    } else if (data.type === 'tv-menu-nav') {
       sendMenuNavAck();
-    } else if (data.type === 'tv-menu-nav-local') {
-      sendMenuNavAck();
-    } else if (data.type === 'tv-frame-focus' && data.payload) {
-      handleFocusAtPoint({ ...data.payload, local: true });
-    } else if (data.type === 'tv-frame-scroll' && data.payload) {
-      handleScrollAtPoint({ ...data.payload, local: true });
-    } else if (data.type === 'tv-frame-hover' && data.payload) {
-      handleHoverAtPoint({ ...data.payload, local: true });
-    } else if (data.type === 'tv-frame-move-cursor' && data.payload) {
-      handleMoveCursor({ ...data.payload, local: true });
     }
-  }
+  }, true);
 
-  window.addEventListener('message', onMessage, true);
-
+  // Listen for messages from background script
   if (typeof browser !== 'undefined' && browser.runtime && browser.runtime.onMessage) {
     browser.runtime.onMessage.addListener((msg) => {
       if (!msg || typeof msg !== 'object') return;
